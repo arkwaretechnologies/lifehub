@@ -165,9 +165,8 @@ export default function TopBar({ onMenuToggle }: TopBarProps) {
         sx={{
           width: { md: `calc(100% - ${DRAWER_WIDTH}px)` },
           ml: { md: `${DRAWER_WIDTH}px` },
-          bgcolor: (theme) => alpha(theme.palette.background.default, 0.8),
-          backdropFilter: "blur(6px)",
-          borderBottom: "1px dashed",
+          bgcolor: "background.paper",
+          borderBottom: "1px solid",
           borderColor: "divider",
         }}
       >

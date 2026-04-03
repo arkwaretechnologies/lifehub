@@ -1,20 +1,17 @@
 "use client";
 
-import { usePathname, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import {
   AppBar,
   Toolbar,
-  Typography,
   IconButton,
   Box,
   Avatar,
-  InputBase,
   Badge,
   Tooltip,
   alpha,
 } from "@mui/material";
 import MenuIcon from "@mui/icons-material/Menu";
-import SearchIcon from "@mui/icons-material/Search";
 import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
 import LogoutIcon from "@mui/icons-material/Logout";
 import { useAuth } from "@/components/AuthProvider";
@@ -25,11 +22,8 @@ interface TopBarProps {
 }
 
 export default function TopBar({ onMenuToggle }: TopBarProps) {
-  const pathname = usePathname();
   const router = useRouter();
-  const { user, profile, signOut } = useAuth();
-
-  const pageTitle = pathname.split("/").pop() || "dashboard";
+  const { profile, signOut } = useAuth();
 
   const handleLogout = () => {
     signOut();
@@ -66,26 +60,6 @@ export default function TopBar({ onMenuToggle }: TopBarProps) {
         >
           <MenuIcon />
         </IconButton>
-
-        {/* Search bar */}
-        <Box
-          sx={{
-            display: { xs: "none", sm: "flex" },
-            alignItems: "center",
-            bgcolor: (theme) => alpha(theme.palette.grey[500], 0.08),
-            borderRadius: 1,
-            px: 1.5,
-            py: 0.5,
-            mr: 2,
-            minWidth: 200,
-          }}
-        >
-          <SearchIcon sx={{ color: "text.secondary", fontSize: 20, mr: 1 }} />
-          <InputBase
-            placeholder="Search..."
-            sx={{ fontSize: "0.875rem", color: "text.primary", flex: 1 }}
-          />
-        </Box>
 
         <Box sx={{ flexGrow: 1 }} />
 

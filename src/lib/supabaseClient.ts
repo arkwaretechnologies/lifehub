@@ -1,19 +1,19 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
+// Browser: only NEXT_PUBLIC_* is available. Server: SUPABASE_* also works.
 const url =
-  process.env.NEXT_PUBLIC_SUPABASE_URL ??
-  "https://ytukrmdelbaieadwinww.supabase.co";
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||
+  "";
 
-const key =
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
-  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ??
-  "sb_publishable_vyS5BrO_ojzJM9v_5-_yXA_neGM2Biz";
+const anonKey =
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+  "";
 
 function buildClient(): SupabaseClient {
-  if (!url.startsWith("http") || !key) {
-    return createClient("https://placeholder.supabase.co", "placeholder");
+  if (!url || !anonKey || !url.startsWith("http")) {
+    return createClient("https://placeholder.supabase.co", "placeholder-anon-key");
   }
-  return createClient(url, key);
+  return createClient(url, anonKey);
 }
 
 export const supabase = buildClient();

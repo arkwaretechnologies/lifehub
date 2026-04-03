@@ -22,10 +22,12 @@ import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
 import PointOfSaleOutlinedIcon from "@mui/icons-material/PointOfSaleOutlined";
 import MeetingRoomOutlinedIcon from "@mui/icons-material/MeetingRoomOutlined";
 import LocalPharmacyOutlinedIcon from "@mui/icons-material/LocalPharmacyOutlined";
+import LocalHospitalOutlinedIcon from "@mui/icons-material/LocalHospitalOutlined";
 import CalendarMonthOutlinedIcon from "@mui/icons-material/CalendarMonthOutlined";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import AssessmentOutlinedIcon from "@mui/icons-material/AssessmentOutlined";
 import BusinessOutlinedIcon from "@mui/icons-material/BusinessOutlined";
+import AdminPanelSettingsOutlinedIcon from "@mui/icons-material/AdminPanelSettingsOutlined";
 import { useAuth } from "@/components/AuthProvider";
 
 export const DRAWER_WIDTH = 280;
@@ -61,6 +63,7 @@ const menuSections: MenuSection[] = [
     heading: "OPERATIONS",
     items: [
       { label: "reception", icon: <MeetingRoomOutlinedIcon />, href: "/reception" },
+      { label: "consultation", icon: <LocalHospitalOutlinedIcon />, href: "/consultation" },
       { label: "laboratory", icon: <ScienceOutlinedIcon />, href: "/laboratory" },
       { label: "pharmacy", icon: <LocalPharmacyOutlinedIcon />, href: "/pharmacy" },
       { label: "cashier", icon: <PointOfSaleOutlinedIcon />, href: "/cashier" },
@@ -71,6 +74,7 @@ const menuSections: MenuSection[] = [
     items: [
       { label: "reports", icon: <AssessmentOutlinedIcon />, href: "/reports" },
       { label: "branches", icon: <BusinessOutlinedIcon />, href: "/branches" },
+      { label: "user management", icon: <AdminPanelSettingsOutlinedIcon />, href: "/user-management" },
       { label: "settings", icon: <SettingsOutlinedIcon />, href: "/settings" },
     ],
   },

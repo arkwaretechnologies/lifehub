@@ -10,9 +10,6 @@ import {
   ListItemText,
   ListSubheader,
   Box,
-  Typography,
-  Avatar,
-  alpha,
   useMediaQuery,
   useTheme,
 } from "@mui/material";
@@ -28,7 +25,7 @@ import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import AssessmentOutlinedIcon from "@mui/icons-material/AssessmentOutlined";
 import BusinessOutlinedIcon from "@mui/icons-material/BusinessOutlined";
 import AdminPanelSettingsOutlinedIcon from "@mui/icons-material/AdminPanelSettingsOutlined";
-import { useAuth } from "@/components/AuthProvider";
+import Image from "next/image";
 
 export const DRAWER_WIDTH = 280;
 
@@ -87,16 +84,6 @@ interface SidebarProps {
 
 function SidebarContent() {
   const pathname = usePathname();
-  const { user, profile } = useAuth();
-
-  const initials = profile?.fullname
-    ? profile.fullname
-        .split(" ")
-        .map((n: string) => n[0])
-        .join("")
-        .substring(0, 2)
-        .toUpperCase()
-    : "U";
 
   return (
     <Box
@@ -109,64 +96,15 @@ function SidebarContent() {
       }}
     >
       {/* Logo */}
-      <Box sx={{ px: 2.5, py: 3, display: "flex", alignItems: "center", gap: 1 }}>
-        <Box
-          sx={{
-            width: 40,
-            height: 40,
-            borderRadius: "12px",
-            background: "linear-gradient(135deg, #5BE49B 0%, #00A76F 100%)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontWeight: 800,
-            fontSize: 18,
-            color: "#fff",
-          }}
-        >
-          CF
-        </Box>
-        <Typography variant="h6" fontWeight={800} letterSpacing={-0.5}>
-          ClinicFlow
-        </Typography>
-      </Box>
-
-      {/* User card */}
-      <Box
-        sx={{
-          mx: 2.5,
-          mb: 2,
-          p: 2,
-          borderRadius: 2,
-          bgcolor: alpha("#919EAB", 0.08),
-          display: "flex",
-          alignItems: "center",
-          gap: 1.5,
-        }}
-      >
-        <Avatar
-          sx={{
-            width: 36,
-            height: 36,
-            bgcolor: "#00A76F",
-            fontSize: 14,
-            fontWeight: 700,
-          }}
-        >
-          {initials}
-        </Avatar>
-        <Box sx={{ minWidth: 0 }}>
-          <Typography
-            variant="subtitle2"
-            noWrap
-            sx={{ color: NAV_TEXT, lineHeight: 1.2 }}
-          >
-            {profile?.fullname || user?.username || "User"}
-          </Typography>
-          <Typography variant="caption" sx={{ color: NAV_TEXT_SECONDARY }}>
-            {profile?.role || "Staff"}
-          </Typography>
-        </Box>
+      <Box sx={{ px: 2.5, py: 3, display: "flex", justifyContent: "center" }}>
+        <Image
+          src="/lifehub-logo.png"
+          alt="LifeHub logo"
+          width={200}
+          height={200}
+          style={{ width: 200, height: 200, objectFit: "contain" }}
+          priority
+        />
       </Box>
 
       {/* Menu sections */}
@@ -219,6 +157,7 @@ function SidebarContent() {
                     ...(active && {
                       bgcolor: NAV_ACTIVE_BG,
                       color: NAV_ACTIVE_COLOR,
+                      transform: "translateX(4px)",
                       "& .MuiListItemIcon-root": {
                         color: NAV_ACTIVE_COLOR,
                         minWidth: 0,
@@ -226,6 +165,7 @@ function SidebarContent() {
                       },
                       "&:hover": {
                         bgcolor: NAV_ACTIVE_BG,
+                        transform: "translateX(4px)",
                       },
                     }),
                   }}

@@ -1,6 +1,6 @@
 "use client";
 
-import { createTheme, alpha } from "@mui/material/styles";
+import { createTheme, alpha, type Shadows } from "@mui/material/styles";
 
 const PRIMARY = {
   lighter: "#C8FAD6",
@@ -62,6 +62,17 @@ const GREY = {
   900: "#161C24",
 };
 
+const MOTION = {
+  duration: "200ms",
+  easing: "ease-in-out",
+} as const;
+
+const SOFT_SHADOW = {
+  resting: "0 4px 12px rgba(0,0,0,0.05)",
+  hover: "0 10px 24px rgba(0,0,0,0.08)",
+  popover: "0 12px 32px rgba(0,0,0,0.12)",
+} as const;
+
 const theme = createTheme({
   palette: {
     primary: PRIMARY,
@@ -118,16 +129,45 @@ const theme = createTheme({
     `0 20px 40px -4px ${alpha(GREY[500], 0.16)}`,
     `0 24px 48px 0 ${alpha(GREY[500], 0.16)}`,
     ...Array(16).fill("none"),
-  ] as any,
+  ] as unknown as Shadows,
   components: {
+    MuiCssBaseline: {
+      styleOverrides: {
+        "*, *::before, *::after": {
+          scrollBehavior: "smooth",
+        },
+      },
+    },
+    MuiPaper: {
+      styleOverrides: {
+        root: {
+          transition: `box-shadow ${MOTION.duration} ${MOTION.easing}, transform ${MOTION.duration} ${MOTION.easing}, background-color ${MOTION.duration} ${MOTION.easing}`,
+        },
+      },
+    },
+    MuiButtonBase: {
+      styleOverrides: {
+        root: {
+          transition: `transform ${MOTION.duration} ${MOTION.easing}, box-shadow ${MOTION.duration} ${MOTION.easing}, background-color ${MOTION.duration} ${MOTION.easing}, color ${MOTION.duration} ${MOTION.easing}`,
+          WebkitTapHighlightColor: "transparent",
+        },
+      },
+    },
     MuiCard: {
       defaultProps: { elevation: 0 },
       styleOverrides: {
         root: {
           borderRadius: 16,
-          boxShadow: `0 0 2px 0 ${alpha(GREY[500], 0.2)}, 0 12px 24px -4px ${alpha(GREY[500], 0.12)}`,
+          boxShadow: SOFT_SHADOW.resting,
           position: "relative" as const,
           zIndex: 0,
+          transition: `transform ${MOTION.duration} ${MOTION.easing}, box-shadow ${MOTION.duration} ${MOTION.easing}`,
+          "@media (hover:hover)": {
+            "&:hover": {
+              transform: "translateY(-2px)",
+              boxShadow: SOFT_SHADOW.hover,
+            },
+          },
         },
       },
     },
@@ -138,11 +178,27 @@ const theme = createTheme({
           borderRadius: 8,
           fontWeight: 700,
           boxShadow: "none",
-          "&:hover": { boxShadow: "none" },
+          transform: "translateZ(0)",
+          willChange: "transform, box-shadow",
+          transition: `transform ${MOTION.duration} ${MOTION.easing}, box-shadow ${MOTION.duration} ${MOTION.easing}, background-color ${MOTION.duration} ${MOTION.easing}, border-color ${MOTION.duration} ${MOTION.easing}, color ${MOTION.duration} ${MOTION.easing}`,
+          "@media (hover:hover)": {
+            "&:hover": {
+              transform: "scale(1.02)",
+              boxShadow: SOFT_SHADOW.resting,
+            },
+          },
+          "&:active": {
+            transform: "scale(0.98)",
+          },
         },
         containedPrimary: {
           backgroundColor: PRIMARY.main,
-          "&:hover": { backgroundColor: PRIMARY.dark },
+          "@media (hover:hover)": {
+            "&:hover": {
+              backgroundColor: PRIMARY.main,
+              boxShadow: SOFT_SHADOW.resting,
+            },
+          },
         },
       },
     },
@@ -153,6 +209,58 @@ const theme = createTheme({
           "& .MuiOutlinedInput-root": {
             borderRadius: 8,
           },
+        },
+      },
+    },
+    MuiOutlinedInput: {
+      styleOverrides: {
+        root: {
+          transition: `box-shadow ${MOTION.duration} ${MOTION.easing}, background-color ${MOTION.duration} ${MOTION.easing}`,
+          "& .MuiOutlinedInput-notchedOutline": {
+            transition: `border-color ${MOTION.duration} ${MOTION.easing}`,
+          },
+          "&.Mui-focused": {
+            boxShadow: `0 0 0 4px ${alpha(PRIMARY.main, 0.14)}`,
+          },
+          "&.Mui-focused .MuiOutlinedInput-notchedOutline": {
+            borderColor: PRIMARY.main,
+            borderWidth: 1,
+          },
+        },
+      },
+    },
+    MuiListItemButton: {
+      styleOverrides: {
+        root: {
+          borderRadius: 8,
+          transition: `background-color ${MOTION.duration} ${MOTION.easing}, transform ${MOTION.duration} ${MOTION.easing}, padding ${MOTION.duration} ${MOTION.easing}`,
+          "@media (hover:hover)": {
+            "&:hover": {
+              transform: "translateX(4px)",
+            },
+          },
+          "&.Mui-selected": {
+            transition: `background-color ${MOTION.duration} ${MOTION.easing}, transform ${MOTION.duration} ${MOTION.easing}`,
+          },
+        },
+      },
+    },
+    MuiTableRow: {
+      styleOverrides: {
+        root: {
+          transition: `background-color ${MOTION.duration} ${MOTION.easing}`,
+          "@media (hover:hover)": {
+            "&:hover": {
+              backgroundColor: alpha(GREY[500], 0.06),
+            },
+          },
+        },
+      },
+    },
+    MuiMenu: {
+      styleOverrides: {
+        paper: {
+          boxShadow: SOFT_SHADOW.popover,
         },
       },
     },

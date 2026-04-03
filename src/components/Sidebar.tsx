@@ -172,7 +172,7 @@ function SidebarContent() {
     setOpenGroups((prev) => ({ ...prev, [id]: !prev[id] }));
   }, []);
 
-  const motion = "background-color 0.2s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s cubic-bezier(0.4, 0, 0.2, 1)";
+  const motion = "background-color 0.2 cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s cubic-bezier(0.4, 0, 0.2, 1)";
 
   /** Top-level row: full pill, active = soft grey track + accent blue (screenshot dashboard). */
   const renderTopLevelLink = (item: MenuLinkItem) => {

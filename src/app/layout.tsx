@@ -7,8 +7,9 @@ export const metadata: Metadata = {
   title: "LifeHub",
   description: "Modern Clinic Management System",
   icons: {
-    icon: [{ url: "/lifehub-logo.png" }],
-    apple: [{ url: "/lifehub-logo.png" }],
+    icon: [{ url: "/favicon.png", type: "image/png" }],
+    apple: [{ url: "/favicon.png", type: "image/png" }],
+    shortcut: [{ url: "/favicon.png", type: "image/png" }],
   },
 };
 

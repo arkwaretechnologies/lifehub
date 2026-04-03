@@ -2,10 +2,9 @@
 
 import { useState, FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import {
   Box,
-  Card,
-  CardContent,
   TextField,
   Button,
   Typography,
@@ -60,7 +59,7 @@ export default function LoginPage() {
       sx={{
         minHeight: "100vh",
         display: "flex",
-        bgcolor: "#F9FAFB",
+        bgcolor: "background.default",
       }}
     >
       {/* Left decorative panel */}
@@ -68,7 +67,8 @@ export default function LoginPage() {
         sx={{
           display: { xs: "none", md: "flex" },
           width: "50%",
-          background: "linear-gradient(135deg, #003768 0%, #004B50 50%, #007867 100%)",
+          background:
+            "linear-gradient(135deg, #1F4E79 0%, #4CC9C0 55%, #2FBF71 100%)",
           flexDirection: "column",
           justifyContent: "center",
           alignItems: "center",
@@ -85,7 +85,7 @@ export default function LoginPage() {
             width: 400,
             height: 400,
             borderRadius: "50%",
-            bgcolor: alpha("#5BE49B", 0.06),
+            bgcolor: alpha("#4CC9C0", 0.12),
           }}
         />
         <Box
@@ -96,7 +96,7 @@ export default function LoginPage() {
             width: 350,
             height: 350,
             borderRadius: "50%",
-            bgcolor: alpha("#5BE49B", 0.08),
+            bgcolor: alpha("#2FBF71", 0.12),
           }}
         />
         <Box sx={{ position: "relative", zIndex: 1, textAlign: "center" }}>
@@ -105,25 +105,29 @@ export default function LoginPage() {
               width: 64,
               height: 64,
               borderRadius: "16px",
-              background: "linear-gradient(135deg, #5BE49B 0%, #00A76F 100%)",
+              overflow: "hidden",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              fontWeight: 800,
-              fontSize: 24,
-              color: "#fff",
               mx: "auto",
               mb: 3,
             }}
           >
-            CF
+            <Image
+              src="/lifehub-logo.png"
+              alt="LifeHub logo"
+              width={64}
+              height={64}
+              style={{ width: "100%", height: "100%", objectFit: "contain" }}
+              priority
+            />
           </Box>
           <Typography
             variant="h3"
             fontWeight={800}
             sx={{ color: "#fff", mb: 2 }}
           >
-            LifeHub ClinicFlow
+            LifeHub
           </Typography>
           <Typography
             variant="body1"
@@ -160,19 +164,23 @@ export default function LoginPage() {
                 width: 40,
                 height: 40,
                 borderRadius: "12px",
-                background: "linear-gradient(135deg, #5BE49B 0%, #00A76F 100%)",
+                overflow: "hidden",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                fontWeight: 800,
-                fontSize: 16,
-                color: "#fff",
               }}
             >
-              CF
+              <Image
+                src="/lifehub-logo.png"
+                alt="LifeHub logo"
+                width={40}
+                height={40}
+                style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                priority
+              />
             </Box>
             <Typography variant="h6" fontWeight={800}>
-              ClinicFlow
+              LifeHub
             </Typography>
           </Box>
 
@@ -222,8 +230,6 @@ export default function LoginPage() {
               sx={{
                 py: 1.5,
                 fontSize: "0.9375rem",
-                bgcolor: "#212B36",
-                "&:hover": { bgcolor: "#454F5B" },
               }}
             >
               {loading ? (

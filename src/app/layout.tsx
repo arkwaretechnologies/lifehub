@@ -4,8 +4,13 @@ import Providers from "@/components/Providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "LifeHub ClinicFlow",
+  title: "LifeHub",
   description: "Modern Clinic Management System",
+  icons: {
+    icon: [{ url: "/favicon.png", type: "image/png" }],
+    apple: [{ url: "/favicon.png", type: "image/png" }],
+    shortcut: [{ url: "/favicon.png", type: "image/png" }],
+  },
 };
 
 export default function RootLayout({

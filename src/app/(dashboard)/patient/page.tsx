@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import Image from "next/image";
 import {
   Box,
   Card,
@@ -848,19 +849,23 @@ export default function PatientPage() {
               width: 40,
               height: 40,
               borderRadius: "12px",
-              background: "linear-gradient(135deg, #5BE49B 0%, #00A76F 100%)",
+              overflow: "hidden",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              fontWeight: 800,
-              fontSize: 18,
-              color: "#fff",
             }}
           >
-            CF
+            <Image
+              src="/lifehub-logo.png"
+              alt="LifeHub logo"
+              width={40}
+              height={40}
+              style={{ width: "100%", height: "100%", objectFit: "contain" }}
+              priority
+            />
           </Box>
           <Typography variant="h6" fontWeight={800} letterSpacing={-0.5} sx={{ color: "text.primary" }}>
-            ClinicFlow
+            LifeHub
           </Typography>
         </Box>
         <Button

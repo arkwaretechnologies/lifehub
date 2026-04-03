@@ -7,6 +7,7 @@ import {
   Typography,
   Box,
   alpha,
+  useTheme,
 } from "@mui/material";
 import PeopleOutlineIcon from "@mui/icons-material/PeopleOutline";
 import QueueIcon from "@mui/icons-material/Queue";
@@ -23,9 +24,7 @@ const stats = [
     change: "+12%",
     trending: "up" as const,
     icon: <PeopleOutlineIcon />,
-    color: "#00A76F",
-    bgFrom: "#C8FAD6",
-    bgTo: "#5BE49B",
+    tone: "secondary" as const,
   },
   {
     label: "Queue Count",
@@ -33,9 +32,7 @@ const stats = [
     change: "+3",
     trending: "up" as const,
     icon: <QueueIcon />,
-    color: "#00B8D9",
-    bgFrom: "#CAFDF5",
-    bgTo: "#61F3F3",
+    tone: "info" as const,
   },
   {
     label: "Ongoing Consultations",
@@ -43,9 +40,7 @@ const stats = [
     change: "-2",
     trending: "down" as const,
     icon: <HealingIcon />,
-    color: "#FFAB00",
-    bgFrom: "#FFF5CC",
-    bgTo: "#FFD666",
+    tone: "warning" as const,
   },
   {
     label: "Completed Transactions",
@@ -53,9 +48,7 @@ const stats = [
     change: "+18%",
     trending: "up" as const,
     icon: <CheckCircleOutlineIcon />,
-    color: "#8E33FF",
-    bgFrom: "#EFD6FF",
-    bgTo: "#C684FF",
+    tone: "primary" as const,
   },
 ];
 
@@ -80,6 +73,7 @@ function MiniBarChart({ color }: { color: string }) {
 
 export default function DashboardPage() {
   const { profile } = useAuth();
+  const theme = useTheme();
   const firstName = profile?.fullname?.split(" ")[0] || "there";
 
   return (
@@ -89,8 +83,9 @@ export default function DashboardPage() {
         sx={{
           mb: 3,
           overflow: "hidden",
-          background: "linear-gradient(135deg, #003768 0%, #004B50 50%, #007867 100%)",
+          background: "linear-gradient(135deg, #1F4E79 0%, #4CC9C0 55%, #2FBF71 100%)",
           color: "#fff",
+          border: "none",
         }}
       >
         <CardContent sx={{ p: { xs: 3, md: 5 }, position: "relative" }}>
@@ -116,7 +111,7 @@ export default function DashboardPage() {
               width: 200,
               height: 200,
               borderRadius: "50%",
-              bgcolor: alpha("#5BE49B", 0.08),
+              bgcolor: alpha("#4CC9C0", 0.14),
               display: { xs: "none", md: "block" },
             }}
           />
@@ -128,7 +123,7 @@ export default function DashboardPage() {
               width: 260,
               height: 260,
               borderRadius: "50%",
-              bgcolor: alpha("#5BE49B", 0.06),
+              bgcolor: alpha("#2FBF71", 0.12),
               display: { xs: "none", md: "block" },
             }}
           />
@@ -141,6 +136,19 @@ export default function DashboardPage() {
           <Grid key={stat.label} size={{ xs: 12, sm: 6, md: 3 }}>
             <Card sx={{ height: "100%" }}>
               <CardContent sx={{ p: 3 }}>
+                {(() => {
+                  const palette =
+                    stat.tone === "secondary"
+                      ? theme.palette.secondary
+                      : stat.tone === "info"
+                        ? theme.palette.info
+                        : stat.tone === "warning"
+                          ? theme.palette.warning
+                          : theme.palette.primary;
+                  const main = palette.main;
+                  const softFrom = alpha(main, 0.16);
+                  const softTo = alpha(main, 0.28);
+                  return (
                 <Box
                   sx={{
                     display: "flex",
@@ -154,17 +162,19 @@ export default function DashboardPage() {
                       width: 48,
                       height: 48,
                       borderRadius: "12px",
-                      background: `linear-gradient(135deg, ${stat.bgFrom} 0%, ${stat.bgTo} 100%)`,
+                      background: `linear-gradient(135deg, ${softFrom} 0%, ${softTo} 100%)`,
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      color: stat.color,
+                      color: main,
                     }}
                   >
                     {stat.icon}
                   </Box>
-                  <MiniBarChart color={stat.color} />
+                  <MiniBarChart color={main} />
                 </Box>
+                  );
+                })()}
 
                 <Typography variant="h3" fontWeight={700} sx={{ mb: 0.5 }}>
                   {stat.value}

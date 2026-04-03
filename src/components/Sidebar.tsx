@@ -53,7 +53,7 @@ const menuSections: MenuSection[] = [
     heading: "OVERVIEW",
     items: [
       { label: "dashboard", icon: <DashboardOutlinedIcon />, href: "/dashboard" },
-      { label: "patient", icon: <PersonOutlinedIcon />, href: "/patient" },
+      { label: "patients", icon: <PersonOutlinedIcon />, href: "/patient" },
       { label: "appointments", icon: <CalendarMonthOutlinedIcon />, href: "/appointments" },
     ],
   },

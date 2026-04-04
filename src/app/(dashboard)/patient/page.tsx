@@ -33,6 +33,13 @@ import SearchIcon from "@mui/icons-material/Search";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import { supabase } from "@/lib/supabaseClient";
+import { FormFieldLabel } from "@/components/FormFieldLabel";
+import {
+  commonFieldProps,
+  emailFieldInputSx,
+  fieldInputSx,
+  menuItemSx,
+} from "@/components/fieldInputStyles";
 
 /** App users table: `fullname` + `role` (RLS must allow SELECT for signed-in role). */
 const APP_USERS_TABLE = "users";
@@ -81,80 +88,6 @@ const emptyForm: PatientForm = {
 };
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
-
-const commonFieldProps = {
-  fullWidth: true,
-  size: "small" as const,
-};
-
-/** Outlined inputs without floating label (label is a separate row above). */
-const fieldInputSx = {
-  "& .MuiInputBase-root": { height: 40 },
-  "& .MuiInputBase-input": {
-    height: "100%",
-    boxSizing: "border-box",
-    textTransform: "uppercase",
-  },
-  "& .MuiSelect-select": {
-    height: "100%",
-    display: "flex",
-    alignItems: "center",
-    textTransform: "uppercase",
-  },
-} as const;
-
-const emailFieldInputSx = {
-  "& .MuiInputBase-root": { height: 40 },
-  "& .MuiInputBase-input": {
-    height: "100%",
-    boxSizing: "border-box",
-    textTransform: "lowercase",
-  },
-  "& .MuiSelect-select": {
-    height: "100%",
-    display: "flex",
-    alignItems: "center",
-    textTransform: "uppercase",
-  },
-} as const;
-
-function FormFieldLabel({
-  htmlFor,
-  children,
-  uppercase = false,
-  required: fieldRequired = false,
-}: {
-  htmlFor: string;
-  children: React.ReactNode;
-  /** When true, label text is forced to all caps (default is sentence case). */
-  uppercase?: boolean;
-  required?: boolean;
-}) {
-  return (
-    <Typography
-      component="label"
-      variant="body2"
-      htmlFor={htmlFor}
-      sx={{
-        display: "block",
-        mb: 0.75,
-        fontWeight: 600,
-        letterSpacing: uppercase ? 0.02 : 0,
-        textTransform: uppercase ? "uppercase" : "none",
-        color: "text.primary",
-      }}
-    >
-      {children}
-      {fieldRequired ? (
-        <Box component="span" sx={{ color: "error.main", ml: 0.25 }} aria-hidden>
-          *
-        </Box>
-      ) : null}
-    </Typography>
-  );
-}
-
-const menuItemSx = { textTransform: "uppercase" as const };
 
 /** Philippine mobile: 09 + 9 digits (11 total). */
 function normalizeContactNoInput(raw: string): string {

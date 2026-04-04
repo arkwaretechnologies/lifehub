@@ -25,6 +25,7 @@ import SearchIcon from "@mui/icons-material/Search";
 import type { ConsultationPatient } from "./consultationTypes";
 import MedicalHistoryPanel from "./MedicalHistoryPanel";
 import PatientInformationBanner from "./PatientInformationBanner";
+import PhysiciansRecordPanel from "./PhysiciansRecordPanel";
 import ReviewOfSystemsPanel from "./ReviewOfSystemsPanel";
 
 /** Same UI as `ReviewOfSystemsPanel` — kept so older references to this name still resolve. */
@@ -35,7 +36,7 @@ function PhysicalAssessmentPanel() {
 const PRIMARY_TABS = [
   "Medical history",
   "Review of systems",
-  "Allergy",
+  "Physician's record",
   "Orders",
   "Investigations",
   "Documents",
@@ -51,38 +52,6 @@ const tabPanelSx = {
 
 function a11yProps(index: number) {
   return { id: `consultation-tab-${index}`, "aria-controls": `consultation-tabpanel-${index}` };
-}
-
-function AllergyPanel() {
-  const [none, setNone] = useState(false);
-  return (
-    <Box sx={tabPanelSx}>
-      <Typography variant="subtitle2" color="info.main" fontWeight={700} gutterBottom>
-        Allergies
-      </Typography>
-      <FormControlLabel
-        control={<Checkbox checked={none} onChange={(_, v) => setNone(v)} />}
-        label="None"
-      />
-      <Grid container spacing={2} sx={{ mt: 1 }}>
-        <Grid size={{ xs: 12, md: 6 }}>
-          <TextField fullWidth size="small" label="Food" placeholder="—" disabled={none} />
-        </Grid>
-        <Grid size={{ xs: 12, md: 6 }}>
-          <TextField fullWidth size="small" label="Drugs" placeholder="—" disabled={none} />
-        </Grid>
-        <Grid size={{ xs: 12 }}>
-          <TextField
-            fullWidth
-            multiline
-            minRows={2}
-            label="Reaction type (e.g. rash, anaphylaxis)"
-            disabled={none}
-          />
-        </Grid>
-      </Grid>
-    </Box>
-  );
 }
 
 function OrdersPanel() {
@@ -274,7 +243,7 @@ export default function ConsultationWorkspace({ patient }: { patient: Consultati
       >
         {tab === 0 && <MedicalHistoryPanel />}
         {tab === 1 && <PhysicalAssessmentPanel />}
-        {tab === 2 && <AllergyPanel />}
+        {tab === 2 && <PhysiciansRecordPanel />}
         {tab === 3 && <OrdersPanel />}
         {tab === 4 && <InvestigationsPanel />}
         {tab === 5 && <DocumentsPanel />}

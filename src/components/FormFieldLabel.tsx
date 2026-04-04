@@ -8,13 +8,17 @@ export function FormFieldLabel({
   children,
   uppercase = false,
   required: fieldRequired = false,
+  /** Aligns with consultation Physician's Record field labels (`info.main`, 700). */
+  variant = "default",
 }: {
   htmlFor: string;
   children: ReactNode;
   /** When true, label text is forced to all caps (default is sentence case). */
   uppercase?: boolean;
   required?: boolean;
+  variant?: "default" | "consultation";
 }) {
+  const isConsult = variant === "consultation";
   return (
     <Typography
       component="label"
@@ -23,10 +27,10 @@ export function FormFieldLabel({
       sx={{
         display: "block",
         mb: 0.75,
-        fontWeight: 600,
-        letterSpacing: uppercase ? 0.02 : 0,
+        fontWeight: isConsult ? 700 : 600,
+        letterSpacing: isConsult ? 0.02 : uppercase ? 0.02 : 0,
         textTransform: uppercase ? "uppercase" : "none",
-        color: "text.primary",
+        color: isConsult ? "info.main" : "text.primary",
       }}
     >
       {children}

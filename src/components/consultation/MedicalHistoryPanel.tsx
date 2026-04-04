@@ -1,6 +1,5 @@
 "use client";
 
-import type { ReactNode } from "react";
 import { useId, useState } from "react";
 import {
   Box,
@@ -23,6 +22,11 @@ import {
   fieldInputSx,
   fieldMultilineInputSx,
 } from "@/components/fieldInputStyles";
+import {
+  ConsultationSectionTitle,
+  ConsultationSubsectionTitle,
+  consultFormControlLabelSx,
+} from "@/components/consultation/ConsultationSectionTitle";
 
 const tabPanelSx = { pt: 2, minHeight: 280 };
 
@@ -31,33 +35,10 @@ const greySectionSx = {
   p: 2,
   borderRadius: 1,
   border: "1px solid",
-  borderColor: "divider",
+  borderColor: "info.main",
 };
 
-/** Matches patient page card section title (`Patient Records`). */
-const sectionTitleSx = {
-  variant: "subtitle1" as const,
-  fontWeight: 600,
-  sx: { mb: 2, color: "text.primary" },
-};
-
-/** Inset subsection (grey panels) — `body2` / 600 like `FormFieldLabel`. */
-function SubsectionTitle({ children }: { children: ReactNode }) {
-  return (
-    <Typography component="h3" variant="body2" fontWeight={600} sx={{ mb: 1.5, color: "text.primary" }}>
-      {children}
-    </Typography>
-  );
-}
-
-const controlLabelSx = {
-  mr: 0,
-  "& .MuiFormControlLabel-label": {
-    fontSize: "0.875rem",
-    fontWeight: 400,
-    color: "text.primary",
-  },
-} as const;
+const controlLabelSx = consultFormControlLabelSx;
 
 /**
  * Allergies block only — checkbox sits flush next to label (does not affect other sections).
@@ -75,8 +56,8 @@ const allergiesControlLabelSx = {
     padding: "2px",
   },
   "& .MuiFormControlLabel-label": {
-    fontSize: "0.875rem",
-    fontWeight: 400,
+    fontSize: "0.8125rem",
+    fontWeight: 500,
     lineHeight: 1.2,
     color: "text.primary",
     flex: "0 0 auto",
@@ -121,7 +102,9 @@ function VitalRow({ idPrefix, labels }: { idPrefix: string; labels: string[] }) 
         const fid = `${idPrefix}-vital-${slugId(label)}`;
         return (
           <Grid key={label} size={{ xs: 6, sm: 4 }}>
-            <FormFieldLabel htmlFor={fid}>{label}</FormFieldLabel>
+            <FormFieldLabel htmlFor={fid} variant="consultation">
+              {label}
+            </FormFieldLabel>
             <TextField id={fid} hiddenLabel placeholder="____" {...commonFieldProps} sx={fieldInputSx} />
           </Grid>
         );
@@ -182,25 +165,21 @@ export default function MedicalHistoryPanel() {
           textAlign: "center",
         }}
       >
-        <Typography
-          variant="subtitle1"
-          fontWeight={800}
-          sx={{ textTransform: "uppercase", letterSpacing: "0.12em" }}
-        >
-          Medical history
+        <Typography variant="subtitle1" fontWeight={800} letterSpacing="0.1em">
+          MEDICAL HISTORY
         </Typography>
       </Box>
 
       <Grid container spacing={3}>
         <Grid size={{ xs: 12, md: 6 }}>
-          <Typography {...sectionTitleSx}>Vital signs</Typography>
+          <ConsultationSectionTitle>Vital signs</ConsultationSectionTitle>
           <VitalRow
             idPrefix={idPrefix}
             labels={["BP", "HR", "RR", "Temp", "O2 Sat", "Pain scale (0–10)"]}
           />
 
           <Box sx={{ ...greySectionSx, mb: 2 }}>
-            <SubsectionTitle>Past medical history</SubsectionTitle>
+            <ConsultationSubsectionTitle>Past medical history</ConsultationSubsectionTitle>
             <CheckboxGrid
               items={[
                 "Hypertension",
@@ -214,7 +193,9 @@ export default function MedicalHistoryPanel() {
               ]}
             />
             <Box sx={{ mt: 2 }}>
-              <FormFieldLabel htmlFor={`${idPrefix}-pmh-others`}>Others</FormFieldLabel>
+              <FormFieldLabel htmlFor={`${idPrefix}-pmh-others`} variant="consultation">
+                Others
+              </FormFieldLabel>
               <TextField
                 id={`${idPrefix}-pmh-others`}
                 hiddenLabel
@@ -225,7 +206,7 @@ export default function MedicalHistoryPanel() {
             </Box>
           </Box>
 
-          <Typography {...sectionTitleSx}>Family history</Typography>
+          <ConsultationSectionTitle>Family history</ConsultationSectionTitle>
           <Box sx={{ mb: 2 }}>
             <CheckboxGrid
               items={[
@@ -240,14 +221,14 @@ export default function MedicalHistoryPanel() {
             />
           </Box>
 
-          <Typography {...sectionTitleSx}>Surgical history</Typography>
+          <ConsultationSectionTitle>Surgical history</ConsultationSectionTitle>
           <Box sx={{ mb: 2 }}>
             <CheckboxGrid
               items={["Negative", "App", "GB", "CABG", "C-section", "Hernia", "Cataract"]}
             />
           </Box>
 
-          <Typography {...sectionTitleSx}>Previous hospitalization</Typography>
+          <ConsultationSectionTitle>Previous hospitalization</ConsultationSectionTitle>
           <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2, mb: 1.5 }}>
             <FormControlLabel
               control={
@@ -284,9 +265,15 @@ export default function MedicalHistoryPanel() {
           >
             <TableHead>
               <TableRow sx={{ bgcolor: "grey.200" }}>
-                <TableCell sx={{ textTransform: "uppercase", fontWeight: 700 }}>Year</TableCell>
-                <TableCell sx={{ textTransform: "uppercase", fontWeight: 700 }}>Hospital</TableCell>
-                <TableCell sx={{ textTransform: "uppercase", fontWeight: 700 }}>Diagnosis</TableCell>
+                <TableCell sx={{ textTransform: "uppercase", fontWeight: 700, color: "info.main" }}>
+                  Year
+                </TableCell>
+                <TableCell sx={{ textTransform: "uppercase", fontWeight: 700, color: "info.main" }}>
+                  Hospital
+                </TableCell>
+                <TableCell sx={{ textTransform: "uppercase", fontWeight: 700, color: "info.main" }}>
+                  Diagnosis
+                </TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -311,13 +298,15 @@ export default function MedicalHistoryPanel() {
         </Grid>
 
         <Grid size={{ xs: 12, md: 6 }}>
-          <Typography {...sectionTitleSx}>Anthropometric</Typography>
+          <ConsultationSectionTitle>Anthropometric</ConsultationSectionTitle>
           <Grid container spacing={2} sx={{ mb: 2 }}>
             {(["Weight", "Height", "BMI"] as const).map((label) => {
               const fid = `${idPrefix}-anthro-${slugId(label)}`;
               return (
                 <Grid key={label} size={{ xs: 4 }}>
-                  <FormFieldLabel htmlFor={fid}>{label}</FormFieldLabel>
+                  <FormFieldLabel htmlFor={fid} variant="consultation">
+                    {label}
+                  </FormFieldLabel>
                   <TextField id={fid} hiddenLabel placeholder="____" {...commonFieldProps} sx={fieldInputSx} />
                 </Grid>
               );

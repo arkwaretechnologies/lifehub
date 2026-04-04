@@ -44,7 +44,7 @@ const ROS_SECTION_A: RosLine[] = [
   { category: "Eyes", items: ["Vision changes", "Redness", "Discharge"] },
   {
     category: "Ears, Nose, Throat",
-    items: ["Hearing changes", "nasal congestion", "sore throat"],
+    items: ["Hearing changes", "Nasal congestion", "Sore throat"],
   },
   { category: "Cardiovascular", items: ["Chest pain", "Palpitations", "Edema"] },
   { category: "Respiratory", items: ["Shortness of breath", "Wheezing", "Cough"] },

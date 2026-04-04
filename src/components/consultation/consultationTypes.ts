@@ -17,6 +17,29 @@ export type ConsultationPatient = {
   philhealthNo: string;
 };
 
+/** Stable patient row for directory search (visit date/time live on each encounter). */
+export type ConsultationPatientProfile = {
+  patientId: string;
+  name: string;
+  ageSex: string;
+  dob: string;
+  civilStatus: string;
+  address: string;
+  contactNo: string;
+  occupation: string;
+  referringPhysician: string;
+  philhealthNo: string;
+};
+
+export type ConsultationEncounterSummary = {
+  id: string;
+  patientId: string;
+  date: string;
+  time: string;
+  chiefComplaint?: string;
+  queueNo?: string;
+};
+
 export const CONSULTATION_BRANDING = {
   org: "LIFEHUB MEDICAL & DIAGNOSTIC CENTER",
   tagline: "Your One-Stop Healthcare Hub",
@@ -25,18 +48,22 @@ export const CONSULTATION_BRANDING = {
   email: "lifehubmedical@gmail.com",
 } as const;
 
-/** Demo snapshot — replace with visit/patient fetch later. */
-export const MOCK_CONSULTATION_PATIENT: ConsultationPatient = {
-  name: "adham mohamed",
-  date: "2026-04-03",
-  time: "10:30",
-  ageSex: "35 / Male",
-  dob: "1991-03-15",
-  civilStatus: "MARRIED",
-  address: "ZAMBOANGA SIBUGAY",
-  contactNo: "09171234567",
-  occupation: "ENGINEER",
-  referringPhysician: "DR. SAMPLE",
-  patientId: "RUH01PNT12302129",
-  philhealthNo: "12-345678901-2",
-};
+export function buildConsultationPatient(
+  profile: ConsultationPatientProfile,
+  encounter: Pick<ConsultationEncounterSummary, "date" | "time">
+): ConsultationPatient {
+  return {
+    name: profile.name,
+    date: encounter.date,
+    time: encounter.time,
+    ageSex: profile.ageSex,
+    dob: profile.dob,
+    civilStatus: profile.civilStatus,
+    address: profile.address,
+    contactNo: profile.contactNo,
+    occupation: profile.occupation,
+    referringPhysician: profile.referringPhysician,
+    patientId: profile.patientId,
+    philhealthNo: profile.philhealthNo,
+  };
+}

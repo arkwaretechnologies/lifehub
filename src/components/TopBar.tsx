@@ -32,6 +32,7 @@ import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import CloseIcon from "@mui/icons-material/Close";
 import { useAuth } from "@/components/AuthProvider";
 import { DRAWER_WIDTH } from "@/components/Sidebar";
+import { supabase } from "@/lib/supabaseClient";
 
 interface TopBarProps {
   onMenuToggle: () => void;

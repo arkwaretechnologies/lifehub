@@ -43,7 +43,7 @@ function Field({ label, value, id }: { label: string; value: string; id: string 
   const display = value?.trim() ? value : "—";
   return (
     <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-      <BannerLabel id={id}>{label}</BannerLabel>
+      <BannerLabel htmlFor={id}>{label}</BannerLabel>
       <BannerValue id={id}>{display}</BannerValue>
     </Grid>
   );

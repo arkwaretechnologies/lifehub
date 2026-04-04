@@ -2,6 +2,17 @@
 
 import { createTheme, alpha, type Shadows } from "@mui/material/styles";
 
+declare module "@mui/material/styles" {
+  interface PaletteColor {
+    lighter?: string;
+    darker?: string;
+  }
+  interface SimplePaletteColorOptions {
+    lighter?: string;
+    darker?: string;
+  }
+}
+
 // Medical Calm design tokens (strict blue/green system).
 const BRAND = {
   teal: "#4CC9C0", // Primary (soft teal)

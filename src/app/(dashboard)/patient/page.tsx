@@ -40,6 +40,14 @@ import {
   fieldInputSx,
   menuItemSx,
 } from "@/components/fieldInputStyles";
+import { ConsultationSectionTitle } from "@/components/consultation/ConsultationSectionTitle";
+import {
+  consultBodyTypoSx,
+  consultTableBodyCellSx,
+  consultTableHeadCellSx,
+  consultTableHeadRowSx,
+  consultTableSx,
+} from "@/components/consultation/consultListTableStyles";
 
 /** App users table: `fullname` + `role` (RLS must allow SELECT for signed-in role). */
 const APP_USERS_TABLE = "users";
@@ -797,7 +805,13 @@ export default function PatientPage() {
               priority
             />
           </Box>
-          <Typography variant="h6" fontWeight={800} letterSpacing={-0.5} sx={{ color: "text.primary" }}>
+          <Typography
+            variant="subtitle1"
+            fontWeight={800}
+            letterSpacing="0.08em"
+            color="info.main"
+            sx={{ textTransform: "uppercase" }}
+          >
             LifeHub
           </Typography>
         </Box>
@@ -856,23 +870,25 @@ export default function PatientPage() {
               <CircularProgress />
             </Box>
           ) : patients.length === 0 ? (
-            <Typography color="text.secondary">{emptyMessage}</Typography>
+            <Typography variant="body2" color="text.primary" sx={consultBodyTypoSx}>
+              {emptyMessage}
+            </Typography>
           ) : (
             <>
               <TableContainer>
-                <Table size="small">
+                <Table size="small" sx={consultTableSx}>
                   <TableHead>
-                    <TableRow>
-                      <TableCell sx={{ textTransform: "uppercase" }}>ID</TableCell>
-                      <TableCell sx={{ textTransform: "uppercase" }}>Name</TableCell>
-                      <TableCell sx={{ textTransform: "uppercase" }}>Sex</TableCell>
-                      <TableCell sx={{ textTransform: "uppercase" }}>DOB</TableCell>
-                      <TableCell sx={{ textTransform: "uppercase" }}>Civil status</TableCell>
-                      <TableCell sx={{ textTransform: "uppercase" }}>Contact</TableCell>
-                      <TableCell sx={{ textTransform: "uppercase" }}>Email</TableCell>
-                      <TableCell sx={{ textTransform: "uppercase" }}>Referring</TableCell>
-                      <TableCell sx={{ textTransform: "uppercase" }}>PhilHealth</TableCell>
-                      <TableCell align="right" sx={{ textTransform: "uppercase" }}>
+                    <TableRow sx={consultTableHeadRowSx}>
+                      <TableCell sx={consultTableHeadCellSx}>ID</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>Name</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>Sex</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>DOB</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>Civil status</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>Contact</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>Email</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>Referring physician</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>PhilHealth</TableCell>
+                      <TableCell align="right" sx={consultTableHeadCellSx}>
                         Actions
                       </TableCell>
                     </TableRow>
@@ -880,20 +896,31 @@ export default function PatientPage() {
                   <TableBody>
                     {patients.map((p) => (
                       <TableRow key={String(p.id)}>
-                        <TableCell sx={{ textTransform: "uppercase" }}>{p.id}</TableCell>
-                        <TableCell sx={{ textTransform: "uppercase" }}>{p.name}</TableCell>
-                        <TableCell sx={{ textTransform: "uppercase" }}>{p.sex}</TableCell>
-                        <TableCell sx={{ textTransform: "uppercase" }}>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>{p.id}</TableCell>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>{p.name}</TableCell>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>{p.sex}</TableCell>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
                           {formatDateDisplay(p.date_of_birth)}
                         </TableCell>
-                        <TableCell sx={{ textTransform: "uppercase" }}>{p.civil_status}</TableCell>
-                        <TableCell sx={{ textTransform: "uppercase" }}>{p.contact_no}</TableCell>
-                        <TableCell sx={{ textTransform: "lowercase" }}>{p.email_address}</TableCell>
-                        <TableCell sx={{ textTransform: "uppercase" }}>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
+                          {p.civil_status}
+                        </TableCell>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
+                          {p.contact_no}
+                        </TableCell>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "lowercase" }}>
+                          {p.email_address}
+                        </TableCell>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
                           {formatReferringPhysicianCell(p.referring_physician)}
                         </TableCell>
-                        <TableCell sx={{ textTransform: "uppercase" }}>{p.philhealth_no ?? ""}</TableCell>
-                        <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
+                          {p.philhealth_no ?? ""}
+                        </TableCell>
+                        <TableCell
+                          align="right"
+                          sx={{ ...consultTableBodyCellSx, whiteSpace: "nowrap" }}
+                        >
                           <Tooltip title="Edit">
                             <IconButton size="small" color="primary" onClick={() => openEdit(p)}>
                               <EditIcon fontSize="small" />
@@ -920,8 +947,16 @@ export default function PatientPage() {
                 onRowsPerPageChange={handleRowsPerPageChange}
                 labelRowsPerPage="Rows per page"
                 sx={{
-                  "& .MuiTablePagination-toolbar": { textTransform: "uppercase" },
+                  "& .MuiTablePagination-toolbar": {
+                    textTransform: "uppercase",
+                    ...consultBodyTypoSx,
+                    color: "text.primary",
+                  },
                   "& .MuiTablePagination-select": { textTransform: "uppercase" },
+                  "& .MuiTablePagination-selectLabel, & .MuiTablePagination-displayedRows": {
+                    ...consultBodyTypoSx,
+                    color: "text.primary",
+                  },
                 }}
               />
             </>

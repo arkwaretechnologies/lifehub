@@ -150,7 +150,7 @@ export default function ConsultationWorkspace({ patient }: { patient: Consultati
           variant="contained"
           color="primary"
           startIcon={<ArrowBackIosNewIcon sx={{ fontSize: 14 }} />}
-          onClick={() => router.back()}
+          onClick={() => router.push("/consultation")}
           sx={{ textTransform: "capitalize", borderRadius: 999, px: 2.5 }}
         >
           Back

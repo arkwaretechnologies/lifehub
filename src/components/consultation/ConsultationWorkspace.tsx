@@ -13,8 +13,8 @@ import PlansTreatmentPanel from "./PlansTreatmentPanel";
 import ReviewOfSystemsPanel from "./ReviewOfSystemsPanel";
 
 /** Same UI as `ReviewOfSystemsPanel` — kept so older references to this name still resolve. */
-function PhysicalAssessmentPanel() {
-  return <ReviewOfSystemsPanel />;
+function PhysicalAssessmentPanel({ transId }: { transId: string }) {
+  return <ReviewOfSystemsPanel transId={transId} />;
 }
 
 const PRIMARY_TABS = [
@@ -139,7 +139,13 @@ function AssessmentClinicalDiagnosisPanel() {
   );
 }
 
-export default function ConsultationWorkspace({ patient }: { patient: ConsultationPatient }) {
+export default function ConsultationWorkspace({
+  patient,
+  transId,
+}: {
+  patient: ConsultationPatient;
+  transId: string;
+}) {
   const router = useRouter();
   const [tab, setTab] = useState(0);
 
@@ -196,8 +202,8 @@ export default function ConsultationWorkspace({ patient }: { patient: Consultati
         aria-labelledby={`consultation-tab-${tab}`}
         sx={{ bgcolor: "background.paper", borderRadius: 2, px: { xs: 2, md: 3 }, py: 2, border: "1px solid", borderColor: "divider" }}
       >
-        {tab === 0 && <MedicalHistoryPanel />}
-        {tab === 1 && <PhysicalAssessmentPanel />}
+        {tab === 0 && <MedicalHistoryPanel transId={transId} />}
+        {tab === 1 && <PhysicalAssessmentPanel transId={transId} />}
         {tab === 2 && <PhysiciansRecordPanel />}
         {tab === 3 && <FocusedExamNotesPanel />}
         {tab === 4 && <AssessmentClinicalDiagnosisPanel />}

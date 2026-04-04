@@ -1,11 +1,28 @@
 "use client";
 
-import { Box, Checkbox, FormControlLabel, Grid, Stack, Typography } from "@mui/material";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Alert,
+  Box,
+  Checkbox,
+  CircularProgress,
+  FormControlLabel,
+  Grid,
+  Stack,
+  Typography,
+} from "@mui/material";
 import { consultFormControlLabelSx } from "@/components/consultation/ConsultationSectionTitle";
+import {
+  emptyReviewOfSystemsForm,
+  fetchReviewOfSystems,
+  formFromRowOrDefault,
+  persistReviewOfSystems,
+  type ReviewOfSystemsBooleanKey,
+  type ReviewOfSystemsForm,
+} from "@/lib/reviewOfSystems";
 
 const tabPanelSx = { pt: 0, minHeight: 280 };
 
-/** Checkbox + symptom — matches Physician's Record option labels. */
 const rosItemSx = {
   ...consultFormControlLabelSx,
   ml: 0,
@@ -29,54 +46,143 @@ const sectionBoxSx = {
   boxShadow: "0 1px 2px rgba(15, 23, 42, 0.04)",
 } as const;
 
-/** Fixed label column so every row’s checkboxes start on one vertical line. */
 const LABEL_COL = { xs: 12, sm: 4, md: 3.5 } as const;
 const SYMPTOMS_COL = { xs: 12, sm: 8, md: 8.5 } as const;
 
-type RosLine = { category: string; items: string[] };
+type RosItemConfig = { label: string; keys: readonly ReviewOfSystemsBooleanKey[] };
+type RosLineConfig = { category: string; items: readonly RosItemConfig[] };
 
-const ROS_SECTION_A: RosLine[] = [
-  { category: "Constitutional", items: ["Fever", "Weight loss", "Fatigue"] },
-  { category: "Eyes", items: ["Vision changes", "Redness", "Discharge"] },
+const ROS_SECTION_A: RosLineConfig[] = [
+  {
+    category: "Constitutional",
+    items: [
+      { label: "Fever", keys: ["ros_fever"] },
+      { label: "Weight loss", keys: ["ros_weight_loss"] },
+      { label: "Fatigue", keys: ["ros_fatigue"] },
+    ],
+  },
+  {
+    category: "Eyes",
+    items: [
+      { label: "Vision changes", keys: ["ros_vision_changes"] },
+      { label: "Redness", keys: ["ros_eye_redness"] },
+      { label: "Discharge", keys: ["ros_eye_discharge"] },
+    ],
+  },
   {
     category: "Ears, Nose, Throat",
-    items: ["Hearing changes", "Nasal congestion", "Sore throat"],
+    items: [
+      { label: "Hearing changes", keys: ["ros_hearing_changes"] },
+      { label: "Nasal congestion", keys: ["ros_nasal_congestion"] },
+      { label: "Sore throat", keys: ["ros_sore_throat"] },
+    ],
   },
-  { category: "Cardiovascular", items: ["Chest pain", "Palpitations", "Edema"] },
-  { category: "Respiratory", items: ["Shortness of breath", "Wheezing", "Cough"] },
+  {
+    category: "Cardiovascular",
+    items: [
+      { label: "Chest pain", keys: ["ros_chest_pain"] },
+      { label: "Palpitations", keys: ["ros_palpitations"] },
+      { label: "Edema", keys: ["ros_edema"] },
+    ],
+  },
+  {
+    category: "Respiratory",
+    items: [
+      { label: "Shortness of breath", keys: ["ros_sob"] },
+      { label: "Wheezing", keys: ["ros_wheezing"] },
+      { label: "Cough", keys: ["ros_cough"] },
+    ],
+  },
   {
     category: "Gastrointestinal",
-    items: ["Nausea", "Vomiting", "Diarrhea", "Abdominal pain"],
+    items: [
+      { label: "Nausea", keys: ["ros_nausea"] },
+      { label: "Vomiting", keys: ["ros_vomiting"] },
+      { label: "Diarrhea", keys: ["ros_diarrhea"] },
+      { label: "Abdominal pain", keys: ["ros_abdominal_pain"] },
+    ],
   },
   {
     category: "Genitourinary",
-    items: ["Urinary frequency or urgency", "Incontinence"],
+    items: [
+      {
+        label: "Urinary frequency or urgency",
+        keys: ["ros_urinary_frequency", "ros_urinary_urgency"],
+      },
+      { label: "Incontinence", keys: ["ros_incontinence"] },
+    ],
   },
-  { category: "Musculoskeletal", items: ["Joint pain", "Muscle weakness"] },
-  { category: "Skin/Breast", items: ["Rashes", "Lesions", "Lumps"] },
-  { category: "Neurological", items: ["Headaches", "Dizziness", "Numbness"] },
+  {
+    category: "Musculoskeletal",
+    items: [
+      { label: "Joint pain", keys: ["ros_joint_pain"] },
+      { label: "Muscle weakness", keys: ["ros_muscle_weakness"] },
+    ],
+  },
+  {
+    category: "Skin/Breast",
+    items: [
+      { label: "Rashes", keys: ["ros_rashes"] },
+      { label: "Lesions", keys: ["ros_lesions"] },
+      { label: "Lumps", keys: ["ros_lumps"] },
+    ],
+  },
+  {
+    category: "Neurological",
+    items: [
+      { label: "Headaches", keys: ["ros_headaches"] },
+      { label: "Dizziness", keys: ["ros_dizziness"] },
+      { label: "Numbness", keys: ["ros_numbness"] },
+    ],
+  },
 ];
 
-const ROS_SECTION_B: RosLine[] = [
+const ROS_SECTION_B: RosLineConfig[] = [
   {
     category: "Psychiatric",
-    items: ["Depression", "Anxiety", "Sleep disturbances"],
+    items: [
+      { label: "Depression", keys: ["ros_depression"] },
+      { label: "Anxiety", keys: ["ros_anxiety"] },
+      { label: "Sleep disturbances", keys: ["ros_sleep_disturbances"] },
+    ],
   },
   {
     category: "Endocrine",
-    items: ["Hot flashes", "Intolerance to heat/cold", "Excessive thirst"],
+    items: [
+      { label: "Hot flashes", keys: ["ros_hot_flashes"] },
+      { label: "Intolerance to heat/cold", keys: ["ros_heat_cold_intolerance"] },
+      { label: "Excessive thirst", keys: ["ros_excessive_thirst"] },
+    ],
   },
   {
     category: "Hematologic/Lymphatic",
-    items: ["Easy bruising", "Bleeding", "Swollen glands"],
+    items: [
+      { label: "Easy bruising", keys: ["ros_easy_bruising"] },
+      { label: "Bleeding", keys: ["ros_bleeding"] },
+      { label: "Swollen glands", keys: ["ros_swollen_glands"] },
+    ],
   },
   {
     category: "Immunology",
-    items: ["Seasonal allergies", "Frequent infections", "Hives/rashes"],
+    items: [
+      { label: "Seasonal allergies", keys: ["ros_seasonal_allergies"] },
+      { label: "Frequent infections", keys: ["ros_frequent_infections"] },
+      { label: "Hives/rashes", keys: ["ros_hives_rashes"] },
+    ],
   },
 ];
 
-function RosRow({ line }: { line: RosLine }) {
+function RosRow({
+  line,
+  form,
+  disabled,
+  onToggleKeys,
+}: {
+  line: RosLineConfig;
+  form: ReviewOfSystemsForm;
+  disabled: boolean;
+  onToggleKeys: (keys: readonly ReviewOfSystemsBooleanKey[], checked: boolean) => void;
+}) {
   return (
     <Grid container spacing={{ xs: 0.75, sm: 2 }} alignItems="flex-start" columnSpacing={{ sm: 2 }}>
       <Grid size={LABEL_COL}>
@@ -105,31 +211,126 @@ function RosRow({ line }: { line: RosLine }) {
             pl: { xs: 0, sm: 0.5 },
           }}
         >
-          {line.items.map((item) => (
-            <FormControlLabel
-              key={item}
-              control={<Checkbox size="small" />}
-              label={item}
-              sx={rosItemSx}
-            />
-          ))}
+          {line.items.map((item) => {
+            const checked = item.keys.some((k) => form[k]);
+            return (
+              <FormControlLabel
+                key={item.label}
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={checked}
+                    disabled={disabled}
+                    onChange={(_, c) => onToggleKeys(item.keys, c)}
+                  />
+                }
+                label={item.label}
+                sx={rosItemSx}
+              />
+            );
+          })}
         </Box>
       </Grid>
     </Grid>
   );
 }
 
-function RosSection({ lines }: { lines: RosLine[] }) {
+function RosSection({
+  lines,
+  form,
+  disabled,
+  onToggleKeys,
+}: {
+  lines: RosLineConfig[];
+  form: ReviewOfSystemsForm;
+  disabled: boolean;
+  onToggleKeys: (keys: readonly ReviewOfSystemsBooleanKey[], checked: boolean) => void;
+}) {
   return (
     <Stack spacing={{ xs: 2, sm: 2.5 }}>
       {lines.map((line) => (
-        <RosRow key={line.category} line={line} />
+        <RosRow
+          key={line.category}
+          line={line}
+          form={form}
+          disabled={disabled}
+          onToggleKeys={onToggleKeys}
+        />
       ))}
     </Stack>
   );
 }
 
-export default function ReviewOfSystemsPanel() {
+export default function ReviewOfSystemsPanel({ transId }: { transId: string }) {
+  const [form, setForm] = useState<ReviewOfSystemsForm>(() => emptyReviewOfSystemsForm());
+  const [rowId, setRowId] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const [saveError, setSaveError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setLoadError("");
+    void (async () => {
+      const { row, error } = await fetchReviewOfSystems(transId);
+      if (cancelled) return;
+      setLoading(false);
+      if (error) {
+        setLoadError(error);
+        setForm(emptyReviewOfSystemsForm());
+        setRowId(null);
+      } else {
+        setRowId(row?.id ?? null);
+        setForm(formFromRowOrDefault(row));
+      }
+      setHydrated(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [transId]);
+
+  const onToggleKeys = useCallback((keys: readonly ReviewOfSystemsBooleanKey[], checked: boolean) => {
+    setForm((prev) => {
+      const next = { ...prev };
+      for (const k of keys) {
+        next[k] = checked;
+      }
+      return next;
+    });
+  }, []);
+
+  const runPersist = useCallback(async () => {
+    if (!hydrated) return;
+    setSaveError("");
+    setSaving(true);
+    const { rowId: newId, error } = await persistReviewOfSystems(transId, rowId, form);
+    setSaving(false);
+    if (error) {
+      setSaveError(error);
+      return;
+    }
+    if (newId && !rowId) {
+      setRowId(newId);
+    }
+  }, [hydrated, transId, rowId, form]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      saveTimerRef.current = null;
+      void runPersist();
+    }, 650);
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, [hydrated, form, runPersist]);
+
   return (
     <Box sx={tabPanelSx}>
       <Box
@@ -148,12 +349,42 @@ export default function ReviewOfSystemsPanel() {
         </Typography>
       </Box>
 
+      {loadError ? (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {loadError}
+        </Alert>
+      ) : null}
+      {saveError ? (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setSaveError("")}>
+          {saveError}
+        </Alert>
+      ) : null}
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2, minHeight: 24 }}>
+        {loading ? (
+          <CircularProgress size={18} />
+        ) : saving ? (
+          <Typography variant="caption" color="text.secondary">
+            Saving…
+          </Typography>
+        ) : null}
+      </Box>
+
       <Box sx={sectionBoxSx}>
-        <RosSection lines={ROS_SECTION_A} />
+        <RosSection
+          lines={ROS_SECTION_A}
+          form={form}
+          disabled={loading}
+          onToggleKeys={onToggleKeys}
+        />
       </Box>
 
       <Box sx={{ ...sectionBoxSx, mb: 0 }}>
-        <RosSection lines={ROS_SECTION_B} />
+        <RosSection
+          lines={ROS_SECTION_B}
+          form={form}
+          disabled={loading}
+          onToggleKeys={onToggleKeys}
+        />
       </Box>
     </Box>
   );

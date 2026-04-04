@@ -11,5 +11,5 @@ export default async function ConsultationEncounterPage({
   const patient = await fetchEncounterWorkspacePatient(encounterId);
   if (!patient) notFound();
 
-  return <ConsultationWorkspace patient={patient} />;
+  return <ConsultationWorkspace patient={patient} transId={encounterId} />;
 }

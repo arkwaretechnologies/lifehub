@@ -9,6 +9,7 @@ import type { ConsultationPatient } from "./consultationTypes";
 import MedicalHistoryPanel from "./MedicalHistoryPanel";
 import PatientInformationBanner from "./PatientInformationBanner";
 import PhysiciansRecordPanel from "./PhysiciansRecordPanel";
+import PlansTreatmentPanel from "./PlansTreatmentPanel";
 import ReviewOfSystemsPanel from "./ReviewOfSystemsPanel";
 
 /** Same UI as `ReviewOfSystemsPanel` — kept so older references to this name still resolve. */
@@ -22,6 +23,7 @@ const PRIMARY_TABS = [
   "Physician's record",
   "Focused exam / notes",
   "Assessment / diagnosis",
+  "Plans / treatment",
 ] as const;
 
 const tabPanelSx = {
@@ -199,6 +201,7 @@ export default function ConsultationWorkspace({ patient }: { patient: Consultati
         {tab === 2 && <PhysiciansRecordPanel />}
         {tab === 3 && <FocusedExamNotesPanel />}
         {tab === 4 && <AssessmentClinicalDiagnosisPanel />}
+        {tab === 5 && <PlansTreatmentPanel />}
       </Box>
 
       <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 2, textAlign: "center" }}>

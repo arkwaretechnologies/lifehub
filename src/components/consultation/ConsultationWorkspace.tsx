@@ -25,10 +25,16 @@ import SearchIcon from "@mui/icons-material/Search";
 import type { ConsultationPatient } from "./consultationTypes";
 import MedicalHistoryPanel from "./MedicalHistoryPanel";
 import PatientInformationBanner from "./PatientInformationBanner";
+import ReviewOfSystemsPanel from "./ReviewOfSystemsPanel";
+
+/** Same UI as `ReviewOfSystemsPanel` — kept so older references to this name still resolve. */
+function PhysicalAssessmentPanel() {
+  return <ReviewOfSystemsPanel />;
+}
 
 const PRIMARY_TABS = [
   "Medical history",
-  "Physical assessment",
+  "Review of systems",
   "Allergy",
   "Orders",
   "Investigations",
@@ -45,33 +51,6 @@ const tabPanelSx = {
 
 function a11yProps(index: number) {
   return { id: `consultation-tab-${index}`, "aria-controls": `consultation-tabpanel-${index}` };
-}
-
-function PhysicalAssessmentPanel() {
-  return (
-    <Box sx={tabPanelSx}>
-      <Typography variant="subtitle2" color="info.main" fontWeight={700} gutterBottom>
-        Vital signs
-      </Typography>
-      <Grid container spacing={2} sx={{ mb: 3 }}>
-        {["BP", "HR", "RR", "Temp", "O2 Sat", "Pain scale (0–10)"].map((label) => (
-          <Grid key={label} size={{ xs: 6, md: 4 }}>
-            <TextField fullWidth size="small" label={label} placeholder="—" />
-          </Grid>
-        ))}
-      </Grid>
-      <Typography variant="subtitle2" color="info.main" fontWeight={700} gutterBottom>
-        Anthropometric
-      </Typography>
-      <Grid container spacing={2}>
-        {["Weight", "Height", "BMI"].map((label) => (
-          <Grid key={label} size={{ xs: 6, md: 4 }}>
-            <TextField fullWidth size="small" label={label} placeholder="—" />
-          </Grid>
-        ))}
-      </Grid>
-    </Box>
-  );
 }
 
 function AllergyPanel() {
@@ -220,33 +199,17 @@ function DocumentsPanel() {
   );
 }
 
-const ROS_GROUPS: { title: string; items: string[] }[] = [
-  { title: "Constitutional", items: ["Fever", "Weight loss", "Fatigue"] },
-  { title: "Eyes", items: ["Vision changes", "Redness", "Discharge"] },
-  { title: "Cardiovascular", items: ["Chest pain", "Palpitations", "Edema"] },
-  { title: "Respiratory", items: ["Shortness of breath", "Wheezing", "Cough"] },
-];
-
 function EmrPanel() {
   return (
     <Box sx={tabPanelSx}>
-      <Typography variant="subtitle2" color="info.main" fontWeight={700} gutterBottom>
-        Review of systems
+      <Typography variant="subtitle1" fontWeight={600} sx={{ mb: 2, color: "text.primary" }}>
+        EMR notes
       </Typography>
-      <Grid container spacing={2}>
-        {ROS_GROUPS.map((g) => (
-          <Grid key={g.title} size={{ xs: 12, md: 6 }}>
-            <Typography variant="caption" fontWeight={700} color="text.secondary" display="block" sx={{ mb: 0.5 }}>
-              {g.title}
-            </Typography>
-            <Box sx={{ display: "flex", flexDirection: "column", gap: 0 }}>
-              {g.items.map((item) => (
-                <FormControlLabel key={item} control={<Checkbox size="small" />} label={item} />
-              ))}
-            </Box>
-          </Grid>
-        ))}
-      </Grid>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        Use the <strong>Review of systems</strong> tab for the structured ROS checklist. Add narrative notes,
+        links, or follow-up items here.
+      </Typography>
+      <TextField fullWidth multiline minRows={8} label="Additional documentation" placeholder="Enter notes…" />
     </Box>
   );
 }

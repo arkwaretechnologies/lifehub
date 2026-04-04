@@ -1,23 +1,19 @@
 "use client";
 
 import { Box, Checkbox, FormControlLabel, Grid, Stack, Typography } from "@mui/material";
+import { consultFormControlLabelSx } from "@/components/consultation/ConsultationSectionTitle";
 
 const tabPanelSx = { pt: 0, minHeight: 280 };
 
-/** Checkbox + symptom — even spacing, no commas. */
+/** Checkbox + symptom — matches Physician's Record option labels. */
 const rosItemSx = {
-  m: 0,
-  mr: 0,
+  ...consultFormControlLabelSx,
   ml: 0,
-  alignItems: "center",
-  gap: 0,
-  columnGap: 0.25,
   width: "auto",
   flexShrink: 0,
-  "& .MuiCheckbox-root": { padding: "4px" },
   "& .MuiFormControlLabel-label": {
-    fontSize: "0.875rem",
-    fontWeight: 400,
+    fontSize: "0.8125rem",
+    fontWeight: 500,
     color: "text.primary",
     pl: 0,
   },
@@ -25,7 +21,7 @@ const rosItemSx = {
 
 const sectionBoxSx = {
   border: "1px solid",
-  borderColor: "divider",
+  borderColor: "info.main",
   borderRadius: 1,
   p: { xs: 2, sm: 2.5 },
   bgcolor: "background.paper",
@@ -147,7 +143,7 @@ export default function ReviewOfSystemsPanel() {
           textAlign: "center",
         }}
       >
-        <Typography variant="subtitle1" fontWeight={800} letterSpacing="0.12em">
+        <Typography variant="subtitle1" fontWeight={800} letterSpacing="0.1em">
           REVIEW OF SYSTEMS
         </Typography>
       </Box>

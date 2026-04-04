@@ -1,6 +1,5 @@
 "use client";
 
-import type { ReactNode } from "react";
 import {
   Box,
   Checkbox,
@@ -10,7 +9,10 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import type { SxProps, Theme } from "@mui/material/styles";
+import {
+  ConsultationSectionTitle,
+  consultFormControlLabelSx,
+} from "@/components/consultation/ConsultationSectionTitle";
 
 const tabPanelSx = { pt: 0, minHeight: 280 };
 
@@ -24,19 +26,6 @@ const headerBarSx = {
   textAlign: "center",
 } as const;
 
-function PeSectionTitle({ children, sx }: { children: ReactNode; sx?: SxProps<Theme> }) {
-  return (
-    <Typography
-      variant="body2"
-      fontWeight={700}
-      color="info.main"
-      sx={{ letterSpacing: "0.02em", display: "block", mb: 1, ...sx }}
-    >
-      {children}
-    </Typography>
-  );
-}
-
 const peColumnSx = {
   border: "1px solid",
   borderColor: "info.main",
@@ -44,19 +33,6 @@ const peColumnSx = {
   p: { xs: 1.5, sm: 2 },
   bgcolor: "background.paper",
   height: "100%",
-} as const;
-
-const checkboxRowSx = {
-  m: 0,
-  alignItems: "center",
-  gap: 0,
-  columnGap: 0.25,
-  "& .MuiCheckbox-root": { padding: "4px" },
-  "& .MuiFormControlLabel-label": {
-    fontSize: "0.8125rem",
-    fontWeight: 500,
-    color: "text.primary",
-  },
 } as const;
 
 function CheckboxRow({ items }: { items: string[] }) {
@@ -76,7 +52,7 @@ function CheckboxRow({ items }: { items: string[] }) {
           key={item}
           control={<Checkbox size="small" />}
           label={item}
-          sx={checkboxRowSx}
+          sx={consultFormControlLabelSx}
         />
       ))}
     </Box>
@@ -86,7 +62,7 @@ function CheckboxRow({ items }: { items: string[] }) {
 function PeBlock({ title, items }: { title: string; items: string[] }) {
   return (
     <Box sx={{ mb: 2 }}>
-      <PeSectionTitle>{title}</PeSectionTitle>
+      <ConsultationSectionTitle dense>{title}</ConsultationSectionTitle>
       <CheckboxRow items={items} />
       <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ mt: 1, display: "block" }}>
         OTHERS
@@ -180,7 +156,7 @@ export default function PhysiciansRecordPanel() {
               />
             </Box>
 
-            <PeSectionTitle>EXTREMITIES / MSK</PeSectionTitle>
+            <ConsultationSectionTitle dense>EXTREMITIES / MSK</ConsultationSectionTitle>
             <CheckboxRow items={["EDEMA", "ULCERS"]} />
             <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ mt: 1, display: "block" }}>
               OTHERS
@@ -201,7 +177,7 @@ export default function PhysiciansRecordPanel() {
               NEUROLOGIC EXAMINATION
             </Typography>
 
-            <PeSectionTitle>MMS</PeSectionTitle>
+            <ConsultationSectionTitle dense>MMS</ConsultationSectionTitle>
             <CheckboxRow
               items={[
                 "ALERT",
@@ -213,10 +189,12 @@ export default function PhysiciansRecordPanel() {
               ]}
             />
 
-            <PeSectionTitle sx={{ mt: 2 }}>CEREBRAL</PeSectionTitle>
+            <ConsultationSectionTitle dense sx={{ mt: 2 }}>
+              CEREBRAL
+            </ConsultationSectionTitle>
             <TextField variant="standard" fullWidth size="small" placeholder=" " sx={{ mb: 2 }} hiddenLabel />
 
-            <PeSectionTitle>CNS</PeSectionTitle>
+            <ConsultationSectionTitle dense>CNS</ConsultationSectionTitle>
             <Box sx={{ display: "flex", flexDirection: "column", gap: 1, mb: 2 }}>
               {CNS_LINES.map((row) => (
                 <Box
@@ -237,13 +215,13 @@ export default function PhysiciansRecordPanel() {
               ))}
             </Box>
 
-            <PeSectionTitle>CEREBELLAR</PeSectionTitle>
+            <ConsultationSectionTitle dense>CEREBELLAR</ConsultationSectionTitle>
             <TextField variant="standard" fullWidth size="small" placeholder=" " sx={{ mb: 2 }} hiddenLabel />
 
-            <PeSectionTitle>MOTOR STRENGTH</PeSectionTitle>
+            <ConsultationSectionTitle dense>MOTOR STRENGTH</ConsultationSectionTitle>
             <TextField variant="standard" fullWidth size="small" placeholder=" " sx={{ mb: 2 }} hiddenLabel />
 
-            <PeSectionTitle>SENSORY/REFLEXES</PeSectionTitle>
+            <ConsultationSectionTitle dense>SENSORY/REFLEXES</ConsultationSectionTitle>
             <TextField variant="standard" fullWidth size="small" placeholder=" " hiddenLabel />
           </Box>
         </Grid>

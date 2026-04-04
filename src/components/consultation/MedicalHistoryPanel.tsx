@@ -140,7 +140,9 @@ function InlineField({
   const fid = `${idPrefix}-${suffix}`;
   return (
     <>
-      <FormFieldLabel htmlFor={fid}>{label}</FormFieldLabel>
+      <FormFieldLabel htmlFor={fid} variant="consultation">
+        {label}
+      </FormFieldLabel>
       <TextField id={fid} hiddenLabel placeholder="____" {...commonFieldProps} sx={fieldInputSx} />
     </>
   );
@@ -393,7 +395,7 @@ export default function MedicalHistoryPanel() {
                 />
               </Box>
             </Box>
-            <FormFieldLabel htmlFor={`${idPrefix}-reaction`}>
+            <FormFieldLabel htmlFor={`${idPrefix}-reaction`} variant="consultation">
               Reaction type (e.g. rash, anaphylaxis)
             </FormFieldLabel>
             <TextField
@@ -407,7 +409,7 @@ export default function MedicalHistoryPanel() {
             />
 
             <Box sx={{ mt: 2.5 }}>
-              <SubsectionTitle>Current medications</SubsectionTitle>
+              <ConsultationSubsectionTitle>Current medications</ConsultationSubsectionTitle>
               <TextField
                 id={`${idPrefix}-meds-1`}
                 hiddenLabel
@@ -429,10 +431,16 @@ export default function MedicalHistoryPanel() {
             </Box>
           </Box>
 
-          <Typography {...sectionTitleSx}>Social history</Typography>
+          <ConsultationSectionTitle>Social history</ConsultationSectionTitle>
           <Box>
             <Box sx={{ mb: 2 }}>
-              <Typography component="p" variant="body2" fontWeight={600} sx={{ mb: 0.5, color: "text.primary" }}>
+              <Typography
+                component="p"
+                variant="body2"
+                fontWeight={700}
+                color="info.main"
+                sx={{ mb: 0.5, letterSpacing: "0.02em" }}
+              >
                 Smoking
               </Typography>
               <RadioGroup row sx={{ mb: 1, ...yesNoRadioRowSx }}>
@@ -442,7 +450,13 @@ export default function MedicalHistoryPanel() {
               <InlineField idPrefix={idPrefix} suffix="pack-years" label="Pack years" />
             </Box>
             <Box sx={{ mb: 2 }}>
-              <Typography component="p" variant="body2" fontWeight={600} sx={{ mb: 0.5, color: "text.primary" }}>
+              <Typography
+                component="p"
+                variant="body2"
+                fontWeight={700}
+                color="info.main"
+                sx={{ mb: 0.5, letterSpacing: "0.02em" }}
+              >
                 Alcohol
               </Typography>
               <RadioGroup row sx={{ mb: 1, ...yesNoRadioRowSx }}>
@@ -452,7 +466,13 @@ export default function MedicalHistoryPanel() {
               <InlineField idPrefix={idPrefix} suffix="alcohol-years" label="Years" />
             </Box>
             <Box>
-              <Typography component="p" variant="body2" fontWeight={600} sx={{ mb: 0.5, color: "text.primary" }}>
+              <Typography
+                component="p"
+                variant="body2"
+                fontWeight={700}
+                color="info.main"
+                sx={{ mb: 0.5, letterSpacing: "0.02em" }}
+              >
                 Drugs
               </Typography>
               <RadioGroup row sx={yesNoRadioRowSx}>
@@ -462,9 +482,7 @@ export default function MedicalHistoryPanel() {
             </Box>
           </Box>
 
-          <Typography variant="subtitle1" fontWeight={600} sx={{ mb: 2, color: "text.primary", mt: 2 }}>
-            Obstetric
-          </Typography>
+          <ConsultationSectionTitle sx={{ mt: 2 }}>Obstetric</ConsultationSectionTitle>
           <FormControlLabel
             control={<Checkbox size="small" />}
             label="N/A"
@@ -475,7 +493,13 @@ export default function MedicalHistoryPanel() {
               <InlineField idPrefix={idPrefix} suffix="lmp" label="LMP" />
             </Grid>
             <Grid size={{ xs: 6 }}>
-              <Typography component="p" variant="body2" fontWeight={600} sx={{ mb: 0.5, color: "text.primary" }}>
+              <Typography
+                component="p"
+                variant="body2"
+                fontWeight={700}
+                color="info.main"
+                sx={{ mb: 0.5, letterSpacing: "0.02em" }}
+              >
                 Pregnant
               </Typography>
               <RadioGroup row sx={yesNoRadioRowSx}>
@@ -495,7 +519,12 @@ export default function MedicalHistoryPanel() {
               <InlineField idPrefix={idPrefix} suffix="wks" label="WKS" />
             </Grid>
           </Grid>
-          <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5, color: "text.primary" }}>
+          <Typography
+            variant="body2"
+            fontWeight={700}
+            color="info.main"
+            sx={{ mb: 0.5, letterSpacing: "0.02em" }}
+          >
             BY
           </Typography>
           <Box sx={{ display: "flex", gap: 2, mb: 1.5 }}>
@@ -509,7 +538,7 @@ export default function MedicalHistoryPanel() {
                   <TableCell
                     key={`gp-${idx}`}
                     align="center"
-                    sx={{ textTransform: "uppercase", fontWeight: 700, py: 0.5 }}
+                    sx={{ textTransform: "uppercase", fontWeight: 700, py: 0.5, color: "info.main" }}
                   >
                     {h}
                   </TableCell>
@@ -548,7 +577,13 @@ export default function MedicalHistoryPanel() {
               <InlineField idPrefix={idPrefix} suffix="efw" label="EFW (g)" />
             </Grid>
           </Grid>
-          <Typography component="p" variant="body2" fontWeight={600} sx={{ mb: 0.5, color: "text.primary" }}>
+          <Typography
+            component="p"
+            variant="body2"
+            fontWeight={700}
+            color="info.main"
+            sx={{ mb: 0.5, letterSpacing: "0.02em" }}
+          >
             PNC
           </Typography>
           <RadioGroup row sx={yesNoRadioRowSx}>

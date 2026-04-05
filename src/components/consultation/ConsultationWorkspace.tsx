@@ -2,10 +2,13 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Box, Button, Tab, Tabs, TextField, Typography } from "@mui/material";
+import { Box, Button, Tab, Tabs, Typography } from "@mui/material";
 import ArrowBackIosNewIcon from "@mui/icons-material/ArrowBackIosNew";
 import CheckIcon from "@mui/icons-material/Check";
 import type { ConsultationPatient } from "./consultationTypes";
+import { ConsultationActiveTabContext } from "./consultationTabContext";
+import AssessmentDiagnosisPanel from "./AssessmentDiagnosisPanel";
+import FocusedExamNotesPanel from "./FocusedExamNotesPanel";
 import MedicalHistoryPanel from "./MedicalHistoryPanel";
 import PatientInformationBanner from "./PatientInformationBanner";
 import PhysiciansRecordPanel from "./PhysiciansRecordPanel";
@@ -26,117 +29,8 @@ const PRIMARY_TABS = [
   "Plans / treatment",
 ] as const;
 
-const tabPanelSx = {
-  pt: 2,
-  minHeight: 280,
-};
-
 function a11yProps(index: number) {
   return { id: `consultation-tab-${index}`, "aria-controls": `consultation-tabpanel-${index}` };
-}
-
-function FocusedExamNotesPanel() {
-  return (
-    <Box sx={tabPanelSx}>
-      <Box
-        sx={{
-          border: "1px solid",
-          borderColor: "grey.900",
-          borderRadius: 1,
-          overflow: "hidden",
-          bgcolor: "background.paper",
-        }}
-      >
-        <Box
-          sx={{
-            bgcolor: "info.main",
-            color: "info.contrastText",
-            py: 1.25,
-            px: 2,
-            textAlign: "center",
-          }}
-        >
-          <Typography variant="subtitle1" fontWeight={800} letterSpacing="0.1em">
-            FOCUSED PHYSICAL EXAM/ FURTHER NOTES
-          </Typography>
-        </Box>
-        <TextField
-          fullWidth
-          multiline
-          minRows={14}
-          placeholder=" "
-          hiddenLabel
-          variant="outlined"
-          sx={{
-            "& .MuiOutlinedInput-root": {
-              borderRadius: 0,
-              bgcolor: "background.paper",
-              "& fieldset": { border: "none" },
-              "&:hover fieldset": { border: "none" },
-              "&.Mui-focused fieldset": { border: "none" },
-            },
-            "& .MuiInputBase-input": {
-              py: 2,
-              px: 2,
-              alignItems: "flex-start",
-            },
-          }}
-        />
-      </Box>
-    </Box>
-  );
-}
-
-function AssessmentClinicalDiagnosisPanel() {
-  return (
-    <Box sx={tabPanelSx}>
-      <Box
-        sx={{
-          border: "1px solid",
-          borderColor: "grey.900",
-          borderRadius: 1,
-          overflow: "hidden",
-          bgcolor: "background.paper",
-        }}
-      >
-        <Box
-          sx={{
-            bgcolor: "info.main",
-            color: "info.contrastText",
-            py: 1.25,
-            px: 2,
-            textAlign: "center",
-          }}
-        >
-          <Typography variant="subtitle1" fontWeight={800} letterSpacing="0.1em">
-            ASSESSMENT/ CLINICAL DIAGNOSIS
-          </Typography>
-        </Box>
-        <TextField
-          fullWidth
-          multiline
-          minRows={14}
-          placeholder=" "
-          hiddenLabel
-          variant="outlined"
-          sx={{
-            "& .MuiOutlinedInput-root": {
-              borderRadius: 0,
-              bgcolor: "background.paper",
-              "& fieldset": { border: "none" },
-              "&:hover fieldset": { border: "none" },
-              "&.Mui-focused fieldset": { border: "none" },
-            },
-            "& .MuiInputBase-input": {
-              py: 2,
-              px: 2,
-              alignItems: "flex-start",
-            },
-          }}
-        />
-      </Box>
-    </Box>
-  );
 }
 
 export default function ConsultationWorkspace({
@@ -196,19 +90,73 @@ export default function ConsultationWorkspace({
         </Tabs>
       </Box>
 
-      <Box
-        role="tabpanel"
-        id={`consultation-tabpanel-${tab}`}
-        aria-labelledby={`consultation-tab-${tab}`}
-        sx={{ bgcolor: "background.paper", borderRadius: 2, px: { xs: 2, md: 3 }, py: 2, border: "1px solid", borderColor: "divider" }}
-      >
-        {tab === 0 && <MedicalHistoryPanel transId={transId} />}
-        {tab === 1 && <PhysicalAssessmentPanel transId={transId} />}
-        {tab === 2 && <PhysiciansRecordPanel />}
-        {tab === 3 && <FocusedExamNotesPanel />}
-        {tab === 4 && <AssessmentClinicalDiagnosisPanel />}
-        {tab === 5 && <PlansTreatmentPanel />}
-      </Box>
+      <ConsultationActiveTabContext.Provider value={tab}>
+        <Box
+          sx={{
+            bgcolor: "background.paper",
+            borderRadius: 2,
+            px: { xs: 2, md: 3 },
+            py: 2,
+            border: "1px solid",
+            borderColor: "divider",
+          }}
+        >
+          <Box
+            role="tabpanel"
+            id="consultation-tabpanel-0"
+            aria-labelledby="consultation-tab-0"
+            hidden={tab !== 0}
+            sx={{ display: tab === 0 ? "block" : "none" }}
+          >
+            <MedicalHistoryPanel transId={transId} />
+          </Box>
+          <Box
+            role="tabpanel"
+            id="consultation-tabpanel-1"
+            aria-labelledby="consultation-tab-1"
+            hidden={tab !== 1}
+            sx={{ display: tab === 1 ? "block" : "none" }}
+          >
+            <PhysicalAssessmentPanel transId={transId} />
+          </Box>
+          <Box
+            role="tabpanel"
+            id="consultation-tabpanel-2"
+            aria-labelledby="consultation-tab-2"
+            hidden={tab !== 2}
+            sx={{ display: tab === 2 ? "block" : "none" }}
+          >
+            <PhysiciansRecordPanel transId={transId} />
+          </Box>
+          <Box
+            role="tabpanel"
+            id="consultation-tabpanel-3"
+            aria-labelledby="consultation-tab-3"
+            hidden={tab !== 3}
+            sx={{ display: tab === 3 ? "block" : "none" }}
+          >
+            <FocusedExamNotesPanel transId={transId} />
+          </Box>
+          <Box
+            role="tabpanel"
+            id="consultation-tabpanel-4"
+            aria-labelledby="consultation-tab-4"
+            hidden={tab !== 4}
+            sx={{ display: tab === 4 ? "block" : "none" }}
+          >
+            <AssessmentDiagnosisPanel transId={transId} />
+          </Box>
+          <Box
+            role="tabpanel"
+            id="consultation-tabpanel-5"
+            aria-labelledby="consultation-tab-5"
+            hidden={tab !== 5}
+            sx={{ display: tab === 5 ? "block" : "none" }}
+          >
+            <PlansTreatmentPanel transId={transId} />
+          </Box>
+        </Box>
+      </ConsultationActiveTabContext.Provider>
 
       <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 2, textAlign: "center" }}>
         Form: LH-HPE-001 · LifeHub Medical & Diagnostic Center

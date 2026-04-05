@@ -124,16 +124,30 @@ export async function fetchVitalSigns(transId: string): Promise<{
   return { row: (data as VitalSignsRow) ?? null, error: null };
 }
 
+/** Vitals + anthropometrics share one row; resolve id if the other panel created it first. */
+async function resolveVitalSignsRowId(transId: string, hintId: string | null): Promise<string | null> {
+  if (hintId) return hintId;
+  const { data, error } = await supabase
+    .from(VITAL_SIGNS_TABLE)
+    .select("id")
+    .eq("trans_id", transId)
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return null;
+  return (data as { id: string }).id;
+}
+
 export async function persistVitalSigns(
   transId: string,
   existingRowId: string | null,
   input: VitalSignsInputState
 ): Promise<{ rowId: string | null; error: string | null }> {
   const vital = inputStateToVitalPayload(input);
+  const id = await resolveVitalSignsRowId(transId, existingRowId);
 
-  if (existingRowId) {
-    const { error } = await supabase.from(VITAL_SIGNS_TABLE).update(vital).eq("id", existingRowId);
-    return { rowId: existingRowId, error: error?.message ?? null };
+  if (id) {
+    const { error } = await supabase.from(VITAL_SIGNS_TABLE).update(vital).eq("id", id);
+    return { rowId: id, error: error?.message ?? null };
   }
 
   const { data, error } = await supabase
@@ -151,10 +165,82 @@ export async function persistVitalSigns(
   if (error) {
     return { rowId: null, error: error.message };
   }
-  const id = (data as { id?: string } | null)?.id ?? null;
-  return { rowId: id, error: null };
+  const newId = (data as { id?: string } | null)?.id ?? null;
+  return { rowId: newId, error: null };
 }
 
 export function inputStateFromRowOrDefault(row: VitalSignsRow | null): VitalSignsInputState {
   return rowToInputState(row);
+}
+
+/** Anthropometric row in Medical History (same `vital_signs` row as vitals). */
+export type AnthropometricInputState = {
+  weight_kg: string;
+  height_cm: string;
+  bmi: string;
+};
+
+export function emptyAnthropometricInput(): AnthropometricInputState {
+  return { weight_kg: "", height_cm: "", bmi: "" };
+}
+
+export function anthropometricFromRowOrDefault(row: VitalSignsRow | null): AnthropometricInputState {
+  if (!row) return emptyAnthropometricInput();
+  return {
+    weight_kg: row.weight_kg != null ? String(row.weight_kg) : "",
+    height_cm: row.height_cm != null ? String(row.height_cm) : "",
+    bmi: row.bmi != null ? String(row.bmi) : "",
+  };
+}
+
+type AnthropometricPayload = {
+  weight_kg: number | null;
+  height_cm: number | null;
+  bmi: number | null;
+  recorded_at: string;
+};
+
+function anthropometricToPayload(state: AnthropometricInputState): AnthropometricPayload {
+  return {
+    weight_kg: parseDecimal(state.weight_kg),
+    height_cm: parseDecimal(state.height_cm),
+    bmi: parseDecimal(state.bmi),
+    recorded_at: new Date().toISOString(),
+  };
+}
+
+export async function persistAnthropometrics(
+  transId: string,
+  existingRowId: string | null,
+  state: AnthropometricInputState
+): Promise<{ rowId: string | null; error: string | null }> {
+  const payload = anthropometricToPayload(state);
+  const id = await resolveVitalSignsRowId(transId, existingRowId);
+
+  if (id) {
+    const { error } = await supabase.from(VITAL_SIGNS_TABLE).update(payload).eq("id", id);
+    return { rowId: id, error: error?.message ?? null };
+  }
+
+  const { data, error } = await supabase
+    .from(VITAL_SIGNS_TABLE)
+    .insert({
+      trans_id: transId,
+      bp_systolic: null,
+      bp_diastolic: null,
+      heart_rate: null,
+      respiratory_rate: null,
+      temperature: null,
+      o2_saturation: null,
+      pain_scale: null,
+      ...payload,
+    })
+    .select("id")
+    .single();
+
+  if (error) {
+    return { rowId: null, error: error.message };
+  }
+  const newId = (data as { id?: string } | null)?.id ?? null;
+  return { rowId: newId, error: null };
 }

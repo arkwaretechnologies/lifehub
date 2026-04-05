@@ -46,6 +46,14 @@ export type EncounterRow = {
   encounter_time: string | null;
   queue_no: string | null;
   chief_complaint: string | null;
+  history_of_present_illness?: string | null;
+  clinical_diagnosis?: string | null;
+  plan_labs?: boolean | null;
+  plan_imaging?: boolean | null;
+  plan_medications?: boolean | null;
+  plan_referral?: boolean | null;
+  plan_notes?: string | null;
+  disposition?: string | null;
   referring_physician: number | null;
   physician_id: number | null;
 };
@@ -351,4 +359,242 @@ export async function fetchEncounterWorkspacePatient(encounterId: string): Promi
   profile.referringPhysician = referringForEncounterBanner(row, patient, userLabelById);
 
   return buildConsultationPatient(profile, encounterToSummary(row));
+}
+
+export type EncounterPhysicianRecordForm = {
+  chief_complaint: string;
+  history_of_present_illness: string;
+};
+
+export async function fetchEncounterPhysicianRecord(transId: string): Promise<{
+  form: EncounterPhysicianRecordForm;
+  error: string | null;
+}> {
+  const id = transId.trim();
+  if (!isUuid(id)) {
+    return {
+      form: { chief_complaint: "", history_of_present_illness: "" },
+      error: "Invalid encounter.",
+    };
+  }
+
+  const { data, error } = await supabase
+    .from(ENCOUNTERS_TABLE)
+    .select("chief_complaint, history_of_present_illness")
+    .eq("trans_id", id)
+    .maybeSingle();
+
+  if (error) {
+    return {
+      form: { chief_complaint: "", history_of_present_illness: "" },
+      error: error.message,
+    };
+  }
+
+  const row = data as {
+    chief_complaint?: string | null;
+    history_of_present_illness?: string | null;
+  } | null;
+
+  return {
+    form: {
+      chief_complaint: row?.chief_complaint ?? "",
+      history_of_present_illness: row?.history_of_present_illness ?? "",
+    },
+    error: null,
+  };
+}
+
+export async function persistEncounterPhysicianRecord(
+  transId: string,
+  form: EncounterPhysicianRecordForm
+): Promise<{ error: string | null }> {
+  const id = transId.trim();
+  if (!isUuid(id)) {
+    return { error: "Invalid encounter." };
+  }
+
+  const cc = form.chief_complaint.trim();
+  const hpi = form.history_of_present_illness.trim();
+
+  const { error } = await supabase
+    .from(ENCOUNTERS_TABLE)
+    .update({
+      chief_complaint: cc || null,
+      history_of_present_illness: hpi || null,
+    })
+    .eq("trans_id", id);
+
+  return { error: error?.message ?? null };
+}
+
+export type EncounterAssessmentDiagnosisForm = {
+  clinical_diagnosis: string;
+};
+
+export async function fetchEncounterClinicalDiagnosis(transId: string): Promise<{
+  form: EncounterAssessmentDiagnosisForm;
+  error: string | null;
+}> {
+  const id = transId.trim();
+  if (!isUuid(id)) {
+    return { form: { clinical_diagnosis: "" }, error: "Invalid encounter." };
+  }
+
+  const { data, error } = await supabase
+    .from(ENCOUNTERS_TABLE)
+    .select("clinical_diagnosis")
+    .eq("trans_id", id)
+    .maybeSingle();
+
+  if (error) {
+    return { form: { clinical_diagnosis: "" }, error: error.message };
+  }
+
+  const row = data as { clinical_diagnosis?: string | null } | null;
+  return {
+    form: { clinical_diagnosis: row?.clinical_diagnosis ?? "" },
+    error: null,
+  };
+}
+
+export async function persistEncounterClinicalDiagnosis(
+  transId: string,
+  form: EncounterAssessmentDiagnosisForm
+): Promise<{ error: string | null }> {
+  const id = transId.trim();
+  if (!isUuid(id)) {
+    return { error: "Invalid encounter." };
+  }
+
+  const dx = form.clinical_diagnosis.trim();
+
+  const { error } = await supabase
+    .from(ENCOUNTERS_TABLE)
+    .update({
+      clinical_diagnosis: dx || null,
+    })
+    .eq("trans_id", id);
+
+  return { error: error?.message ?? null };
+}
+
+/** Matches `encounters.disposition` CHECK constraint. */
+export const ENCOUNTER_DISPOSITION_VALUES = [
+  "Home",
+  "Medico Legal",
+  "Advise Admission",
+  "Absconded",
+  "DAMA",
+] as const;
+
+export type EncounterDisposition = (typeof ENCOUNTER_DISPOSITION_VALUES)[number];
+
+export type EncounterPlansTreatmentForm = {
+  plan_labs: boolean;
+  plan_imaging: boolean;
+  plan_medications: boolean;
+  plan_referral: boolean;
+  plan_notes: string;
+  disposition: EncounterDisposition | null;
+};
+
+function dispositionFromDb(raw: string | null | undefined): EncounterDisposition | null {
+  if (raw == null || raw === "") return null;
+  return (ENCOUNTER_DISPOSITION_VALUES as readonly string[]).includes(raw)
+    ? (raw as EncounterDisposition)
+    : null;
+}
+
+function bPlan(v: boolean | null | undefined): boolean {
+  return !!v;
+}
+
+export async function fetchEncounterPlansTreatment(transId: string): Promise<{
+  form: EncounterPlansTreatmentForm;
+  error: string | null;
+}> {
+  const id = transId.trim();
+  if (!isUuid(id)) {
+    return {
+      form: {
+        plan_labs: false,
+        plan_imaging: false,
+        plan_medications: false,
+        plan_referral: false,
+        plan_notes: "",
+        disposition: null,
+      },
+      error: "Invalid encounter.",
+    };
+  }
+
+  const { data, error } = await supabase
+    .from(ENCOUNTERS_TABLE)
+    .select(
+      "plan_labs, plan_imaging, plan_medications, plan_referral, plan_notes, disposition"
+    )
+    .eq("trans_id", id)
+    .maybeSingle();
+
+  if (error) {
+    return {
+      form: {
+        plan_labs: false,
+        plan_imaging: false,
+        plan_medications: false,
+        plan_referral: false,
+        plan_notes: "",
+        disposition: null,
+      },
+      error: error.message,
+    };
+  }
+
+  const row = data as {
+    plan_labs?: boolean | null;
+    plan_imaging?: boolean | null;
+    plan_medications?: boolean | null;
+    plan_referral?: boolean | null;
+    plan_notes?: string | null;
+    disposition?: string | null;
+  } | null;
+
+  return {
+    form: {
+      plan_labs: bPlan(row?.plan_labs),
+      plan_imaging: bPlan(row?.plan_imaging),
+      plan_medications: bPlan(row?.plan_medications),
+      plan_referral: bPlan(row?.plan_referral),
+      plan_notes: row?.plan_notes ?? "",
+      disposition: dispositionFromDb(row?.disposition),
+    },
+    error: null,
+  };
+}
+
+export async function persistEncounterPlansTreatment(
+  transId: string,
+  form: EncounterPlansTreatmentForm
+): Promise<{ error: string | null }> {
+  const id = transId.trim();
+  if (!isUuid(id)) {
+    return { error: "Invalid encounter." };
+  }
+
+  const notes = form.plan_notes.trim();
+
+  const { error } = await supabase
+    .from(ENCOUNTERS_TABLE)
+    .update({
+      plan_labs: form.plan_labs,
+      plan_imaging: form.plan_imaging,
+      plan_medications: form.plan_medications,
+      plan_referral: form.plan_referral,
+      plan_notes: notes || null,
+      disposition: form.disposition,
+    })
+    .eq("trans_id", id);
+
+  return { error: error?.message ?? null };
 }

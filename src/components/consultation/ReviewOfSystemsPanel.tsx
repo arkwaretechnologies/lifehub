@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Alert,
   Box,
@@ -12,6 +12,7 @@ import {
   Typography,
 } from "@mui/material";
 import { consultFormControlLabelSx } from "@/components/consultation/ConsultationSectionTitle";
+import { useConsultationDebouncedSave } from "@/components/consultation/useConsultationDebouncedSave";
 import {
   emptyReviewOfSystemsForm,
   fetchReviewOfSystems,
@@ -269,7 +270,6 @@ export default function ReviewOfSystemsPanel({ transId }: { transId: string }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -319,17 +319,12 @@ export default function ReviewOfSystemsPanel({ transId }: { transId: string }) {
     }
   }, [hydrated, transId, rowId, form]);
 
-  useEffect(() => {
-    if (!hydrated) return;
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      saveTimerRef.current = null;
-      void runPersist();
-    }, 650);
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    };
-  }, [hydrated, form, runPersist]);
+  useConsultationDebouncedSave({
+    ownTabIndex: 1,
+    hydrated,
+    runPersist,
+    trigger: form,
+  });
 
   return (
     <Box sx={tabPanelSx}>

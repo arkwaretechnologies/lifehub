@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import {
   Alert,
   Box,
@@ -19,6 +19,7 @@ import {
   Typography,
 } from "@mui/material";
 import { FormFieldLabel } from "@/components/FormFieldLabel";
+import { useConsultationDebouncedSave } from "@/components/consultation/useConsultationDebouncedSave";
 import {
   commonFieldProps,
   fieldInputSx,
@@ -37,10 +38,14 @@ import {
   type PastMedicalHistoryForm,
 } from "@/lib/pastMedicalHistory";
 import {
+  anthropometricFromRowOrDefault,
+  emptyAnthropometricInput,
   emptyVitalSignsInput,
   fetchVitalSigns,
   inputStateFromRowOrDefault,
+  persistAnthropometrics,
   persistVitalSigns,
+  type AnthropometricInputState,
   type VitalSignsInputState,
 } from "@/lib/vitalSigns";
 import {
@@ -173,7 +178,6 @@ function VitalSignsSection({ transId, idPrefix }: { transId: string; idPrefix: s
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -213,17 +217,12 @@ function VitalSignsSection({ transId, idPrefix }: { transId: string; idPrefix: s
     }
   }, [hydrated, transId, rowId, input]);
 
-  useEffect(() => {
-    if (!hydrated) return;
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      saveTimerRef.current = null;
-      void runPersist();
-    }, 650);
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    };
-  }, [hydrated, input, runPersist]);
+  useConsultationDebouncedSave({
+    ownTabIndex: 0,
+    hydrated,
+    runPersist,
+    trigger: input,
+  });
 
   function setField(key: VitalFieldKey, value: string) {
     setInput((prev) => ({ ...prev, [key]: value.toUpperCase() }));
@@ -264,6 +263,119 @@ function VitalSignsSection({ transId, idPrefix }: { transId: string; idPrefix: s
                 placeholder={placeholder}
                 value={input[key]}
                 onChange={(e) => setField(key, e.target.value)}
+                disabled={loading}
+                {...commonFieldProps}
+                sx={fieldInputSx}
+              />
+            </Grid>
+          );
+        })}
+      </Grid>
+    </Box>
+  );
+}
+
+const ANTHRO_FIELDS = [
+  { key: "weight_kg", label: "Weight" },
+  { key: "height_cm", label: "Height" },
+  { key: "bmi", label: "BMI" },
+] as const;
+
+type AnthroFieldKey = (typeof ANTHRO_FIELDS)[number]["key"];
+
+function AnthropometricSection({ transId, idPrefix }: { transId: string; idPrefix: string }) {
+  const [form, setForm] = useState<AnthropometricInputState>(() => emptyAnthropometricInput());
+  const [rowId, setRowId] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const [saveError, setSaveError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setLoadError("");
+    void (async () => {
+      const { row, error } = await fetchVitalSigns(transId);
+      if (cancelled) return;
+      setLoading(false);
+      if (error) {
+        setLoadError(error);
+        setForm(emptyAnthropometricInput());
+        setRowId(null);
+      } else {
+        setRowId(row?.id ?? null);
+        setForm(anthropometricFromRowOrDefault(row));
+      }
+      setHydrated(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [transId]);
+
+  const runPersist = useCallback(async () => {
+    if (!hydrated) return;
+    setSaveError("");
+    setSaving(true);
+    const { rowId: newId, error } = await persistAnthropometrics(transId, rowId, form);
+    setSaving(false);
+    if (error) {
+      setSaveError(error);
+      return;
+    }
+    if (newId && !rowId) {
+      setRowId(newId);
+    }
+  }, [hydrated, transId, rowId, form]);
+
+  useConsultationDebouncedSave({
+    ownTabIndex: 0,
+    hydrated,
+    runPersist,
+    trigger: form,
+  });
+
+  function setAnthroField(key: AnthroFieldKey, value: string) {
+    setForm((prev) => ({ ...prev, [key]: value.toUpperCase() }));
+  }
+
+  return (
+    <Box sx={{ mb: 2 }}>
+      {loadError ? (
+        <Alert severity="error" sx={{ mb: 1.5 }}>
+          {loadError}
+        </Alert>
+      ) : null}
+      {saveError ? (
+        <Alert severity="error" sx={{ mb: 1.5 }} onClose={() => setSaveError("")}>
+          {saveError}
+        </Alert>
+      ) : null}
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1, minHeight: 24 }}>
+        {loading ? (
+          <CircularProgress size={18} />
+        ) : saving ? (
+          <Typography variant="caption" color="text.secondary">
+            Saving…
+          </Typography>
+        ) : null}
+      </Box>
+      <Grid container spacing={2}>
+        {ANTHRO_FIELDS.map(({ key, label }) => {
+          const fid = `${idPrefix}-anthro-${key}`;
+          return (
+            <Grid key={key} size={{ xs: 4 }}>
+              <FormFieldLabel htmlFor={fid} variant="consultation">
+                {label}
+              </FormFieldLabel>
+              <TextField
+                id={fid}
+                hiddenLabel
+                placeholder="____"
+                value={form[key]}
+                onChange={(e) => setAnthroField(key, e.target.value)}
                 disabled={loading}
                 {...commonFieldProps}
                 sx={fieldInputSx}
@@ -317,7 +429,6 @@ function PastMedicalHistorySection({ transId, idPrefix }: { transId: string; idP
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -357,17 +468,12 @@ function PastMedicalHistorySection({ transId, idPrefix }: { transId: string; idP
     }
   }, [hydrated, transId, rowId, form]);
 
-  useEffect(() => {
-    if (!hydrated) return;
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      saveTimerRef.current = null;
-      void runPersist();
-    }, 650);
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    };
-  }, [hydrated, form, runPersist]);
+  useConsultationDebouncedSave({
+    ownTabIndex: 0,
+    hydrated,
+    runPersist,
+    trigger: form,
+  });
 
   function setCheckbox(key: PmhCheckboxKey, checked: boolean) {
     setForm((prev) => ({ ...prev, [key]: checked }));
@@ -455,7 +561,6 @@ function FamilyHistorySection({ transId, idPrefix }: { transId: string; idPrefix
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -495,17 +600,12 @@ function FamilyHistorySection({ transId, idPrefix }: { transId: string; idPrefix
     }
   }, [hydrated, transId, rowId, form]);
 
-  useEffect(() => {
-    if (!hydrated) return;
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      saveTimerRef.current = null;
-      void runPersist();
-    }, 650);
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    };
-  }, [hydrated, form, runPersist]);
+  useConsultationDebouncedSave({
+    ownTabIndex: 0,
+    hydrated,
+    runPersist,
+    trigger: form,
+  });
 
   function setCheckbox(key: FhCheckboxKey, checked: boolean) {
     setForm((prev) => ({ ...prev, [key]: checked }));
@@ -592,7 +692,6 @@ function SurgicalHistorySection({ transId, idPrefix }: { transId: string; idPref
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -632,17 +731,12 @@ function SurgicalHistorySection({ transId, idPrefix }: { transId: string; idPref
     }
   }, [hydrated, transId, rowId, form]);
 
-  useEffect(() => {
-    if (!hydrated) return;
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      saveTimerRef.current = null;
-      void runPersist();
-    }, 650);
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    };
-  }, [hydrated, form, runPersist]);
+  useConsultationDebouncedSave({
+    ownTabIndex: 0,
+    hydrated,
+    runPersist,
+    trigger: form,
+  });
 
   function setNoSurgery(checked: boolean) {
     setForm((prev) => {
@@ -747,7 +841,6 @@ function PreviousHospitalizationSection({ transId, idPrefix }: { transId: string
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -787,17 +880,12 @@ function PreviousHospitalizationSection({ transId, idPrefix }: { transId: string
     }
   }, [hydrated, transId, rowId, form]);
 
-  useEffect(() => {
-    if (!hydrated) return;
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      saveTimerRef.current = null;
-      void runPersist();
-    }, 650);
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    };
-  }, [hydrated, form, runPersist]);
+  useConsultationDebouncedSave({
+    ownTabIndex: 0,
+    hydrated,
+    runPersist,
+    trigger: form,
+  });
 
   function setNever(checked: boolean) {
     setForm((prev) => {
@@ -958,7 +1046,6 @@ function AllergiesSection({ transId, idPrefix }: { transId: string; idPrefix: st
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -998,17 +1085,12 @@ function AllergiesSection({ transId, idPrefix }: { transId: string; idPrefix: st
     }
   }, [hydrated, transId, rowId, form]);
 
-  useEffect(() => {
-    if (!hydrated) return;
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      saveTimerRef.current = null;
-      void runPersist();
-    }, 650);
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    };
-  }, [hydrated, form, runPersist]);
+  useConsultationDebouncedSave({
+    ownTabIndex: 0,
+    hydrated,
+    runPersist,
+    trigger: form,
+  });
 
   function setNoKnownAllergy(checked: boolean) {
     setForm((prev) =>
@@ -1202,7 +1284,6 @@ function SocialHistorySection({ transId, idPrefix }: { transId: string; idPrefix
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1242,17 +1323,12 @@ function SocialHistorySection({ transId, idPrefix }: { transId: string; idPrefix
     }
   }, [hydrated, transId, rowId, form]);
 
-  useEffect(() => {
-    if (!hydrated) return;
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      saveTimerRef.current = null;
-      void runPersist();
-    }, 650);
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    };
-  }, [hydrated, form, runPersist]);
+  useConsultationDebouncedSave({
+    ownTabIndex: 0,
+    hydrated,
+    runPersist,
+    trigger: form,
+  });
 
   const smokerVal = form.smoker === "yes" || form.smoker === "no" ? form.smoker : "";
   const alcoholVal = form.alcohol_use === "yes" || form.alcohol_use === "no" ? form.alcohol_use : "";
@@ -1479,7 +1555,6 @@ function ObstetricHistorySection({ transId, idPrefix }: { transId: string; idPre
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1519,17 +1594,12 @@ function ObstetricHistorySection({ transId, idPrefix }: { transId: string; idPre
     }
   }, [hydrated, transId, rowId, form]);
 
-  useEffect(() => {
-    if (!hydrated) return;
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      saveTimerRef.current = null;
-      void runPersist();
-    }, 650);
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    };
-  }, [hydrated, form, runPersist]);
+  useConsultationDebouncedSave({
+    ownTabIndex: 0,
+    hydrated,
+    runPersist,
+    trigger: form,
+  });
 
   const pregnantVal = form.pregnant === "y" || form.pregnant === "n" ? form.pregnant : "";
   const pncVal = form.prenatal === "yes" || form.prenatal === "no" ? form.prenatal : "";
@@ -1885,19 +1955,7 @@ export default function MedicalHistoryPanel({ transId }: { transId: string }) {
 
         <Grid size={{ xs: 12, md: 6 }}>
           <ConsultationSectionTitle>Anthropometric</ConsultationSectionTitle>
-          <Grid container spacing={2} sx={{ mb: 2 }}>
-            {(["Weight", "Height", "BMI"] as const).map((label) => {
-              const fid = `${idPrefix}-anthro-${slugId(label)}`;
-              return (
-                <Grid key={label} size={{ xs: 4 }}>
-                  <FormFieldLabel htmlFor={fid} variant="consultation">
-                    {label}
-                  </FormFieldLabel>
-                  <TextField id={fid} hiddenLabel placeholder="____" {...commonFieldProps} sx={fieldInputSx} />
-                </Grid>
-              );
-            })}
-          </Grid>
+          <AnthropometricSection transId={transId} idPrefix={idPrefix} />
 
           <Box sx={{ ...panelSectionSx, mb: 2 }}>
             <AllergiesSection transId={transId} idPrefix={idPrefix} />

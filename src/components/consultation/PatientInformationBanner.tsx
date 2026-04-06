@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import { Box, Grid, Typography } from "@mui/material";
 import type { SxProps, Theme } from "@mui/material/styles";
+import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
 import type { ConsultationPatient } from "./consultationTypes";
 import { CONSULTATION_BRANDING } from "./consultationTypes";
 
@@ -100,10 +101,10 @@ export default function PatientInformationBanner({
       </Typography>
       <Grid container spacing={2}>
         <Field id="consult-pi-name" label="Name" value={patient.name} />
-        <Field id="consult-pi-date" label="Date" value={patient.date} />
+        <Field id="consult-pi-date" label="Date" value={formatDateMMDDYYYY(patient.date)} />
         <Field id="consult-pi-time" label="Time" value={patient.time} />
         <Field id="consult-pi-agesex" label="Age / sex" value={patient.ageSex} />
-        <Field id="consult-pi-dob" label="DOB" value={patient.dob} />
+        <Field id="consult-pi-dob" label="DOB" value={formatDateMMDDYYYY(patient.dob)} />
         <Field id="consult-pi-civil" label="Civil status" value={patient.civilStatus} />
         <Field id="consult-pi-contact" label="Contact no" value={patient.contactNo} />
         <Field id="consult-pi-occupation" label="Occupation" value={patient.occupation} />

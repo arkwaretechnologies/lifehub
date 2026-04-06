@@ -28,6 +28,7 @@ import SearchIcon from "@mui/icons-material/Search";
 import { FormFieldLabel } from "@/components/FormFieldLabel";
 import { commonFieldProps, fieldInputSx } from "@/components/fieldInputStyles";
 import { supabase } from "@/lib/supabaseClient";
+import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
 import {
   createEncounterForPatient,
   fetchConsultationPatientsPage,
@@ -49,11 +50,6 @@ const APP_USERS_TABLE = "users";
 const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 
 type UserIdNameRow = { user_id: string | number; fullname: string | null };
-
-function formatDateDisplay(iso: string | null): string {
-  if (!iso) return "";
-  return iso.length >= 10 ? iso.slice(0, 10) : iso;
-}
 
 function patientKey(p: ConsultationPatientListRow): string {
   return String(p.id);
@@ -385,7 +381,7 @@ export default function ConsultationHome() {
                           <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>{p.name}</TableCell>
                           <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>{p.sex}</TableCell>
                           <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
-                            {formatDateDisplay(p.date_of_birth)}
+                            {formatDateMMDDYYYY(p.date_of_birth)}
                           </TableCell>
                           <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
                             {p.civil_status}
@@ -483,7 +479,9 @@ export default function ConsultationHome() {
                 <TableBody>
                   {encounters.map((e) => (
                     <TableRow key={e.id}>
-                      <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>{e.date}</TableCell>
+                      <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
+                        {formatDateMMDDYYYY(e.date)}
+                      </TableCell>
                       <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
                         {e.time || "—"}
                       </TableCell>

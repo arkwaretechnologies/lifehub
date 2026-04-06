@@ -32,6 +32,7 @@ import {
 import SearchIcon from "@mui/icons-material/Search";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
+import { formatDateMMDDYYYY, isoDateFromUnknown } from "@/lib/dateDisplay";
 import { supabase } from "@/lib/supabaseClient";
 import { FormFieldLabel } from "@/components/FormFieldLabel";
 import {
@@ -152,16 +153,11 @@ function parsePhilhealthNo(value: string): number | null {
   return n;
 }
 
-function formatDateDisplay(iso: string | null): string {
-  if (!iso) return "";
-  return iso.length >= 10 ? iso.slice(0, 10) : iso;
-}
-
 function patientRowToForm(p: PatientRow): PatientForm {
   return {
     name: (p.name ?? "").toUpperCase(),
     sex: (p.sex ?? "").toUpperCase(),
-    dob: formatDateDisplay(p.date_of_birth),
+    dob: isoDateFromUnknown(p.date_of_birth),
     civilStatus: (p.civil_status ?? "").toUpperCase(),
     address: (p.address ?? "").toUpperCase(),
     contactNo: normalizeContactNoInput(String(p.contact_no ?? "")),
@@ -900,7 +896,7 @@ export default function PatientPage() {
                         <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>{p.name}</TableCell>
                         <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>{p.sex}</TableCell>
                         <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
-                          {formatDateDisplay(p.date_of_birth)}
+                          {formatDateMMDDYYYY(p.date_of_birth)}
                         </TableCell>
                         <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
                           {p.civil_status}

@@ -1,15 +1,17 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { Box, CircularProgress } from "@mui/material";
 import { useAuth } from "@/components/AuthProvider";
 import Sidebar, { DRAWER_WIDTH } from "@/components/Sidebar";
 import TopBar from "@/components/TopBar";
+import { firstAllowedHref, pageKeyForPath } from "@/lib/navPermissionCatalog";
 
 function ProtectedShell({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth();
+  const { user, loading, menuAccess } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   useEffect(() => {
@@ -17,6 +19,17 @@ function ProtectedShell({ children }: { children: React.ReactNode }) {
       router.replace("/login");
     }
   }, [loading, user, router]);
+
+  useEffect(() => {
+    if (loading || !user) return;
+    if (!menuAccess.rbac || menuAccess.pageKeys.length === 0) return;
+    const key = pageKeyForPath(pathname);
+    if (key == null) return;
+    if (!menuAccess.pageKeys.includes(key)) {
+      const href = firstAllowedHref(menuAccess.pageKeys) ?? "/login";
+      router.replace(href);
+    }
+  }, [loading, user, menuAccess, pathname, router]);
 
   if (loading) {
     return (

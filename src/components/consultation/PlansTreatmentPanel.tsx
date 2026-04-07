@@ -190,6 +190,74 @@ function upsertImagingBlock(existingNotes: string, imagingLines: string[]): stri
   return `${merged}\n`;
 }
 
+/** Restore imaging checkboxes from a saved plan_notes block when opening the modal. */
+function parseImagingNotesToForm(notes: string): ImagingFormState {
+  const start = notes.indexOf(IMAGING_NOTES_START);
+  const end = notes.indexOf(IMAGING_NOTES_END);
+  if (start === -1 || end === -1 || end < start) return { ...emptyImagingForm };
+  const inner = notes.slice(start + IMAGING_NOTES_START.length, end);
+  const next: ImagingFormState = { ...emptyImagingForm };
+  for (const raw of inner.split("\n")) {
+    const line = raw.trim();
+    if (!line || line === "IMAGING REQUEST:") continue;
+    const viewMatch = line.match(/^-\s*Chest X-ray \(View:\s*(.+)\)\s*$/);
+    if (viewMatch) {
+      next.chestXray = true;
+      next.chestXrayView = (viewMatch[1] ?? "").trim();
+      continue;
+    }
+    if (line === "- Chest X-ray") {
+      next.chestXray = true;
+      continue;
+    }
+    if (line === "- Whole Abdomen UTZ") next.wholeAbdomenUtz = true;
+    else if (line === "- 2D Echo") next.echo2d = true;
+    else if (line === "- Thyroid Scan") next.thyroidScan = true;
+    else if (line === "- Transvaginal UTZ (TVS)") next.tvs = true;
+  }
+  return next;
+}
+
+function hasMedicationLinesSelected(lines: MedicationLineDraft[]): boolean {
+  return lines.some((l) => l.productId.trim() !== "");
+}
+
+/** Quantity required when a product is selected: non-empty and a finite number greater than 0. */
+function isValidMedicationQuantity(q: string): boolean {
+  const s = String(q).trim();
+  if (!s) return false;
+  const n = Number(s);
+  return Number.isFinite(n) && n > 0;
+}
+
+function medicationRowsMissingQuantity(lines: MedicationLineDraft[]): boolean {
+  return lines.some((l) => l.productId.trim() !== "" && !isValidMedicationQuantity(l.quantity));
+}
+
+function imagingFormsEqual(a: ImagingFormState, b: ImagingFormState): boolean {
+  return (
+    a.chestXray === b.chestXray &&
+    a.chestXrayView === b.chestXrayView &&
+    a.wholeAbdomenUtz === b.wholeAbdomenUtz &&
+    a.echo2d === b.echo2d &&
+    a.thyroidScan === b.thyroidScan &&
+    a.tvs === b.tvs
+  );
+}
+
+/** Stable compare for medications modal dirty check (ignores row keys). */
+function medicationLinesSnapshot(lines: MedicationLineDraft[]): string {
+  return JSON.stringify(
+    lines.map((l) => ({
+      productId: l.productId.trim(),
+      quantity: l.quantity.trim(),
+      unit: l.unit.trim(),
+      frequency: l.frequency.trim(),
+      notes: l.notes.trim(),
+    })),
+  );
+}
+
 type MedicationLineDraft = {
   key: string;
   productId: string;
@@ -208,6 +276,29 @@ function newMedicationLine(): MedicationLineDraft {
     frequency: "",
     notes: "",
   };
+}
+
+function medicationLinesFromSnapshot(snapshot: string): MedicationLineDraft[] {
+  try {
+    const arr = JSON.parse(snapshot) as Array<{
+      productId?: string;
+      quantity?: string;
+      unit?: string;
+      frequency?: string;
+      notes?: string;
+    }>;
+    if (!Array.isArray(arr) || arr.length === 0) return [newMedicationLine()];
+    return arr.map((row) => ({
+      key: crypto.randomUUID(),
+      productId: String(row.productId ?? "").trim(),
+      quantity: String(row.quantity ?? "").trim(),
+      unit: String(row.unit ?? "").trim(),
+      frequency: String(row.frequency ?? "").trim(),
+      notes: String(row.notes ?? "").trim(),
+    }));
+  } catch {
+    return [newMedicationLine()];
+  }
 }
 
 const imagingCheckboxLabelSx = {
@@ -284,6 +375,29 @@ export default function PlansTreatmentPanel({
   const [medicationLines, setMedicationLines] = useState<MedicationLineDraft[]>([]);
   const productCacheRef = useRef(productCache);
   productCacheRef.current = productCache;
+  const formRef = useRef(form);
+  formRef.current = form;
+  const prevImagingOpenRef = useRef(false);
+  const imagingBaselineRef = useRef<ImagingFormState>(emptyImagingForm);
+  const medsBaselineStrRef = useRef("");
+  const medsBaselineReadyRef = useRef(false);
+
+  type PlansModalKind = "labs" | "imaging" | "medications";
+  const [unsavedCloseDialog, setUnsavedCloseDialog] = useState<PlansModalKind | null>(null);
+
+  /** When the imaging modal opens, load checkboxes from the saved IMAGING block in plan_notes. */
+  useEffect(() => {
+    if (imagingModalOpen) {
+      if (!prevImagingOpenRef.current) {
+        const parsed = parseImagingNotesToForm(formRef.current.plan_notes ?? "");
+        setImagingForm(parsed);
+        imagingBaselineRef.current = parsed;
+      }
+      prevImagingOpenRef.current = true;
+    } else {
+      prevImagingOpenRef.current = false;
+    }
+  }, [imagingModalOpen]);
 
   const mergeIntoProductCache = useCallback((rows: ProductCatalogRow[]) => {
     if (rows.length === 0) return;
@@ -314,13 +428,43 @@ export default function PlansTreatmentPanel({
   }, [medicationsModalOpen]);
 
   useEffect(() => {
+    if (!medicationsModalOpen) medsBaselineReadyRef.current = false;
+  }, [medicationsModalOpen]);
+
+  useEffect(() => {
     if (!medicationsModalOpen) return;
     let cancelled = false;
     void (async () => {
       const r = await fetchCurrentMedicationsForEncounter(transId);
       if (cancelled) return;
-      if (r.error) return;
-      if (r.medications.length === 0) return;
+      if (r.error) {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            if (cancelled || !medicationsModalOpen) return;
+            setMedicationLines((prev) => {
+              const next = prev.length > 0 ? prev : [newMedicationLine()];
+              medsBaselineStrRef.current = medicationLinesSnapshot(next);
+              medsBaselineReadyRef.current = true;
+              return next;
+            });
+          });
+        });
+        return;
+      }
+      if (r.medications.length === 0) {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            if (cancelled || !medicationsModalOpen) return;
+            setMedicationLines((prev) => {
+              const next = prev.length > 0 ? prev : [newMedicationLine()];
+              medsBaselineStrRef.current = medicationLinesSnapshot(next);
+              medsBaselineReadyRef.current = true;
+              return next;
+            });
+          });
+        });
+        return;
+      }
 
       const parseDosage = (dosage: string | null): { quantity: string; unit: string } => {
         if (!dosage) return { quantity: "", unit: "" };
@@ -413,7 +557,10 @@ export default function PlansTreatmentPanel({
         setMedToastOpen(true);
       }
 
-      setMedicationLines(resolved.length === 0 ? [newMedicationLine()] : resolved);
+      const nextMedLines = resolved.length === 0 ? [newMedicationLine()] : resolved;
+      setMedicationLines(nextMedLines);
+      medsBaselineStrRef.current = medicationLinesSnapshot(nextMedLines);
+      medsBaselineReadyRef.current = true;
     })();
     return () => {
       cancelled = true;
@@ -507,6 +654,12 @@ export default function PlansTreatmentPanel({
   }, []);
 
   const printMedicationPrescription = useCallback(async () => {
+    if (medicationRowsMissingQuantity(medicationLines)) {
+      setMedToastSeverity("error");
+      setMedToastMessage("Missing quantity of a product.");
+      setMedToastOpen(true);
+      return;
+    }
     const u = profile as UserProfile | null;
     const fullname = u?.fullname?.trim() ?? "";
     const specialty = u?.specialty?.trim() ?? "";
@@ -546,6 +699,12 @@ export default function PlansTreatmentPanel({
   }, [patient, profile, medicationLines, productCache]);
 
   const saveEncounterMedications = useCallback(async () => {
+    if (medicationRowsMissingQuantity(medicationLines)) {
+      setMedToastSeverity("error");
+      setMedToastMessage("Add quantity of a product.");
+      setMedToastOpen(true);
+      return;
+    }
     setMedSaveLoading(true);
     try {
       const rows = medicationLines
@@ -568,6 +727,8 @@ export default function PlansTreatmentPanel({
         setMedToastOpen(true);
         return;
       }
+      setForm((f) => ({ ...f, plan_medications: rows.length > 0 }));
+      medsBaselineStrRef.current = medicationLinesSnapshot(medicationLines);
       setMedToastSeverity("success");
       setMedToastMessage("Medications saved.");
       setMedToastOpen(true);
@@ -628,6 +789,112 @@ export default function PlansTreatmentPanel({
     profile,
     selectedLabTestIds,
   ]);
+
+  const closeLabsModal = useCallback(() => {
+    setForm((f) => ({
+      ...f,
+      plan_labs:
+        labTestsLoading
+          ? f.plan_labs
+          : selectedLabTestIds.size > 0 ||
+            requestedTestIdSet.size > 0 ||
+            encounterLabRequests.length > 0,
+    }));
+    setLabsModalOpen(false);
+  }, [labTestsLoading, selectedLabTestIds, requestedTestIdSet, encounterLabRequests]);
+
+  const closeImagingModal = useCallback(() => {
+    setForm((f) => {
+      const lines = buildImagingRequestLines(imagingForm);
+      if (lines.length === 0) {
+        return {
+          ...f,
+          plan_imaging: false,
+          plan_notes: upsertImagingBlock(f.plan_notes ?? "", []),
+        };
+      }
+      // Keep saved plan_notes as-is; unstaged modal edits are dropped (next open re-parses from notes).
+      return f;
+    });
+    setImagingModalOpen(false);
+  }, [imagingForm]);
+
+  const closeMedicationsModal = useCallback(() => {
+    medsBaselineReadyRef.current = false;
+    setForm((f) => ({ ...f, plan_medications: hasMedicationLinesSelected(medicationLines) }));
+    setMedicationsModalOpen(false);
+  }, [medicationLines]);
+
+  /** Discard unstaged lab picks, then sync main LABS checkbox (off if no saved requests). */
+  const discardLabsModalClose = useCallback(() => {
+    setSelectedLabTestIds(new Set());
+    setForm((f) => ({
+      ...f,
+      plan_labs:
+        labTestsLoading
+          ? f.plan_labs
+          : requestedTestIdSet.size > 0 || encounterLabRequests.length > 0,
+    }));
+    setLabsModalOpen(false);
+  }, [labTestsLoading, requestedTestIdSet, encounterLabRequests]);
+
+  /** Revert imaging to last opened/saved baseline; uncheck main if baseline has no studies. */
+  const discardImagingModalClose = useCallback(() => {
+    const baseline = { ...imagingBaselineRef.current };
+    const lines = buildImagingRequestLines(baseline);
+    setForm((f) => ({
+      ...f,
+      plan_imaging: lines.length > 0,
+      plan_notes: lines.length === 0 ? upsertImagingBlock(f.plan_notes ?? "", []) : f.plan_notes,
+    }));
+    setImagingForm(baseline);
+    setImagingModalOpen(false);
+  }, []);
+
+  /** Revert medications to baseline snapshot; uncheck main if no products in baseline. */
+  const discardMedicationsModalClose = useCallback(() => {
+    const restored = medicationLinesFromSnapshot(medsBaselineStrRef.current);
+    medsBaselineReadyRef.current = false;
+    setMedicationLines(restored);
+    setForm((f) => ({
+      ...f,
+      plan_medications: hasMedicationLinesSelected(restored),
+    }));
+    setMedicationsModalOpen(false);
+  }, []);
+
+  const requestCloseLabsModal = useCallback(() => {
+    if (selectedLabTestIds.size > 0) {
+      setUnsavedCloseDialog("labs");
+      return;
+    }
+    closeLabsModal();
+  }, [selectedLabTestIds, closeLabsModal]);
+
+  const requestCloseImagingModal = useCallback(() => {
+    if (!imagingFormsEqual(imagingForm, imagingBaselineRef.current)) {
+      setUnsavedCloseDialog("imaging");
+      return;
+    }
+    closeImagingModal();
+  }, [imagingForm, closeImagingModal]);
+
+  const requestCloseMedicationsModal = useCallback(() => {
+    if (medProductsLoading) {
+      setMedToastSeverity("error");
+      setMedToastMessage("Still loading medications. Please wait before closing.");
+      setMedToastOpen(true);
+      return;
+    }
+    if (
+      medsBaselineReadyRef.current &&
+      medicationLinesSnapshot(medicationLines) !== medsBaselineStrRef.current
+    ) {
+      setUnsavedCloseDialog("medications");
+      return;
+    }
+    closeMedicationsModal();
+  }, [medicationLines, closeMedicationsModal, medProductsLoading]);
 
   useEffect(() => {
     let cancelled = false;
@@ -884,7 +1151,9 @@ export default function PlansTreatmentPanel({
 
       <Dialog
         open={labsModalOpen}
-        onClose={() => setLabsModalOpen(false)}
+        onClose={() => {
+          requestCloseLabsModal();
+        }}
         maxWidth="lg"
         fullWidth
         aria-labelledby="plans-labs-dialog-title"
@@ -1061,7 +1330,7 @@ export default function PlansTreatmentPanel({
               {labSubmitting ? "Saving…" : "Save Request"}
             </Button>
             <Button
-              onClick={() => setLabsModalOpen(false)}
+              onClick={requestCloseLabsModal}
               color="error"
               variant="outlined"
               startIcon={<CloseIcon />}
@@ -1075,7 +1344,9 @@ export default function PlansTreatmentPanel({
 
       <Dialog
         open={imagingModalOpen}
-        onClose={() => setImagingModalOpen(false)}
+        onClose={() => {
+          requestCloseImagingModal();
+        }}
         maxWidth="sm"
         fullWidth
         aria-labelledby="plans-imaging-dialog-title"
@@ -1215,14 +1486,16 @@ export default function PlansTreatmentPanel({
             type="button"
             variant="contained"
             color="secondary"
+            disabled={imagingFormsEqual(imagingForm, imagingBaselineRef.current)}
             startIcon={<SaveOutlinedIcon />}
             onClick={() => {
               const lines = buildImagingRequestLines(imagingForm);
               setForm((f) => ({
                 ...f,
-                plan_imaging: lines.length > 0 ? true : f.plan_imaging,
+                plan_imaging: lines.length > 0,
                 plan_notes: upsertImagingBlock(f.plan_notes ?? "", lines),
               }));
+              imagingBaselineRef.current = { ...imagingForm };
               setImagingModalOpen(false);
             }}
             sx={{ textTransform: "none" }}
@@ -1230,7 +1503,7 @@ export default function PlansTreatmentPanel({
             Save Request
           </Button>
           <Button
-            onClick={() => setImagingModalOpen(false)}
+            onClick={requestCloseImagingModal}
             color="error"
             variant="outlined"
             startIcon={<CloseIcon />}
@@ -1243,7 +1516,9 @@ export default function PlansTreatmentPanel({
 
       <Dialog
         open={medicationsModalOpen}
-        onClose={() => setMedicationsModalOpen(false)}
+        onClose={() => {
+          requestCloseMedicationsModal();
+        }}
         maxWidth="md"
         fullWidth
         aria-labelledby="plans-medications-dialog-title"
@@ -1375,6 +1650,7 @@ export default function PlansTreatmentPanel({
                           type="number"
                           inputProps={{ min: 0, step: "any" }}
                           value={line.quantity}
+                          error={line.productId.trim() !== "" && !isValidMedicationQuantity(line.quantity)}
                           onChange={(e) =>
                             setMedicationLines((rows) =>
                               rows.map((r) => (r.key === line.key ? { ...r, quantity: e.target.value } : r)),
@@ -1465,7 +1741,12 @@ export default function PlansTreatmentPanel({
             type="button"
             variant="contained"
             color="secondary"
-            disabled={medSaveLoading || medProductsLoading}
+            disabled={
+              medSaveLoading ||
+              medProductsLoading ||
+              !medsBaselineReadyRef.current ||
+              medicationLinesSnapshot(medicationLines) === medsBaselineStrRef.current
+            }
             onClick={() => void saveEncounterMedications()}
             startIcon={<SaveOutlinedIcon />}
             sx={{ textTransform: "none" }}
@@ -1484,13 +1765,62 @@ export default function PlansTreatmentPanel({
             {printRxLoading ? "Preparing…" : "Print RX"}
           </Button>
           <Button
-            onClick={() => setMedicationsModalOpen(false)}
+            onClick={requestCloseMedicationsModal}
             color="error"
             variant="outlined"
             startIcon={<CloseIcon />}
             sx={{ textTransform: "none" }}
           >
             Close
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={unsavedCloseDialog != null}
+        onClose={() => setUnsavedCloseDialog(null)}
+        maxWidth="xs"
+        fullWidth
+        aria-labelledby="plans-unsaved-close-title"
+      >
+        <DialogTitle id="plans-unsaved-close-title" sx={{ fontWeight: 800 }}>
+          Unsaved changes
+        </DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" color="text.secondary">
+            {unsavedCloseDialog === "labs"
+              ? "You have lab tests selected that are not saved yet. Save your request before closing, or close without saving."
+              : unsavedCloseDialog === "imaging"
+                ? "Your imaging selections are not saved to the plan yet. Save your request before closing, or close without saving."
+                : unsavedCloseDialog === "medications"
+                  ? "Your medication changes are not saved yet. Save medications before closing, or close without saving."
+                  : ""}
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 2, py: 1.5, gap: 1, flexWrap: "wrap" }}>
+          <Button
+            type="button"
+            variant="text"
+            color="inherit"
+            onClick={() => setUnsavedCloseDialog(null)}
+            sx={{ textTransform: "none" }}
+          >
+            Keep editing
+          </Button>
+          <Button
+            type="button"
+            variant="outlined"
+            color="error"
+            onClick={() => {
+              const k = unsavedCloseDialog;
+              setUnsavedCloseDialog(null);
+              if (k === "labs") discardLabsModalClose();
+              else if (k === "imaging") discardImagingModalClose();
+              else if (k === "medications") discardMedicationsModalClose();
+            }}
+            sx={{ textTransform: "none" }}
+          >
+            Close without saving
           </Button>
         </DialogActions>
       </Dialog>

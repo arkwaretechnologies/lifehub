@@ -14,11 +14,14 @@ import {
   FormControl,
   FormControlLabel,
   Grid,
+  MenuItem,
   Radio,
   RadioGroup,
   TextField,
   Typography,
 } from "@mui/material";
+import { useAuth } from "@/components/AuthProvider";
+import type { ConsultationPatient } from "@/components/consultation/consultationTypes";
 import { consultFormControlLabelSx } from "@/components/consultation/ConsultationSectionTitle";
 import { useConsultationDebouncedSave } from "@/components/consultation/useConsultationDebouncedSave";
 import {
@@ -28,6 +31,14 @@ import {
   type EncounterDisposition,
   type EncounterPlansTreatmentForm,
 } from "@/lib/consultationData";
+import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
+import {
+  createLabRequestWithItems,
+  fetchLabRequestsForEncounter,
+  parsePatientIdForLab,
+  type EncounterLabRequestSummary,
+  type LabRequestItemPriority,
+} from "@/lib/labRequests";
 import {
   fetchLabCatalogGrouped,
   type LabCatalogSection,
@@ -78,6 +89,14 @@ const DISPOSITION_LABELS: Record<EncounterDisposition, string> = {
   DAMA: "DAMA",
 };
 
+function formatLabRequestTime(t: string | null | undefined): string {
+  if (t == null || String(t).trim() === "") return "";
+  const s = String(t).trim();
+  if (s.length >= 5 && s[2] === ":") return s.slice(0, 5);
+  const m = s.match(/(\d{1,2}:\d{2})/);
+  return m?.[1] ?? "";
+}
+
 const emptyPlansForm: EncounterPlansTreatmentForm = {
   plan_labs: false,
   plan_imaging: false,
@@ -87,7 +106,14 @@ const emptyPlansForm: EncounterPlansTreatmentForm = {
   disposition: null,
 };
 
-export default function PlansTreatmentPanel({ transId }: { transId: string }) {
+export default function PlansTreatmentPanel({
+  transId,
+  patient,
+}: {
+  transId: string;
+  patient: ConsultationPatient;
+}) {
+  const { profile } = useAuth();
   const dispositionLabelId = `plans-disp-${useId().replace(/\W/g, "")}`;
   const [form, setForm] = useState<EncounterPlansTreatmentForm>(emptyPlansForm);
   const [loadError, setLoadError] = useState("");
@@ -101,6 +127,14 @@ export default function PlansTreatmentPanel({ transId }: { transId: string }) {
   const [labTestsLoading, setLabTestsLoading] = useState(false);
   const [labTestsError, setLabTestsError] = useState("");
   const [selectedLabTestIds, setSelectedLabTestIds] = useState<Set<string>>(() => new Set());
+  const [labRequestPriority, setLabRequestPriority] = useState<LabRequestItemPriority>("Routine");
+  const [labRequestRemarks, setLabRequestRemarks] = useState("");
+  const [labSubmitting, setLabSubmitting] = useState(false);
+  const [labDialogError, setLabDialogError] = useState("");
+  const [labDialogSuccess, setLabDialogSuccess] = useState("");
+  const [encounterLabRequests, setEncounterLabRequests] = useState<EncounterLabRequestSummary[]>([]);
+  const [requestedTestIdSet, setRequestedTestIdSet] = useState<Set<string>>(() => new Set());
+  const [labEncounterError, setLabEncounterError] = useState("");
 
   useEffect(() => {
     setSelectedLabTestIds(new Set());
@@ -108,24 +142,42 @@ export default function PlansTreatmentPanel({ transId }: { transId: string }) {
 
   useEffect(() => {
     if (!labsModalOpen) return;
+    setLabDialogError("");
+    setLabDialogSuccess("");
+  }, [labsModalOpen]);
+
+  useEffect(() => {
+    if (!labsModalOpen) return;
     let cancelled = false;
     setLabTestsLoading(true);
     setLabTestsError("");
+    setLabEncounterError("");
     void (async () => {
-      const { sections, error } = await fetchLabCatalogGrouped();
+      const [cat, enc] = await Promise.all([
+        fetchLabCatalogGrouped(),
+        fetchLabRequestsForEncounter(transId),
+      ]);
       if (cancelled) return;
       setLabTestsLoading(false);
-      if (error) {
-        setLabTestsError(error);
+      if (cat.error) {
+        setLabTestsError(cat.error);
         setLabSections([]);
       } else {
-        setLabSections(sections);
+        setLabSections(cat.sections);
+      }
+      if (enc.error) {
+        setLabEncounterError(enc.error);
+        setEncounterLabRequests([]);
+        setRequestedTestIdSet(new Set());
+      } else {
+        setEncounterLabRequests(enc.requests);
+        setRequestedTestIdSet(new Set(enc.requestedTestIds));
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [labsModalOpen]);
+  }, [labsModalOpen, transId]);
 
   const toggleLabTestSelection = useCallback((testId: string) => {
     setSelectedLabTestIds((prev) => {
@@ -140,6 +192,57 @@ export default function PlansTreatmentPanel({ transId }: { transId: string }) {
     () => labSections.filter((s) => s.tests.length > 0),
     [labSections]
   );
+
+  const labDialogFooterHint = useMemo(() => {
+    const nReq = requestedTestIdSet.size;
+    const nNew = selectedLabTestIds.size;
+    if (nReq === 0 && nNew === 0) return "Select tests to request";
+    if (nReq === 0) return `${nNew} test${nNew === 1 ? "" : "s"} selected`;
+    if (nNew === 0) return `${nReq} already requested — select more to add another request`;
+    return `${nReq} already requested · ${nNew} new selected`;
+  }, [requestedTestIdSet, selectedLabTestIds]);
+
+  const submitLabRequest = useCallback(async () => {
+    setLabDialogError("");
+    setLabDialogSuccess("");
+    setLabSubmitting(true);
+    const physicianId =
+      profile != null && typeof profile.user_id === "number" && Number.isFinite(profile.user_id)
+        ? profile.user_id
+        : null;
+    const { labRequestId, error } = await createLabRequestWithItems({
+      encounterId: transId,
+      patientId: parsePatientIdForLab(patient.patientId),
+      referringPhysician: patient.referringPhysician?.trim() ? patient.referringPhysician.trim() : null,
+      physicianId,
+      priority: labRequestPriority,
+      remarks: labRequestRemarks,
+      labTestIds: [...selectedLabTestIds],
+      itemPriority: labRequestPriority,
+    });
+    setLabSubmitting(false);
+    if (error) {
+      setLabDialogError(error);
+      return;
+    }
+    setLabDialogSuccess(`Lab request saved (${labRequestId?.slice(0, 8)}…).`);
+    setSelectedLabTestIds(new Set());
+    setLabRequestRemarks("");
+    const encRefresh = await fetchLabRequestsForEncounter(transId);
+    if (!encRefresh.error) {
+      setEncounterLabRequests(encRefresh.requests);
+      setRequestedTestIdSet(new Set(encRefresh.requestedTestIds));
+      setLabEncounterError("");
+    }
+  }, [
+    transId,
+    patient.patientId,
+    patient.referringPhysician,
+    profile,
+    labRequestPriority,
+    labRequestRemarks,
+    selectedLabTestIds,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -389,6 +492,81 @@ export default function PlansTreatmentPanel({ transId }: { transId: string }) {
             overflow: "auto",
           }}
         >
+          {labDialogError ? (
+            <Alert severity="error" sx={{ mb: 2 }} onClose={() => setLabDialogError("")}>
+              {labDialogError}
+            </Alert>
+          ) : null}
+          {labDialogSuccess ? (
+            <Alert severity="success" sx={{ mb: 2 }} onClose={() => setLabDialogSuccess("")}>
+              {labDialogSuccess}
+            </Alert>
+          ) : null}
+          {labEncounterError ? (
+            <Alert severity="warning" sx={{ mb: 2 }} onClose={() => setLabEncounterError("")}>
+              Could not load existing lab requests: {labEncounterError}
+            </Alert>
+          ) : null}
+          {!labTestsLoading && encounterLabRequests.length > 0 ? (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
+                Existing lab requests for this encounter
+              </Typography>
+              <Box component="ul" sx={{ m: 0, pl: 2.25 }}>
+                {encounterLabRequests.map((r) => {
+                  const timePart = formatLabRequestTime(r.request_time);
+                  const datePart = formatDateMMDDYYYY(r.request_date) || r.request_date;
+                  return (
+                    <Box component="li" key={r.id} sx={{ mb: 0.75 }}>
+                      <Typography variant="body2" component="span">
+                        <strong>{datePart}</strong>
+                        {timePart ? ` · ${timePart}` : ""} · {r.priority} · {r.labTestIds.length} test(s)
+                        {r.remarks
+                          ? ` — ${r.remarks.length > 72 ? `${r.remarks.slice(0, 72)}…` : r.remarks}`
+                          : ""}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
+                        ID {r.id.slice(0, 8)}…
+                      </Typography>
+                    </Box>
+                  );
+                })}
+              </Box>
+            </Alert>
+          ) : null}
+          <Grid container spacing={2} sx={{ mb: 2 }}>
+            <Grid size={{ xs: 12, sm: 4 }}>
+              <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
+                PRIORITY
+              </Typography>
+              <TextField
+                select
+                fullWidth
+                size="small"
+                value={labRequestPriority}
+                disabled={labTestsLoading || labSubmitting}
+                onChange={(e) => setLabRequestPriority(e.target.value as LabRequestItemPriority)}
+              >
+                <MenuItem value="Routine">Routine</MenuItem>
+                <MenuItem value="STAT">STAT</MenuItem>
+              </TextField>
+            </Grid>
+            <Grid size={{ xs: 12, sm: 8 }}>
+              <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
+                REMARKS / CLINICAL IMPRESSION
+              </Typography>
+              <TextField
+                fullWidth
+                multiline
+                minRows={2}
+                size="small"
+                placeholder="Optional"
+                value={labRequestRemarks}
+                disabled={labTestsLoading || labSubmitting}
+                onChange={(e) => setLabRequestRemarks(e.target.value)}
+              />
+            </Grid>
+          </Grid>
           {labTestsLoading ? (
             <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
               <CircularProgress size={32} />
@@ -434,25 +612,41 @@ export default function PlansTreatmentPanel({ transId }: { transId: string }) {
                     {section.category.name.toUpperCase()}
                   </Typography>
                   <Box sx={{ display: "flex", flexDirection: "column", gap: 0.25 }}>
-                    {section.tests.map((test) => (
-                      <FormControlLabel
-                        key={test.id}
-                        sx={{ ...consultFormControlLabelSx, alignItems: "flex-start", ml: 0, mr: 0 }}
-                        control={
-                          <Checkbox
-                            size="small"
-                            checked={selectedLabTestIds.has(test.id)}
-                            onChange={() => toggleLabTestSelection(test.id)}
-                            sx={{ pt: 0.25 }}
-                          />
-                        }
-                        label={
-                          <Typography component="span" variant="body2" sx={{ textTransform: "uppercase", lineHeight: 1.35 }}>
-                            {test.name}
-                          </Typography>
-                        }
-                      />
-                    ))}
+                    {section.tests.map((test) => {
+                      const alreadyRequested = requestedTestIdSet.has(test.id);
+                      const checked = alreadyRequested || selectedLabTestIds.has(test.id);
+                      return (
+                        <FormControlLabel
+                          key={test.id}
+                          sx={{
+                            ...consultFormControlLabelSx,
+                            display: "flex",
+                            flexDirection: "row",
+                            alignItems: "center",
+                            ml: 0,
+                            mr: 0,
+                            gap: 0.5,
+                            "& .MuiFormControlLabel-label": { display: "inline", lineHeight: 1.35 },
+                          }}
+                          control={
+                            <Checkbox
+                              size="small"
+                              checked={checked}
+                              disabled={alreadyRequested}
+                              onChange={() => {
+                                if (alreadyRequested) return;
+                                toggleLabTestSelection(test.id);
+                              }}
+                            />
+                          }
+                          label={
+                            <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
+                              {test.name}
+                            </Typography>
+                          }
+                        />
+                      );
+                    })}
                   </Box>
                 </Box>
               ))}
@@ -461,13 +655,23 @@ export default function PlansTreatmentPanel({ transId }: { transId: string }) {
         </DialogContent>
         <DialogActions sx={{ px: 2, py: 1.5, justifyContent: "space-between", flexWrap: "wrap", gap: 1 }}>
           <Typography variant="caption" color="text.secondary" sx={{ mr: "auto" }}>
-            {selectedLabTestIds.size > 0
-              ? `${selectedLabTestIds.size} test${selectedLabTestIds.size === 1 ? "" : "s"} selected`
-              : "Select tests to request"}
+            {labDialogFooterHint}
           </Typography>
-          <Button onClick={() => setLabsModalOpen(false)} color="inherit" variant="text" sx={{ textTransform: "uppercase" }}>
-            Close
-          </Button>
+          <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
+            <Button
+              type="button"
+              variant="contained"
+              color="secondary"
+              disabled={labTestsLoading || labSubmitting || selectedLabTestIds.size === 0}
+              onClick={() => void submitLabRequest()}
+              sx={{ textTransform: "uppercase" }}
+            >
+              {labSubmitting ? "Saving…" : "Save request"}
+            </Button>
+            <Button onClick={() => setLabsModalOpen(false)} color="inherit" variant="text" sx={{ textTransform: "uppercase" }}>
+              Close
+            </Button>
+          </Box>
         </DialogActions>
       </Dialog>
     </Box>

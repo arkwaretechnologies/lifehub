@@ -153,7 +153,7 @@ export default function ConsultationWorkspace({
             hidden={tab !== 5}
             sx={{ display: tab === 5 ? "block" : "none" }}
           >
-            <PlansTreatmentPanel transId={transId} />
+            <PlansTreatmentPanel transId={transId} patient={patient} />
           </Box>
         </Box>
       </ConsultationActiveTabContext.Provider>

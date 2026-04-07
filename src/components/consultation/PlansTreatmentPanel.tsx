@@ -8,6 +8,7 @@ import {
   Button,
   Checkbox,
   CircularProgress,
+  Divider,
   Dialog,
   DialogActions,
   DialogContent,
@@ -18,6 +19,7 @@ import {
   IconButton,
   Radio,
   RadioGroup,
+  Snackbar,
   TextField,
   Typography,
 } from "@mui/material";
@@ -44,11 +46,19 @@ import {
   fetchLabCatalogGrouped,
   type LabCatalogSection,
 } from "@/lib/labTests";
+import { openPrescriptionPrintWindow } from "@/lib/prescriptionPrint";
+import type { UserProfile } from "@/lib/types";
 import {
   fetchActiveProductsPreview,
   fetchProductsByIds,
+  formatProductOptionLabel,
+  searchActiveProducts,
   type ProductCatalogRow,
 } from "@/lib/pharmacyProducts";
+import {
+  fetchCurrentMedicationsForEncounter,
+  replaceCurrentMedicationsForEncounter,
+} from "@/lib/currentMedications";
 
 const tabPanelSx = { pt: 2, minHeight: 280 };
 
@@ -136,10 +146,19 @@ type MedicationLineDraft = {
   productId: string;
   quantity: string;
   unit: string;
+  frequency: string;
+  notes: string;
 };
 
 function newMedicationLine(): MedicationLineDraft {
-  return { key: crypto.randomUUID(), productId: "", quantity: "", unit: "" };
+  return {
+    key: crypto.randomUUID(),
+    productId: "",
+    quantity: "",
+    unit: "",
+    frequency: "",
+    notes: "",
+  };
 }
 
 const imagingCheckboxLabelSx = {
@@ -207,6 +226,11 @@ export default function PlansTreatmentPanel({
   const [productCache, setProductCache] = useState<Record<string, ProductCatalogRow>>({});
   const [medProductsLoading, setMedProductsLoading] = useState(false);
   const [medProductsError, setMedProductsError] = useState("");
+  const [medSaveLoading, setMedSaveLoading] = useState(false);
+  const [medToastOpen, setMedToastOpen] = useState(false);
+  const [medToastMessage, setMedToastMessage] = useState("");
+  const [medToastSeverity, setMedToastSeverity] = useState<"success" | "error">("success");
+  const [printRxLoading, setPrintRxLoading] = useState(false);
   const [medicationLines, setMedicationLines] = useState<MedicationLineDraft[]>([]);
   const productCacheRef = useRef(productCache);
   productCacheRef.current = productCache;
@@ -235,8 +259,116 @@ export default function PlansTreatmentPanel({
 
   useEffect(() => {
     if (!medicationsModalOpen) return;
+    setMedToastOpen(false);
     setMedicationLines((prev) => (prev.length === 0 ? [newMedicationLine()] : prev));
   }, [medicationsModalOpen]);
+
+  useEffect(() => {
+    if (!medicationsModalOpen) return;
+    let cancelled = false;
+    void (async () => {
+      const r = await fetchCurrentMedicationsForEncounter(transId);
+      if (cancelled) return;
+      if (r.error) return;
+      if (r.medications.length === 0) return;
+
+      const parseDosage = (dosage: string | null): { quantity: string; unit: string } => {
+        if (!dosage) return { quantity: "", unit: "" };
+        const s = String(dosage).trim();
+        if (!s) return { quantity: "", unit: "" };
+        const m = s.match(/^(\d+(?:\.\d+)?)\s*(.*)$/);
+        if (!m) return { quantity: s, unit: "" };
+        const q = m[1] ?? "";
+        const u = (m[2] ?? "").trim();
+        return { quantity: q, unit: u };
+      };
+
+      const normalize = (s: string) => s.trim().replace(/\s+/g, " ");
+      const parseMedicationLabelForSearch = (label: string): { generic: string; brand: string; base: string } => {
+        const raw = normalize(label);
+        const base = normalize(raw.split("—")[0] ?? raw); // drop "— strength · form"
+        const m = base.match(/^(.*?)\s*\((.*?)\)\s*$/); // "Generic (Brand)"
+        if (!m) return { generic: base, brand: "", base };
+        return { generic: normalize(m[1] ?? ""), brand: normalize(m[2] ?? ""), base };
+      };
+
+      const resolved = await Promise.all(
+        r.medications.map(async (m) => {
+          const d = parseDosage(m.dosage);
+          const name = String(m.medication_name ?? "").trim();
+          if (!name) {
+            return {
+              key: crypto.randomUUID(),
+              productId: "",
+              quantity: d.quantity,
+              unit: d.unit,
+              frequency: m.frequency ?? "",
+              notes: m.notes ?? "",
+            } as MedicationLineDraft;
+          }
+
+          // Try local cache/preview first (fast path).
+          const cached =
+            Object.values(productCacheRef.current).find((p) => formatProductOptionLabel(p).toLowerCase() === name.toLowerCase()) ??
+            medProductPreview.find((p) => formatProductOptionLabel(p).toLowerCase() === name.toLowerCase()) ??
+            null;
+
+          const { generic, brand, base } = parseMedicationLabelForSearch(name);
+          const queries = [
+            name, // full label (may fail if it includes strength/form)
+            base, // "Generic (Brand)"
+            [generic, brand].filter(Boolean).join(" "),
+            generic,
+            brand,
+          ]
+            .map((q) => normalize(q))
+            .filter((q, i, arr) => q.length > 0 && arr.indexOf(q) === i);
+
+          let match: ProductCatalogRow | null = cached;
+          if (!match) {
+            for (const q of queries) {
+              const s = await searchActiveProducts(q, 20);
+              if (s.error) continue;
+              match =
+                s.products.find((p) => formatProductOptionLabel(p).toLowerCase() === name.toLowerCase()) ??
+                s.products.find((p) => p.generic_name.trim().toLowerCase() === generic.toLowerCase()) ??
+                s.products.find((p) => (p.brand_name ?? "").trim().toLowerCase() === brand.toLowerCase()) ??
+                s.products[0] ??
+                null;
+              if (match) break;
+            }
+          }
+
+          if (match) mergeIntoProductCache([match]);
+
+          return {
+            key: crypto.randomUUID(),
+            productId: match?.id ?? "",
+            quantity: d.quantity,
+            unit: match?.unit_of_measure ?? d.unit,
+            frequency: m.frequency ?? "",
+            notes: m.notes ?? "",
+          } as MedicationLineDraft;
+        }),
+      );
+
+      if (cancelled) return;
+      const missingNames = r.medications
+        .filter((m, i) => resolved[i] != null && resolved[i]!.productId.trim() === "")
+        .map((m) => m.medication_name)
+        .filter(Boolean);
+      if (missingNames.length > 0) {
+        setMedToastSeverity("error");
+        setMedToastMessage(`Some medications could not be matched to products. Please reselect: ${missingNames.join(", ")}`);
+        setMedToastOpen(true);
+      }
+
+      setMedicationLines(resolved.length === 0 ? [newMedicationLine()] : resolved);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [medicationsModalOpen, transId]);
 
   useEffect(() => {
     if (!medicationsModalOpen) return;
@@ -323,6 +455,75 @@ export default function PlansTreatmentPanel({
       return next;
     });
   }, []);
+
+  const printMedicationPrescription = useCallback(async () => {
+    const u = profile as UserProfile | null;
+    const fullname = u?.fullname?.trim() ?? "";
+    const specialty = u?.specialty?.trim() ?? "";
+    const licenseNo = u?.license_no?.trim() ?? "";
+    const ptrNo = u?.ptr_no?.trim() ?? "";
+    const s2No = u?.s2_no?.trim() ?? "";
+
+    const medications = medicationLines
+      .filter((l) => l.productId.trim() !== "")
+      .map((l) => {
+        const p = productCache[l.productId];
+        return {
+          drugLine: p ? formatProductOptionLabel(p) : l.productId,
+          quantity: l.quantity,
+          unit: l.unit,
+          frequency: l.frequency,
+          notes: l.notes,
+        };
+      });
+
+    setPrintRxLoading(true);
+    try {
+      const ok = await openPrescriptionPrintWindow({
+        patient,
+        physician: { fullname, specialty, licenseNo, ptrNo, s2No },
+        medications,
+      });
+      if (!ok) {
+        window.alert(
+          "Could not load the prescription PDF template. Ensure templates/LifeHub_Prescription_Pad_Improved.pdf is present on the server.",
+        );
+      }
+    } finally {
+      setPrintRxLoading(false);
+    }
+  }, [patient, profile, medicationLines, productCache]);
+
+  const saveEncounterMedications = useCallback(async () => {
+    setMedSaveLoading(true);
+    try {
+      const rows = medicationLines
+        .filter((l) => l.productId.trim() !== "")
+        .map((l) => {
+          const p = productCache[l.productId];
+          const medicationName = p ? formatProductOptionLabel(p) : l.productId;
+          const q = l.quantity.trim();
+          const u = l.unit.trim();
+          const dosage = [q, u].filter(Boolean).join(" ").trim() || null;
+          const frequency = l.frequency.trim() || null;
+          const notes = l.notes.trim() || null;
+          return { medication_name: medicationName, dosage, frequency, notes };
+        });
+
+      const r = await replaceCurrentMedicationsForEncounter(transId, rows);
+      if (r.error) {
+        setMedToastSeverity("error");
+        setMedToastMessage(r.error);
+        setMedToastOpen(true);
+        return;
+      }
+      setMedToastSeverity("success");
+      setMedToastMessage("Medications saved.");
+      setMedToastOpen(true);
+    } finally {
+      setMedSaveLoading(false);
+    }
+  }, [transId, medicationLines, productCache]);
 
   const visibleLabSections = useMemo(
     () => labSections.filter((s) => s.tests.length > 0),
@@ -995,6 +1196,21 @@ export default function PlansTreatmentPanel({
             least two letters to search the full catalog. Unit defaults from each product's recorded unit of measure and
             can be edited.
           </Typography>
+          <Snackbar
+            open={medToastOpen}
+            autoHideDuration={3500}
+            onClose={() => setMedToastOpen(false)}
+            anchorOrigin={{ vertical: "top", horizontal: "center" }}
+          >
+            <Alert
+              severity={medToastSeverity}
+              variant="filled"
+              onClose={() => setMedToastOpen(false)}
+              sx={{ width: "100%" }}
+            >
+              {medToastMessage}
+            </Alert>
+          </Snackbar>
           {medProductsLoading && medProductPreview.length === 0 ? (
             <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
               <CircularProgress size={32} />
@@ -1027,81 +1243,124 @@ export default function PlansTreatmentPanel({
                     UNIT
                   </Typography>
                 </Grid>
+                <Grid size={{ sm: 2 }}>
+                  <Typography variant="caption" fontWeight={700} color="info.main" sx={{ letterSpacing: "0.06em" }}>
+                    FREQUENCY
+                  </Typography>
+                </Grid>
+                <Grid size={{ sm: 4 }}>
+                  <Typography variant="caption" fontWeight={700} color="info.main" sx={{ letterSpacing: "0.06em" }}>
+                    NOTES
+                  </Typography>
+                </Grid>
                 <Grid size={{ sm: 1 }} />
               </Grid>
-              {medicationLines.map((line) => {
+              {medicationLines.map((line, idx) => {
                 const selected = line.productId ? (productCache[line.productId] ?? null) : null;
                 return (
-                  <Grid container spacing={1} key={line.key} alignItems="center" sx={{ mb: 1.5 }}>
-                    <Grid size={{ xs: 12, sm: 5 }}>
-                      <MedicationProductAutocomplete
-                        previewProducts={medProductPreview}
-                        previewLoading={medProductsLoading}
-                        value={selected}
-                        textFieldSx={medicationOutlinedFieldSx}
-                        onChange={(p) => {
-                          if (p) mergeIntoProductCache([p]);
-                          setMedicationLines((rows) =>
-                            rows.map((r) =>
-                              r.key === line.key
-                                ? {
-                                    ...r,
-                                    productId: p?.id ?? "",
-                                    unit: p?.unit_of_measure ?? r.unit,
-                                  }
-                                : r,
-                            ),
-                          );
-                        }}
-                      />
+                  <Box key={line.key} sx={{ mb: 1.25 }}>
+                    <Grid container spacing={1} alignItems="center">
+                      <Grid size={{ xs: 12, sm: 5 }}>
+                        <MedicationProductAutocomplete
+                          previewProducts={medProductPreview}
+                          previewLoading={medProductsLoading}
+                          value={selected}
+                          textFieldSx={medicationOutlinedFieldSx}
+                          onChange={(p) => {
+                            if (p) mergeIntoProductCache([p]);
+                            setMedicationLines((rows) =>
+                              rows.map((r) =>
+                                r.key === line.key
+                                  ? {
+                                      ...r,
+                                      productId: p?.id ?? "",
+                                      unit: p?.unit_of_measure ?? r.unit,
+                                    }
+                                  : r,
+                              ),
+                            );
+                          }}
+                        />
+                      </Grid>
+                      <Grid size={{ xs: 6, sm: 2 }}>
+                        <TextField
+                          size="small"
+                          fullWidth
+                          label="Qty"
+                          placeholder=" "
+                          type="number"
+                          inputProps={{ min: 0, step: "any" }}
+                          value={line.quantity}
+                          onChange={(e) =>
+                            setMedicationLines((rows) =>
+                              rows.map((r) => (r.key === line.key ? { ...r, quantity: e.target.value } : r)),
+                            )
+                          }
+                          sx={medicationOutlinedFieldSx}
+                        />
+                      </Grid>
+                      <Grid size={{ xs: 6, sm: 3 }}>
+                        <TextField
+                          size="small"
+                          fullWidth
+                          label="Unit"
+                          placeholder=" "
+                          value={line.unit}
+                          onChange={(e) =>
+                            setMedicationLines((rows) =>
+                              rows.map((r) => (r.key === line.key ? { ...r, unit: e.target.value } : r)),
+                            )
+                          }
+                          sx={medicationOutlinedFieldSx}
+                        />
+                      </Grid>
+                      <Grid size={{ xs: 12, sm: 2 }}>
+                        <TextField
+                          size="small"
+                          fullWidth
+                          label="Frequency"
+                          placeholder=" "
+                          value={line.frequency}
+                          onChange={(e) =>
+                            setMedicationLines((rows) =>
+                              rows.map((r) => (r.key === line.key ? { ...r, frequency: e.target.value } : r)),
+                            )
+                          }
+                          sx={medicationOutlinedFieldSx}
+                        />
+                      </Grid>
+                      <Grid size={{ xs: 12, sm: 4 }}>
+                        <TextField
+                          size="small"
+                          fullWidth
+                          label="Notes"
+                          placeholder=" "
+                          value={line.notes}
+                          onChange={(e) =>
+                            setMedicationLines((rows) =>
+                              rows.map((r) => (r.key === line.key ? { ...r, notes: e.target.value } : r)),
+                            )
+                          }
+                          sx={medicationOutlinedFieldSx}
+                        />
+                      </Grid>
+                      <Grid size={{ xs: 12, sm: "auto" }} sx={{ display: "flex", alignItems: "center" }}>
+                        <IconButton
+                          aria-label="Remove medication line"
+                          size="small"
+                          onClick={() => {
+                            setMedicationLines((prev) => {
+                              const next = prev.filter((l) => l.key !== line.key);
+                              return next.length === 0 ? [newMedicationLine()] : next;
+                            });
+                          }}
+                        >
+                          <DeleteOutlineIcon fontSize="small" />
+                        </IconButton>
+                      </Grid>
                     </Grid>
-                    <Grid size={{ xs: 6, sm: 2 }}>
-                      <TextField
-                        size="small"
-                        fullWidth
-                        label="Qty"
-                        placeholder=" "
-                        type="number"
-                        inputProps={{ min: 0, step: "any" }}
-                        value={line.quantity}
-                        onChange={(e) =>
-                          setMedicationLines((rows) =>
-                            rows.map((r) => (r.key === line.key ? { ...r, quantity: e.target.value } : r)),
-                          )
-                        }
-                        sx={medicationOutlinedFieldSx}
-                      />
-                    </Grid>
-                    <Grid size={{ xs: 6, sm: 3 }}>
-                      <TextField
-                        size="small"
-                        fullWidth
-                        label="Unit"
-                        placeholder=" "
-                        value={line.unit}
-                        onChange={(e) =>
-                          setMedicationLines((rows) =>
-                            rows.map((r) => (r.key === line.key ? { ...r, unit: e.target.value } : r)),
-                          )
-                        }
-                        sx={medicationOutlinedFieldSx}
-                      />
-                    </Grid>
-                    <Grid size={{ xs: 12, sm: "auto" }} sx={{ display: "flex", alignItems: "center" }}>
-                      <IconButton
-                        aria-label="Remove medication line"
-                        size="small"
-                        onClick={() => {
-                          setMedicationLines((prev) => {
-                            const next = prev.filter((l) => l.key !== line.key);
-                            return next.length === 0 ? [newMedicationLine()] : next;
-                          });
-                        }}
-                      >
-                        <DeleteOutlineIcon fontSize="small" />
-                      </IconButton>
-                    </Grid>
-                  </Grid>
+                    {idx < medicationLines.length - 1 ? <Divider sx={{ mt: 1.25 }} /> : null}
+                  </Box>
                 );
               })}
               <Button
@@ -1116,7 +1375,27 @@ export default function PlansTreatmentPanel({
             </>
           ) : null}
         </DialogContent>
-        <DialogActions sx={{ px: 2, py: 1.5 }}>
+        <DialogActions sx={{ px: 2, py: 1.5, justifyContent: "flex-end", flexWrap: "wrap", gap: 1 }}>
+          <Button
+            type="button"
+            variant="contained"
+            color="secondary"
+            disabled={medSaveLoading || medProductsLoading}
+            onClick={() => void saveEncounterMedications()}
+            sx={{ textTransform: "uppercase" }}
+          >
+            {medSaveLoading ? "Saving…" : "Save medications"}
+          </Button>
+          <Button
+            type="button"
+            variant="outlined"
+            color="secondary"
+            disabled={printRxLoading}
+            onClick={() => void printMedicationPrescription()}
+            sx={{ textTransform: "uppercase" }}
+          >
+            {printRxLoading ? "Preparing…" : "Print Rx"}
+          </Button>
           <Button onClick={() => setMedicationsModalOpen(false)} color="inherit" variant="text" sx={{ textTransform: "uppercase" }}>
             Close
           </Button>

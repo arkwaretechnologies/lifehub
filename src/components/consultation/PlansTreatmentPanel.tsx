@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import {
   Alert,
   Box,
@@ -14,7 +15,7 @@ import {
   FormControl,
   FormControlLabel,
   Grid,
-  MenuItem,
+  IconButton,
   Radio,
   RadioGroup,
   TextField,
@@ -22,6 +23,7 @@ import {
 } from "@mui/material";
 import { useAuth } from "@/components/AuthProvider";
 import type { ConsultationPatient } from "@/components/consultation/consultationTypes";
+import MedicationProductAutocomplete from "@/components/consultation/MedicationProductAutocomplete";
 import { consultFormControlLabelSx } from "@/components/consultation/ConsultationSectionTitle";
 import { useConsultationDebouncedSave } from "@/components/consultation/useConsultationDebouncedSave";
 import {
@@ -37,12 +39,16 @@ import {
   fetchLabRequestsForEncounter,
   parsePatientIdForLab,
   type EncounterLabRequestSummary,
-  type LabRequestItemPriority,
 } from "@/lib/labRequests";
 import {
   fetchLabCatalogGrouped,
   type LabCatalogSection,
 } from "@/lib/labTests";
+import {
+  fetchActiveProductsPreview,
+  fetchProductsByIds,
+  type ProductCatalogRow,
+} from "@/lib/pharmacyProducts";
 
 const tabPanelSx = { pt: 2, minHeight: 280 };
 
@@ -106,6 +112,65 @@ const emptyPlansForm: EncounterPlansTreatmentForm = {
   disposition: null,
 };
 
+/** Imaging section aligned with paper form (LH-HPE-001). */
+type ImagingFormState = {
+  chestXray: boolean;
+  chestXrayView: string;
+  wholeAbdomenUtz: boolean;
+  echo2d: boolean;
+  thyroidScan: boolean;
+  tvs: boolean;
+};
+
+const emptyImagingForm: ImagingFormState = {
+  chestXray: false,
+  chestXrayView: "",
+  wholeAbdomenUtz: false,
+  echo2d: false,
+  thyroidScan: false,
+  tvs: false,
+};
+
+type MedicationLineDraft = {
+  key: string;
+  productId: string;
+  quantity: string;
+  unit: string;
+};
+
+function newMedicationLine(): MedicationLineDraft {
+  return { key: crypto.randomUUID(), productId: "", quantity: "", unit: "" };
+}
+
+const imagingCheckboxLabelSx = {
+  ...consultFormControlLabelSx,
+  display: "flex",
+  flexDirection: "row",
+  alignItems: "center",
+  ml: 0,
+  mr: 0,
+  gap: 0.5,
+  "& .MuiFormControlLabel-label": { display: "inline", lineHeight: 1.35 },
+} as const;
+
+/** Room for label + text in small outlined fields (avoids clipped placeholders). */
+const medicationOutlinedFieldSx = {
+  "& .MuiOutlinedInput-root": {
+    bgcolor: "background.paper",
+    minHeight: 44,
+    alignItems: "center",
+  },
+  "& .MuiOutlinedInput-input, & .MuiInputBase-input": {
+    py: 1.125,
+    lineHeight: 1.5,
+    height: "auto",
+    boxSizing: "border-box" as const,
+  },
+  "& .MuiInputLabel-root": {
+    lineHeight: 1.3,
+  },
+} as const;
+
 export default function PlansTreatmentPanel({
   transId,
   patient,
@@ -127,8 +192,6 @@ export default function PlansTreatmentPanel({
   const [labTestsLoading, setLabTestsLoading] = useState(false);
   const [labTestsError, setLabTestsError] = useState("");
   const [selectedLabTestIds, setSelectedLabTestIds] = useState<Set<string>>(() => new Set());
-  const [labRequestPriority, setLabRequestPriority] = useState<LabRequestItemPriority>("Routine");
-  const [labRequestRemarks, setLabRequestRemarks] = useState("");
   const [labSubmitting, setLabSubmitting] = useState(false);
   const [labDialogError, setLabDialogError] = useState("");
   const [labDialogSuccess, setLabDialogSuccess] = useState("");
@@ -136,9 +199,82 @@ export default function PlansTreatmentPanel({
   const [requestedTestIdSet, setRequestedTestIdSet] = useState<Set<string>>(() => new Set());
   const [labEncounterError, setLabEncounterError] = useState("");
 
+  const [imagingModalOpen, setImagingModalOpen] = useState(false);
+  const [imagingForm, setImagingForm] = useState<ImagingFormState>(emptyImagingForm);
+
+  const [medicationsModalOpen, setMedicationsModalOpen] = useState(false);
+  const [medProductPreview, setMedProductPreview] = useState<ProductCatalogRow[]>([]);
+  const [productCache, setProductCache] = useState<Record<string, ProductCatalogRow>>({});
+  const [medProductsLoading, setMedProductsLoading] = useState(false);
+  const [medProductsError, setMedProductsError] = useState("");
+  const [medicationLines, setMedicationLines] = useState<MedicationLineDraft[]>([]);
+  const productCacheRef = useRef(productCache);
+  productCacheRef.current = productCache;
+
+  const mergeIntoProductCache = useCallback((rows: ProductCatalogRow[]) => {
+    if (rows.length === 0) return;
+    setProductCache((prev) => {
+      const next = { ...prev };
+      for (const p of rows) next[p.id] = p;
+      return next;
+    });
+  }, []);
+
+  const medicationProductIdsKey = useMemo(
+    () => [...new Set(medicationLines.map((l) => l.productId).filter(Boolean))].sort().join(","),
+    [medicationLines],
+  );
+
   useEffect(() => {
     setSelectedLabTestIds(new Set());
+    setImagingForm(emptyImagingForm);
+    setMedicationLines([]);
+    setProductCache({});
+    setMedProductPreview([]);
   }, [transId]);
+
+  useEffect(() => {
+    if (!medicationsModalOpen) return;
+    setMedicationLines((prev) => (prev.length === 0 ? [newMedicationLine()] : prev));
+  }, [medicationsModalOpen]);
+
+  useEffect(() => {
+    if (!medicationsModalOpen) return;
+    let cancelled = false;
+    setMedProductsLoading(true);
+    setMedProductsError("");
+    void (async () => {
+      const r = await fetchActiveProductsPreview(120);
+      if (cancelled) return;
+      setMedProductsLoading(false);
+      if (r.error) {
+        setMedProductsError(r.error);
+        setMedProductPreview([]);
+      } else {
+        setMedProductPreview(r.products);
+        mergeIntoProductCache(r.products);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [medicationsModalOpen, mergeIntoProductCache]);
+
+  useEffect(() => {
+    if (!medicationsModalOpen) return;
+    if (medicationProductIdsKey === "") return;
+    const ids = medicationProductIdsKey.split(",").filter(Boolean);
+    const missing = ids.filter((id) => !productCacheRef.current[id]);
+    if (missing.length === 0) return;
+    let cancelled = false;
+    void fetchProductsByIds(missing).then((r) => {
+      if (cancelled || r.error) return;
+      mergeIntoProductCache(r.products);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [medicationsModalOpen, medicationProductIdsKey, mergeIntoProductCache]);
 
   useEffect(() => {
     if (!labsModalOpen) return;
@@ -215,10 +351,10 @@ export default function PlansTreatmentPanel({
       patientId: parsePatientIdForLab(patient.patientId),
       referringPhysician: patient.referringPhysician?.trim() ? patient.referringPhysician.trim() : null,
       physicianId,
-      priority: labRequestPriority,
-      remarks: labRequestRemarks,
+      priority: "Routine",
+      remarks: null,
       labTestIds: [...selectedLabTestIds],
-      itemPriority: labRequestPriority,
+      itemPriority: "Routine",
     });
     setLabSubmitting(false);
     if (error) {
@@ -227,7 +363,6 @@ export default function PlansTreatmentPanel({
     }
     setLabDialogSuccess(`Lab request saved (${labRequestId?.slice(0, 8)}…).`);
     setSelectedLabTestIds(new Set());
-    setLabRequestRemarks("");
     const encRefresh = await fetchLabRequestsForEncounter(transId);
     if (!encRefresh.error) {
       setEncounterLabRequests(encRefresh.requests);
@@ -239,8 +374,6 @@ export default function PlansTreatmentPanel({
     patient.patientId,
     patient.referringPhysician,
     profile,
-    labRequestPriority,
-    labRequestRemarks,
     selectedLabTestIds,
   ]);
 
@@ -356,32 +489,69 @@ export default function PlansTreatmentPanel({
               </Box>
             </Grid>
             <Grid size={{ xs: "auto" }}>
-              <FormControlLabel
-                control={
-                  <Checkbox
+              <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", columnGap: 0.5 }}>
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={form.plan_imaging}
+                      disabled={loading}
+                      onChange={(_, c) => {
+                        setForm((f) => ({ ...f, plan_imaging: c }));
+                        if (c) setImagingModalOpen(true);
+                        else setImagingModalOpen(false);
+                      }}
+                    />
+                  }
+                  label="IMAGING"
+                  sx={consultFormControlLabelSx}
+                />
+                {form.plan_imaging && !loading ? (
+                  <Button
+                    type="button"
+                    variant="text"
                     size="small"
-                    checked={form.plan_imaging}
-                    disabled={loading}
-                    onChange={(_, c) => setForm((f) => ({ ...f, plan_imaging: c }))}
-                  />
-                }
-                label="IMAGING"
-                sx={consultFormControlLabelSx}
-              />
+                    onClick={() => setImagingModalOpen(true)}
+                    sx={{ textTransform: "uppercase", minWidth: "auto", py: 0.25, px: 0.75 }}
+                  >
+                    View studies
+                  </Button>
+                ) : null}
+              </Box>
             </Grid>
             <Grid size={{ xs: "auto" }}>
-              <FormControlLabel
-                control={
-                  <Checkbox
+              <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", columnGap: 0.5 }}>
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={form.plan_medications}
+                      disabled={loading}
+                      onChange={(_, c) => {
+                        setForm((f) => ({ ...f, plan_medications: c }));
+                        if (c) setMedicationsModalOpen(true);
+                        else {
+                          setMedicationsModalOpen(false);
+                          setMedicationLines([]);
+                        }
+                      }}
+                    />
+                  }
+                  label="MEDICATIONS"
+                  sx={consultFormControlLabelSx}
+                />
+                {form.plan_medications && !loading ? (
+                  <Button
+                    type="button"
+                    variant="text"
                     size="small"
-                    checked={form.plan_medications}
-                    disabled={loading}
-                    onChange={(_, c) => setForm((f) => ({ ...f, plan_medications: c }))}
-                  />
-                }
-                label="MEDICATIONS"
-                sx={consultFormControlLabelSx}
-              />
+                    onClick={() => setMedicationsModalOpen(true)}
+                    sx={{ textTransform: "uppercase", minWidth: "auto", py: 0.25, px: 0.75 }}
+                  >
+                    View products
+                  </Button>
+                ) : null}
+              </Box>
             </Grid>
           </Grid>
           <Box sx={{ mb: 2 }}>
@@ -534,39 +704,6 @@ export default function PlansTreatmentPanel({
               </Box>
             </Alert>
           ) : null}
-          <Grid container spacing={2} sx={{ mb: 2 }}>
-            <Grid size={{ xs: 12, sm: 4 }}>
-              <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
-                PRIORITY
-              </Typography>
-              <TextField
-                select
-                fullWidth
-                size="small"
-                value={labRequestPriority}
-                disabled={labTestsLoading || labSubmitting}
-                onChange={(e) => setLabRequestPriority(e.target.value as LabRequestItemPriority)}
-              >
-                <MenuItem value="Routine">Routine</MenuItem>
-                <MenuItem value="STAT">STAT</MenuItem>
-              </TextField>
-            </Grid>
-            <Grid size={{ xs: 12, sm: 8 }}>
-              <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
-                REMARKS / CLINICAL IMPRESSION
-              </Typography>
-              <TextField
-                fullWidth
-                multiline
-                minRows={2}
-                size="small"
-                placeholder="Optional"
-                value={labRequestRemarks}
-                disabled={labTestsLoading || labSubmitting}
-                onChange={(e) => setLabRequestRemarks(e.target.value)}
-              />
-            </Grid>
-          </Grid>
           {labTestsLoading ? (
             <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
               <CircularProgress size={32} />
@@ -672,6 +809,317 @@ export default function PlansTreatmentPanel({
               Close
             </Button>
           </Box>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={imagingModalOpen}
+        onClose={() => setImagingModalOpen(false)}
+        maxWidth="sm"
+        fullWidth
+        aria-labelledby="plans-imaging-dialog-title"
+        slotProps={{
+          paper: {
+            sx: { maxHeight: "92vh" },
+          },
+        }}
+      >
+        <DialogTitle
+          id="plans-imaging-dialog-title"
+          sx={{
+            fontWeight: 800,
+            textAlign: "center",
+            letterSpacing: "0.08em",
+            bgcolor: "info.main",
+            color: "info.contrastText",
+            py: 1.5,
+          }}
+        >
+          IMAGING
+        </DialogTitle>
+        <DialogContent
+          dividers
+          sx={{
+            px: { xs: 2, sm: 2.5 },
+            py: 2,
+            maxHeight: { xs: "70vh", md: "calc(92vh - 120px)" },
+            overflow: "auto",
+          }}
+        >
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <Box>
+              <FormControlLabel
+                sx={imagingCheckboxLabelSx}
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={imagingForm.chestXray}
+                    onChange={(_, c) => setImagingForm((f) => ({ ...f, chestXray: c }))}
+                  />
+                }
+                label={
+                  <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
+                    Chest X-ray
+                  </Typography>
+                }
+              />
+              <Box
+                sx={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                  gap: 1,
+                  pl: { xs: 0, sm: 4 },
+                  mt: 0.5,
+                }}
+              >
+                <Typography variant="body2" sx={{ textTransform: "uppercase", fontWeight: 600 }}>
+                  View:
+                </Typography>
+                <TextField
+                  size="small"
+                  placeholder=" "
+                  hiddenLabel
+                  value={imagingForm.chestXrayView}
+                  onChange={(e) => setImagingForm((f) => ({ ...f, chestXrayView: e.target.value }))}
+                  sx={{ flex: 1, minWidth: 160, "& .MuiOutlinedInput-root": { bgcolor: "background.paper" } }}
+                />
+              </Box>
+            </Box>
+
+            <FormControlLabel
+              sx={imagingCheckboxLabelSx}
+              control={
+                <Checkbox
+                  size="small"
+                  checked={imagingForm.wholeAbdomenUtz}
+                  onChange={(_, c) => setImagingForm((f) => ({ ...f, wholeAbdomenUtz: c }))}
+                />
+              }
+              label={
+                <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
+                  Whole Abdomen UTZ
+                </Typography>
+              }
+            />
+            <FormControlLabel
+              sx={imagingCheckboxLabelSx}
+              control={
+                <Checkbox
+                  size="small"
+                  checked={imagingForm.echo2d}
+                  onChange={(_, c) => setImagingForm((f) => ({ ...f, echo2d: c }))}
+                />
+              }
+              label={
+                <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
+                  2D Echo
+                </Typography>
+              }
+            />
+            <FormControlLabel
+              sx={imagingCheckboxLabelSx}
+              control={
+                <Checkbox
+                  size="small"
+                  checked={imagingForm.thyroidScan}
+                  onChange={(_, c) => setImagingForm((f) => ({ ...f, thyroidScan: c }))}
+                />
+              }
+              label={
+                <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
+                  Thyroid Scan
+                </Typography>
+              }
+            />
+            <FormControlLabel
+              sx={imagingCheckboxLabelSx}
+              control={
+                <Checkbox
+                  size="small"
+                  checked={imagingForm.tvs}
+                  onChange={(_, c) => setImagingForm((f) => ({ ...f, tvs: c }))}
+                />
+              }
+              label={
+                <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
+                  Transvaginal UTZ (TVS)
+                </Typography>
+              }
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ px: 2, py: 1.5 }}>
+          <Button onClick={() => setImagingModalOpen(false)} color="inherit" variant="text" sx={{ textTransform: "uppercase" }}>
+            Close
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={medicationsModalOpen}
+        onClose={() => setMedicationsModalOpen(false)}
+        maxWidth="md"
+        fullWidth
+        aria-labelledby="plans-medications-dialog-title"
+        slotProps={{
+          paper: {
+            sx: { maxHeight: "92vh" },
+          },
+        }}
+      >
+        <DialogTitle
+          id="plans-medications-dialog-title"
+          sx={{
+            fontWeight: 800,
+            textAlign: "center",
+            letterSpacing: "0.08em",
+            bgcolor: "info.main",
+            color: "info.contrastText",
+            py: 1.5,
+          }}
+        >
+          MEDICATIONS
+        </DialogTitle>
+        <DialogContent
+          dividers
+          sx={{
+            px: { xs: 2, sm: 2.5 },
+            py: 2,
+            maxHeight: { xs: "70vh", md: "calc(92vh - 120px)" },
+            overflow: "auto",
+          }}
+        >
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Select pharmacy products, quantity, and unit. The list starts with the first products alphabetically; type at
+            least two letters to search the full catalog. Unit defaults from each product's recorded unit of measure and
+            can be edited.
+          </Typography>
+          {medProductsLoading && medProductPreview.length === 0 ? (
+            <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+              <CircularProgress size={32} />
+            </Box>
+          ) : medProductsError ? (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {medProductsError}
+            </Alert>
+          ) : null}
+          {!medProductsLoading && !medProductsError && medProductPreview.length === 0 ? (
+            <Typography variant="body2" color="text.secondary">
+              No active products in the catalog.
+            </Typography>
+          ) : null}
+          {!medProductsLoading && !medProductsError && medProductPreview.length > 0 ? (
+            <>
+              <Grid container spacing={1} sx={{ mb: 1, display: { xs: "none", sm: "flex" } }}>
+                <Grid size={{ sm: 5 }}>
+                  <Typography variant="caption" fontWeight={700} color="info.main" sx={{ letterSpacing: "0.06em" }}>
+                    PRODUCT
+                  </Typography>
+                </Grid>
+                <Grid size={{ sm: 2 }}>
+                  <Typography variant="caption" fontWeight={700} color="info.main" sx={{ letterSpacing: "0.06em" }}>
+                    QTY
+                  </Typography>
+                </Grid>
+                <Grid size={{ sm: 3 }}>
+                  <Typography variant="caption" fontWeight={700} color="info.main" sx={{ letterSpacing: "0.06em" }}>
+                    UNIT
+                  </Typography>
+                </Grid>
+                <Grid size={{ sm: 1 }} />
+              </Grid>
+              {medicationLines.map((line) => {
+                const selected = line.productId ? (productCache[line.productId] ?? null) : null;
+                return (
+                  <Grid container spacing={1} key={line.key} alignItems="center" sx={{ mb: 1.5 }}>
+                    <Grid size={{ xs: 12, sm: 5 }}>
+                      <MedicationProductAutocomplete
+                        previewProducts={medProductPreview}
+                        previewLoading={medProductsLoading}
+                        value={selected}
+                        textFieldSx={medicationOutlinedFieldSx}
+                        onChange={(p) => {
+                          if (p) mergeIntoProductCache([p]);
+                          setMedicationLines((rows) =>
+                            rows.map((r) =>
+                              r.key === line.key
+                                ? {
+                                    ...r,
+                                    productId: p?.id ?? "",
+                                    unit: p?.unit_of_measure ?? r.unit,
+                                  }
+                                : r,
+                            ),
+                          );
+                        }}
+                      />
+                    </Grid>
+                    <Grid size={{ xs: 6, sm: 2 }}>
+                      <TextField
+                        size="small"
+                        fullWidth
+                        label="Qty"
+                        placeholder=" "
+                        type="number"
+                        inputProps={{ min: 0, step: "any" }}
+                        value={line.quantity}
+                        onChange={(e) =>
+                          setMedicationLines((rows) =>
+                            rows.map((r) => (r.key === line.key ? { ...r, quantity: e.target.value } : r)),
+                          )
+                        }
+                        sx={medicationOutlinedFieldSx}
+                      />
+                    </Grid>
+                    <Grid size={{ xs: 6, sm: 3 }}>
+                      <TextField
+                        size="small"
+                        fullWidth
+                        label="Unit"
+                        placeholder=" "
+                        value={line.unit}
+                        onChange={(e) =>
+                          setMedicationLines((rows) =>
+                            rows.map((r) => (r.key === line.key ? { ...r, unit: e.target.value } : r)),
+                          )
+                        }
+                        sx={medicationOutlinedFieldSx}
+                      />
+                    </Grid>
+                    <Grid size={{ xs: 12, sm: "auto" }} sx={{ display: "flex", alignItems: "center" }}>
+                      <IconButton
+                        aria-label="Remove medication line"
+                        size="small"
+                        onClick={() => {
+                          setMedicationLines((prev) => {
+                            const next = prev.filter((l) => l.key !== line.key);
+                            return next.length === 0 ? [newMedicationLine()] : next;
+                          });
+                        }}
+                      >
+                        <DeleteOutlineIcon fontSize="small" />
+                      </IconButton>
+                    </Grid>
+                  </Grid>
+                );
+              })}
+              <Button
+                type="button"
+                variant="outlined"
+                size="small"
+                onClick={() => setMedicationLines((prev) => [...prev, newMedicationLine()])}
+                sx={{ textTransform: "uppercase", mt: 1 }}
+              >
+                Add medication
+              </Button>
+            </>
+          ) : null}
+        </DialogContent>
+        <DialogActions sx={{ px: 2, py: 1.5 }}>
+          <Button onClick={() => setMedicationsModalOpen(false)} color="inherit" variant="text" sx={{ textTransform: "uppercase" }}>
+            Close
+          </Button>
         </DialogActions>
       </Dialog>
     </Box>

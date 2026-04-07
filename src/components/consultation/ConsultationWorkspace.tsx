@@ -3,9 +3,10 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, Tab, Tabs, Typography } from "@mui/material";
+import CloseIcon from "@mui/icons-material/Close";
+import CloseOutlinedIcon from "@mui/icons-material/CloseOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import SaveOutlinedIcon from "@mui/icons-material/SaveOutlined";
-import CheckIcon from "@mui/icons-material/Check";
 import type { ConsultationPatient } from "./consultationTypes";
 import { ConsultationActiveTabContext } from "./consultationTabContext";
 import { ConsultationSaveProvider, useConsultationSave } from "./consultationSaveContext";
@@ -89,14 +90,24 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
           </Button>
         ) : null}
         <Button
-          variant="contained"
-          color="secondary"
-          startIcon={<CheckIcon />}
+          variant="outlined"
+          startIcon={<CloseIcon />}
           onClick={() => {
             if (dirty) setCloseConfirmOpen(true);
             else router.push("/dashboard");
           }}
-          sx={{ textTransform: "capitalize", borderRadius: 999, px: 2.5 }}
+          sx={{
+            textTransform: "capitalize",
+            borderRadius: 999,
+            px: 2.5,
+            // Matches the screenshot's slate/purple tone.
+            color: "#464669",
+            borderColor: "#464669",
+            "&:hover": {
+              borderColor: "#464669",
+              bgcolor: "rgba(70, 70, 105, 0.08)",
+            },
+          }}
         >
           Close
         </Button>
@@ -110,7 +121,13 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
           </Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setCloseConfirmOpen(false)} color="inherit" variant="text" sx={{ textTransform: "uppercase" }}>
+          <Button
+            onClick={() => setCloseConfirmOpen(false)}
+            color="inherit"
+            variant="text"
+            startIcon={<CloseOutlinedIcon />}
+            sx={{ textTransform: "none" }}
+          >
             Cancel
           </Button>
           <Button
@@ -120,7 +137,7 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
             }}
             color="secondary"
             variant="contained"
-            sx={{ textTransform: "uppercase" }}
+            sx={{ textTransform: "none" }}
           >
             Close anyway
           </Button>
@@ -135,7 +152,13 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
           </Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setDeleteConfirmOpen(false)} color="inherit" variant="text" sx={{ textTransform: "uppercase" }}>
+          <Button
+            onClick={() => setDeleteConfirmOpen(false)}
+            color="inherit"
+            variant="text"
+            startIcon={<CloseOutlinedIcon />}
+            sx={{ textTransform: "none" }}
+          >
             Cancel
           </Button>
           <Button
@@ -148,7 +171,8 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
             }}
             color="error"
             variant="contained"
-            sx={{ textTransform: "uppercase" }}
+            startIcon={<DeleteOutlineIcon />}
+            sx={{ textTransform: "none" }}
           >
             Delete
           </Button>

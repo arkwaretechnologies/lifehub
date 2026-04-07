@@ -1,7 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import AddOutlinedIcon from "@mui/icons-material/AddOutlined";
+import CloseIcon from "@mui/icons-material/Close";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import PrintOutlinedIcon from "@mui/icons-material/PrintOutlined";
+import SaveOutlinedIcon from "@mui/icons-material/SaveOutlined";
 import {
   Alert,
   Box,
@@ -140,6 +144,51 @@ const emptyImagingForm: ImagingFormState = {
   thyroidScan: false,
   tvs: false,
 };
+
+const IMAGING_NOTES_START = "[IMAGING_REQUEST]";
+const IMAGING_NOTES_END = "[/IMAGING_REQUEST]";
+
+function buildImagingRequestLines(v: ImagingFormState): string[] {
+  const lines: string[] = [];
+  if (v.chestXray) {
+    const view = v.chestXrayView.trim();
+    lines.push(view ? `- Chest X-ray (View: ${view})` : "- Chest X-ray");
+  }
+  if (v.wholeAbdomenUtz) lines.push("- Whole Abdomen UTZ");
+  if (v.echo2d) lines.push("- 2D Echo");
+  if (v.thyroidScan) lines.push("- Thyroid Scan");
+  if (v.tvs) lines.push("- Transvaginal UTZ (TVS)");
+  return lines;
+}
+
+function upsertImagingBlock(existingNotes: string, imagingLines: string[]): string {
+  const block =
+    imagingLines.length === 0
+      ? ""
+      : [IMAGING_NOTES_START, "IMAGING REQUEST:", ...imagingLines, IMAGING_NOTES_END].join("\n");
+
+  const notes = existingNotes ?? "";
+  const start = notes.indexOf(IMAGING_NOTES_START);
+  const end = notes.indexOf(IMAGING_NOTES_END);
+
+  // If no block exists, append a new one.
+  if (start === -1 || end === -1 || end < start) {
+    if (!block) return notes;
+    const sep = notes.trim().length ? "\n\n" : "";
+    return `${notes.trimEnd()}${sep}${block}\n`;
+  }
+
+  // Replace existing block.
+  const before = notes.slice(0, start).trimEnd();
+  const after = notes.slice(end + IMAGING_NOTES_END.length).trimStart();
+  if (!block) {
+    // Remove block entirely.
+    const merged = [before, after].filter(Boolean).join("\n\n");
+    return merged ? `${merged}\n` : "";
+  }
+  const merged = [before, block, after].filter(Boolean).join("\n\n");
+  return `${merged}\n`;
+}
 
 type MedicationLineDraft = {
   key: string;
@@ -484,6 +533,7 @@ export default function PlansTreatmentPanel({
         patient,
         physician: { fullname, specialty, licenseNo, ptrNo, s2No },
         medications,
+        transId,
       });
       if (!ok) {
         window.alert(
@@ -1005,11 +1055,18 @@ export default function PlansTreatmentPanel({
               color="secondary"
               disabled={labTestsLoading || labSubmitting || selectedLabTestIds.size === 0}
               onClick={() => void submitLabRequest()}
-              sx={{ textTransform: "uppercase" }}
+              startIcon={<SaveOutlinedIcon />}
+              sx={{ textTransform: "none" }}
             >
-              {labSubmitting ? "Saving…" : "Save request"}
+              {labSubmitting ? "Saving…" : "Save Request"}
             </Button>
-            <Button onClick={() => setLabsModalOpen(false)} color="inherit" variant="text" sx={{ textTransform: "uppercase" }}>
+            <Button
+              onClick={() => setLabsModalOpen(false)}
+              color="error"
+              variant="outlined"
+              startIcon={<CloseIcon />}
+              sx={{ textTransform: "none" }}
+            >
               Close
             </Button>
           </Box>
@@ -1086,7 +1143,7 @@ export default function PlansTreatmentPanel({
                   hiddenLabel
                   value={imagingForm.chestXrayView}
                   onChange={(e) => setImagingForm((f) => ({ ...f, chestXrayView: e.target.value }))}
-                  sx={{ flex: 1, minWidth: 160, "& .MuiOutlinedInput-root": { bgcolor: "background.paper" } }}
+                  sx={[medicationOutlinedFieldSx, { flex: 1, minWidth: 160 }]}
                 />
               </Box>
             </Box>
@@ -1153,8 +1210,32 @@ export default function PlansTreatmentPanel({
             />
           </Box>
         </DialogContent>
-        <DialogActions sx={{ px: 2, py: 1.5 }}>
-          <Button onClick={() => setImagingModalOpen(false)} color="inherit" variant="text" sx={{ textTransform: "uppercase" }}>
+        <DialogActions sx={{ px: 2, py: 1.5, justifyContent: "space-between", flexWrap: "wrap", gap: 1 }}>
+          <Button
+            type="button"
+            variant="contained"
+            color="secondary"
+            startIcon={<SaveOutlinedIcon />}
+            onClick={() => {
+              const lines = buildImagingRequestLines(imagingForm);
+              setForm((f) => ({
+                ...f,
+                plan_imaging: lines.length > 0 ? true : f.plan_imaging,
+                plan_notes: upsertImagingBlock(f.plan_notes ?? "", lines),
+              }));
+              setImagingModalOpen(false);
+            }}
+            sx={{ textTransform: "none" }}
+          >
+            Save Request
+          </Button>
+          <Button
+            onClick={() => setImagingModalOpen(false)}
+            color="error"
+            variant="outlined"
+            startIcon={<CloseIcon />}
+            sx={{ textTransform: "none" }}
+          >
             Close
           </Button>
         </DialogActions>
@@ -1371,7 +1452,8 @@ export default function PlansTreatmentPanel({
                 variant="outlined"
                 size="small"
                 onClick={() => setMedicationLines((prev) => [...prev, newMedicationLine()])}
-                sx={{ textTransform: "uppercase", mt: 1 }}
+                startIcon={<AddOutlinedIcon />}
+                sx={{ textTransform: "none", mt: 1 }}
               >
                 Add medication
               </Button>
@@ -1385,9 +1467,10 @@ export default function PlansTreatmentPanel({
             color="secondary"
             disabled={medSaveLoading || medProductsLoading}
             onClick={() => void saveEncounterMedications()}
-            sx={{ textTransform: "uppercase" }}
+            startIcon={<SaveOutlinedIcon />}
+            sx={{ textTransform: "none" }}
           >
-            {medSaveLoading ? "Saving…" : "Save medications"}
+            {medSaveLoading ? "Saving…" : "Save Medications"}
           </Button>
           <Button
             type="button"
@@ -1395,11 +1478,18 @@ export default function PlansTreatmentPanel({
             color="secondary"
             disabled={printRxLoading}
             onClick={() => void printMedicationPrescription()}
-            sx={{ textTransform: "uppercase" }}
+            startIcon={<PrintOutlinedIcon />}
+            sx={{ textTransform: "none" }}
           >
-            {printRxLoading ? "Preparing…" : "Print Rx"}
+            {printRxLoading ? "Preparing…" : "Print RX"}
           </Button>
-          <Button onClick={() => setMedicationsModalOpen(false)} color="inherit" variant="text" sx={{ textTransform: "uppercase" }}>
+          <Button
+            onClick={() => setMedicationsModalOpen(false)}
+            color="error"
+            variant="outlined"
+            startIcon={<CloseIcon />}
+            sx={{ textTransform: "none" }}
+          >
             Close
           </Button>
         </DialogActions>

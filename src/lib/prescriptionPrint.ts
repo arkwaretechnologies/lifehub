@@ -44,6 +44,8 @@ const LAYOUT = {
   sigBandFromTop: 628,
   /** Bottom LIC / PTR / S2 row above DAW / refills. */
   licRow: { fromTop: 676, x: 72, size: 9, col2: 232, col3: 392 },
+  /** QR code at bottom-left. */
+  qr: { x: 72, fromTop: 600, size: 72 },
 } as const;
 
 function printPdfBlob(blob: Blob): void {
@@ -80,10 +82,11 @@ export async function openPrescriptionPrintWindow(args: {
   patient: ConsultationPatient;
   physician: PrescriptionPrintPhysician;
   medications: PrescriptionPrintMedicationLine[];
+  transId: string;
 }): Promise<boolean> {
   const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
   const black = rgb(0, 0, 0);
-  const { patient, physician, medications } = args;
+  const { patient, physician, medications, transId } = args;
 
   const pageHeight = (h: number, fromTop: number) => h - fromTop;
 
@@ -254,6 +257,30 @@ export async function openPrescriptionPrintWindow(args: {
   // page.drawText(`LIC NO: ${lic}`, { x: lr.x, y: pageHeight(height, lr.fromTop), size: lr.size, font, color: black });
   // page.drawText(`PTR no. ${ptr}`, { x: lr.col2, y: pageHeight(height, lr.fromTop), size: lr.size, font, color: black });
   // page.drawText(`S2 no. ${s2}`, { x: lr.col3, y: pageHeight(height, lr.fromTop), size: lr.size, font, color: black });
+
+  // QR code of encounter trans_id (bottom-left).
+  const tid = String(transId ?? "").trim();
+  if (tid) {
+    const QRCode = (await import("qrcode")).default;
+    const dataUrl = await QRCode.toDataURL(tid, {
+      errorCorrectionLevel: "M",
+      margin: 0,
+      scale: 6,
+      color: { dark: "#000000", light: "#FFFFFF" },
+    });
+    const b64 = dataUrl.split(",")[1] ?? "";
+    if (b64) {
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const img = await doc.embedPng(bytes);
+      const s = LAYOUT.qr.size;
+      page.drawImage(img, {
+        x: LAYOUT.qr.x,
+        y: pageHeight(height, LAYOUT.qr.fromTop) - s,
+        width: s,
+        height: s,
+      });
+    }
+  }
 
   const out = await doc.save();
   const blob = new Blob([out as BlobPart], { type: "application/pdf" });

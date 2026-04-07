@@ -27,7 +27,7 @@ import { useAuth } from "@/components/AuthProvider";
 import type { ConsultationPatient } from "@/components/consultation/consultationTypes";
 import MedicationProductAutocomplete from "@/components/consultation/MedicationProductAutocomplete";
 import { consultFormControlLabelSx } from "@/components/consultation/ConsultationSectionTitle";
-import { useConsultationDebouncedSave } from "@/components/consultation/useConsultationDebouncedSave";
+import { useConsultationSave } from "@/components/consultation/consultationSaveContext";
 import {
   ENCOUNTER_DISPOSITION_VALUES,
   fetchEncounterPlansTreatment,
@@ -205,6 +205,7 @@ export default function PlansTreatmentPanel({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const { registerSaveHandler, setPanelDirty } = useConsultationSave();
 
   const [labsModalOpen, setLabsModalOpen] = useState(false);
   const [labSections, setLabSections] = useState<LabCatalogSection[]>([]);
@@ -606,16 +607,18 @@ export default function PlansTreatmentPanel({
     const { error } = await persistEncounterPlansTreatment(transId, form);
     setSaving(false);
     if (error) setSaveError(error);
-  }, [hydrated, transId, form]);
+    else setPanelDirty("plans-treatment", false);
+  }, [hydrated, transId, form, setPanelDirty]);
 
-  const saveTrigger = useMemo(() => form, [form]);
+  useEffect(() => {
+    if (!hydrated) return;
+    return registerSaveHandler("plans-treatment", runPersist);
+  }, [registerSaveHandler, runPersist, hydrated]);
 
-  useConsultationDebouncedSave({
-    ownTabIndex: 5,
-    hydrated,
-    runPersist,
-    trigger: saveTrigger,
-  });
+  useEffect(() => {
+    if (!hydrated) return;
+    setPanelDirty("plans-treatment", true);
+  }, [form, hydrated, setPanelDirty]);
 
   return (
     <Box sx={tabPanelSx}>

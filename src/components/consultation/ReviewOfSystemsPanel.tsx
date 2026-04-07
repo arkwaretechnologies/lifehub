@@ -12,7 +12,7 @@ import {
   Typography,
 } from "@mui/material";
 import { consultFormControlLabelSx } from "@/components/consultation/ConsultationSectionTitle";
-import { useConsultationDebouncedSave } from "@/components/consultation/useConsultationDebouncedSave";
+import { useConsultationSave } from "@/components/consultation/consultationSaveContext";
 import {
   emptyReviewOfSystemsForm,
   fetchReviewOfSystems,
@@ -270,6 +270,7 @@ export default function ReviewOfSystemsPanel({ transId }: { transId: string }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const { registerSaveHandler, setPanelDirty } = useConsultationSave();
 
   useEffect(() => {
     let cancelled = false;
@@ -317,14 +318,18 @@ export default function ReviewOfSystemsPanel({ transId }: { transId: string }) {
     if (newId && !rowId) {
       setRowId(newId);
     }
-  }, [hydrated, transId, rowId, form]);
+    setPanelDirty("review-of-systems", false);
+  }, [hydrated, transId, rowId, form, setPanelDirty]);
 
-  useConsultationDebouncedSave({
-    ownTabIndex: 1,
-    hydrated,
-    runPersist,
-    trigger: form,
-  });
+  useEffect(() => {
+    if (!hydrated) return;
+    return registerSaveHandler("review-of-systems", runPersist);
+  }, [registerSaveHandler, runPersist, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    setPanelDirty("review-of-systems", true);
+  }, [form, hydrated, setPanelDirty]);
 
   return (
     <Box sx={tabPanelSx}>

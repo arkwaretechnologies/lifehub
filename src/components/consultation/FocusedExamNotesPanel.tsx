@@ -5,9 +5,9 @@
  * Autosave while tab index 3 is active.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Alert, Box, CircularProgress, TextField, Typography } from "@mui/material";
-import { useConsultationDebouncedSave } from "@/components/consultation/useConsultationDebouncedSave";
+import { useConsultationSave } from "@/components/consultation/consultationSaveContext";
 import { fetchFocusedExamNotes, persistFocusedExamNotes } from "@/lib/physicalExamination";
 
 const tabPanelSx = {
@@ -23,6 +23,7 @@ export default function FocusedExamNotesPanel({ transId }: { transId: string }) 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const { registerSaveHandler, setPanelDirty } = useConsultationSave();
 
   useEffect(() => {
     let cancelled = false;
@@ -55,16 +56,18 @@ export default function FocusedExamNotesPanel({ transId }: { transId: string }) 
     setSaving(false);
     if (error) setSaveError(error);
     if (nextId) setRowId(nextId);
-  }, [hydrated, transId, rowId, notes]);
+    if (!error) setPanelDirty("focused-exam-notes", false);
+  }, [hydrated, transId, rowId, notes, setPanelDirty]);
 
-  const saveTrigger = useMemo(() => ({ notes }), [notes]);
+  useEffect(() => {
+    if (!hydrated) return;
+    return registerSaveHandler("focused-exam-notes", runPersist);
+  }, [registerSaveHandler, runPersist, hydrated]);
 
-  useConsultationDebouncedSave({
-    ownTabIndex: 3,
-    hydrated,
-    runPersist,
-    trigger: saveTrigger,
-  });
+  useEffect(() => {
+    if (!hydrated) return;
+    setPanelDirty("focused-exam-notes", true);
+  }, [notes, hydrated, setPanelDirty]);
 
   return (
     <Box sx={tabPanelSx}>

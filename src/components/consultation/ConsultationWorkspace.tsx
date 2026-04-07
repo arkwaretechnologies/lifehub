@@ -2,11 +2,13 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Box, Button, Tab, Tabs, Typography } from "@mui/material";
-import ArrowBackIosNewIcon from "@mui/icons-material/ArrowBackIosNew";
+import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, Tab, Tabs, Typography } from "@mui/material";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import SaveOutlinedIcon from "@mui/icons-material/SaveOutlined";
 import CheckIcon from "@mui/icons-material/Check";
 import type { ConsultationPatient } from "./consultationTypes";
 import { ConsultationActiveTabContext } from "./consultationTabContext";
+import { ConsultationSaveProvider, useConsultationSave } from "./consultationSaveContext";
 import AssessmentDiagnosisPanel from "./AssessmentDiagnosisPanel";
 import FocusedExamNotesPanel from "./FocusedExamNotesPanel";
 import MedicalHistoryPanel from "./MedicalHistoryPanel";
@@ -36,34 +38,122 @@ function a11yProps(index: number) {
 export default function ConsultationWorkspace({
   patient,
   transId,
+  isNew = false,
 }: {
   patient: ConsultationPatient;
   transId: string;
+  isNew?: boolean;
 }) {
+  return (
+    <ConsultationSaveProvider>
+      <ConsultationWorkspaceInner patient={patient} transId={transId} isNew={isNew} />
+    </ConsultationSaveProvider>
+  );
+}
+
+function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: ConsultationPatient; transId: string; isNew: boolean }) {
   const router = useRouter();
   const [tab, setTab] = useState(0);
+  const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const { dirty, runSaveAll, saving } = useConsultationSave();
 
   return (
     <Box sx={{ maxWidth: 1200, mx: "auto" }}>
-      <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 1.5, mb: 2 }}>
+      <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 1.5, mb: 2, flexWrap: "wrap" }}>
         <Button
           variant="contained"
           color="primary"
-          startIcon={<ArrowBackIosNewIcon sx={{ fontSize: 14 }} />}
-          onClick={() => router.push("/consultation")}
+          startIcon={<SaveOutlinedIcon />}
+          disabled={saving}
+          onClick={() => {
+            void (async () => {
+              const r = await runSaveAll();
+              if (r.ok) router.push("/consultation");
+              else window.alert(r.error ?? "Failed to save consultation.");
+            })();
+          }}
           sx={{ textTransform: "capitalize", borderRadius: 999, px: 2.5 }}
         >
-          Back
+          {saving ? "Saving…" : "Save consultation"}
         </Button>
+        {!isNew ? (
+          <Button
+            variant="contained"
+            color="error"
+            startIcon={<DeleteOutlineIcon />}
+            onClick={() => setDeleteConfirmOpen(true)}
+            sx={{ textTransform: "capitalize", borderRadius: 999, px: 2.5 }}
+          >
+            Delete
+          </Button>
+        ) : null}
         <Button
           variant="contained"
           color="secondary"
           startIcon={<CheckIcon />}
+          onClick={() => {
+            if (dirty) setCloseConfirmOpen(true);
+            else router.push("/dashboard");
+          }}
           sx={{ textTransform: "capitalize", borderRadius: 999, px: 2.5 }}
         >
           Close
         </Button>
       </Box>
+
+      <Dialog open={closeConfirmOpen} onClose={() => setCloseConfirmOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ fontWeight: 800 }}>Unsaved changes</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" color="text.secondary">
+            You have unsaved changes. Please save your consultation before closing.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCloseConfirmOpen(false)} color="inherit" variant="text" sx={{ textTransform: "uppercase" }}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => {
+              setCloseConfirmOpen(false);
+              router.push("/dashboard");
+            }}
+            color="secondary"
+            variant="contained"
+            sx={{ textTransform: "uppercase" }}
+          >
+            Close anyway
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={deleteConfirmOpen} onClose={() => setDeleteConfirmOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ fontWeight: 800 }}>Delete consultation</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" color="text.secondary">
+            This will permanently delete this consultation record and all related data. Continue?
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteConfirmOpen(false)} color="inherit" variant="text" sx={{ textTransform: "uppercase" }}>
+            Cancel
+          </Button>
+          <Button
+            onClick={async () => {
+              setDeleteConfirmOpen(false);
+              const { deleteEncounterEverywhere } = await import("@/lib/deleteEncounter");
+              const r = await deleteEncounterEverywhere(transId);
+              if (r.error) window.alert(r.error);
+              else router.push("/consultation");
+            }}
+            color="error"
+            variant="contained"
+            sx={{ textTransform: "uppercase" }}
+          >
+            Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <PatientInformationBanner patient={patient} />
 
@@ -101,58 +191,22 @@ export default function ConsultationWorkspace({
             borderColor: "divider",
           }}
         >
-          <Box
-            role="tabpanel"
-            id="consultation-tabpanel-0"
-            aria-labelledby="consultation-tab-0"
-            hidden={tab !== 0}
-            sx={{ display: tab === 0 ? "block" : "none" }}
-          >
+          <Box role="tabpanel" id="consultation-tabpanel-0" aria-labelledby="consultation-tab-0" hidden={tab !== 0} sx={{ display: tab === 0 ? "block" : "none" }}>
             <MedicalHistoryPanel transId={transId} />
           </Box>
-          <Box
-            role="tabpanel"
-            id="consultation-tabpanel-1"
-            aria-labelledby="consultation-tab-1"
-            hidden={tab !== 1}
-            sx={{ display: tab === 1 ? "block" : "none" }}
-          >
+          <Box role="tabpanel" id="consultation-tabpanel-1" aria-labelledby="consultation-tab-1" hidden={tab !== 1} sx={{ display: tab === 1 ? "block" : "none" }}>
             <PhysicalAssessmentPanel transId={transId} />
           </Box>
-          <Box
-            role="tabpanel"
-            id="consultation-tabpanel-2"
-            aria-labelledby="consultation-tab-2"
-            hidden={tab !== 2}
-            sx={{ display: tab === 2 ? "block" : "none" }}
-          >
+          <Box role="tabpanel" id="consultation-tabpanel-2" aria-labelledby="consultation-tab-2" hidden={tab !== 2} sx={{ display: tab === 2 ? "block" : "none" }}>
             <PhysiciansRecordPanel transId={transId} />
           </Box>
-          <Box
-            role="tabpanel"
-            id="consultation-tabpanel-3"
-            aria-labelledby="consultation-tab-3"
-            hidden={tab !== 3}
-            sx={{ display: tab === 3 ? "block" : "none" }}
-          >
+          <Box role="tabpanel" id="consultation-tabpanel-3" aria-labelledby="consultation-tab-3" hidden={tab !== 3} sx={{ display: tab === 3 ? "block" : "none" }}>
             <FocusedExamNotesPanel transId={transId} />
           </Box>
-          <Box
-            role="tabpanel"
-            id="consultation-tabpanel-4"
-            aria-labelledby="consultation-tab-4"
-            hidden={tab !== 4}
-            sx={{ display: tab === 4 ? "block" : "none" }}
-          >
+          <Box role="tabpanel" id="consultation-tabpanel-4" aria-labelledby="consultation-tab-4" hidden={tab !== 4} sx={{ display: tab === 4 ? "block" : "none" }}>
             <AssessmentDiagnosisPanel transId={transId} />
           </Box>
-          <Box
-            role="tabpanel"
-            id="consultation-tabpanel-5"
-            aria-labelledby="consultation-tab-5"
-            hidden={tab !== 5}
-            sx={{ display: tab === 5 ? "block" : "none" }}
-          >
+          <Box role="tabpanel" id="consultation-tabpanel-5" aria-labelledby="consultation-tab-5" hidden={tab !== 5} sx={{ display: tab === 5 ? "block" : "none" }}>
             <PlansTreatmentPanel transId={transId} patient={patient} />
           </Box>
         </Box>

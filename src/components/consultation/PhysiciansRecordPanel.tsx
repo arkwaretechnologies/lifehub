@@ -9,7 +9,6 @@ import {
   useCallback,
   useEffect,
   useId,
-  useMemo,
   useState,
   type Dispatch,
   type SetStateAction,
@@ -29,7 +28,7 @@ import {
   ConsultationSectionTitle,
   consultFormControlLabelSx,
 } from "@/components/consultation/ConsultationSectionTitle";
-import { useConsultationDebouncedSave } from "@/components/consultation/useConsultationDebouncedSave";
+import { useConsultationSave } from "@/components/consultation/consultationSaveContext";
 import {
   fetchEncounterPhysicianRecord,
   persistEncounterPhysicianRecord,
@@ -175,6 +174,7 @@ export default function PhysiciansRecordPanel({ transId }: { transId: string }) 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const { registerSaveHandler, setPanelDirty } = useConsultationSave();
 
   useEffect(() => {
     let cancelled = false;
@@ -229,19 +229,18 @@ export default function PhysiciansRecordPanel({ transId }: { transId: string }) 
     if (peRes.error) errs.push(peRes.error);
     if (errs.length) setSaveError(errs.join(" · "));
     if (peRes.rowId) setPeRowId(peRes.rowId);
-  }, [hydrated, transId, chiefComplaint, hpi, peRowId, peForm]);
+    if (errs.length === 0) setPanelDirty("physicians-record", false);
+  }, [hydrated, transId, chiefComplaint, hpi, peRowId, peForm, setPanelDirty]);
 
-  const saveTrigger = useMemo(
-    () => ({ chiefComplaint, hpi, peForm }),
-    [chiefComplaint, hpi, peForm]
-  );
+  useEffect(() => {
+    if (!hydrated) return;
+    return registerSaveHandler("physicians-record", runPersist);
+  }, [registerSaveHandler, runPersist, hydrated]);
 
-  useConsultationDebouncedSave({
-    ownTabIndex: 2,
-    hydrated,
-    runPersist,
-    trigger: saveTrigger,
-  });
+  useEffect(() => {
+    if (!hydrated) return;
+    setPanelDirty("physicians-record", true);
+  }, [chiefComplaint, hpi, peForm, hydrated, setPanelDirty]);
 
   const peDisabled = loading;
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -10,6 +10,10 @@ import {
   CardContent,
   TextField,
   InputAdornment,
+  Popover,
+  List,
+  ListItemButton,
+  ListItemText,
   Table,
   TableBody,
   TableCell,
@@ -25,6 +29,7 @@ import {
   alpha,
 } from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
+import CalendarMonthOutlinedIcon from "@mui/icons-material/CalendarMonthOutlined";
 import { FormFieldLabel } from "@/components/FormFieldLabel";
 import { commonFieldProps, fieldInputSx } from "@/components/fieldInputStyles";
 import { supabase } from "@/lib/supabaseClient";
@@ -72,6 +77,14 @@ export default function ConsultationHome() {
   const [encountersError, setEncountersError] = useState("");
   const [creatingEncounter, setCreatingEncounter] = useState(false);
   const [createEncounterError, setCreateEncounterError] = useState("");
+
+  const [encounterRangeAnchor, setEncounterRangeAnchor] = useState<HTMLElement | null>(null);
+  const [encounterRangePreset, setEncounterRangePreset] = useState<"today" | "yesterday" | "last3" | "last7" | "last15" | "last30">(
+    "last15",
+  );
+  const [encounterFrom, setEncounterFrom] = useState("");
+  const [encounterTo, setEncounterTo] = useState("");
+  const [encounterChiefSearch, setEncounterChiefSearch] = useState("");
 
   /** `user_id` → display name for numeric `patients.referring_physician` FKs (any role). */
   const [referringNameByUserId, setReferringNameByUserId] = useState<Map<string, string>>(() => new Map());
@@ -181,6 +194,81 @@ export default function ConsultationHome() {
     };
   }, [selectedPatient]);
 
+  function isoToday(): string {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+
+  function isoAddDays(base: Date, days: number): string {
+    const d = new Date(base);
+    d.setDate(d.getDate() + days);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+
+  const applyEncounterPreset = useCallback((preset: typeof encounterRangePreset) => {
+    const now = new Date();
+    const today = isoToday();
+    if (preset === "today") {
+      setEncounterFrom(today);
+      setEncounterTo(today);
+      return;
+    }
+    if (preset === "yesterday") {
+      const y = isoAddDays(now, -1);
+      setEncounterFrom(y);
+      setEncounterTo(y);
+      return;
+    }
+    const days =
+      preset === "last3" ? 3 : preset === "last7" ? 7 : preset === "last15" ? 15 : 30;
+    setEncounterFrom(isoAddDays(now, -(days - 1)));
+    setEncounterTo(today);
+  }, []);
+
+  useEffect(() => {
+    // Initialize default preset range.
+    applyEncounterPreset(encounterRangePreset);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const filteredEncounters = useMemo(() => {
+    if (!encounterFrom || !encounterTo) return encounters;
+    const from = encounterFrom;
+    const to = encounterTo;
+    return encounters.filter((e) => {
+      const d = (e.date ?? "").slice(0, 10);
+      return d >= from && d <= to;
+    });
+  }, [encounters, encounterFrom, encounterTo]);
+
+  const visibleEncounters = useMemo(() => {
+    const q = encounterChiefSearch.trim().toLowerCase();
+    if (!q) return filteredEncounters;
+    return filteredEncounters.filter((e) => (e.chiefComplaint ?? "").toLowerCase().includes(q));
+  }, [filteredEncounters, encounterChiefSearch]);
+
+  const rangeLabel = useMemo(() => {
+    const label =
+      encounterRangePreset === "today"
+        ? "Today"
+        : encounterRangePreset === "yesterday"
+          ? "Yesterday"
+          : encounterRangePreset === "last3"
+            ? "Last 3 days"
+            : encounterRangePreset === "last7"
+              ? "Last 7 days"
+              : encounterRangePreset === "last15"
+                ? "Last 15 days"
+                : "Last 30 days";
+    return `${label} · ${formatDateMMDDYYYY(encounterFrom)} – ${formatDateMMDDYYYY(encounterTo)}`;
+  }, [encounterFrom, encounterTo, encounterRangePreset]);
+
   useEffect(() => {
     setCreateEncounterError("");
   }, [selectedPatient]);
@@ -197,7 +285,7 @@ export default function ConsultationHome() {
       setCreateEncounterError(res.error ?? "Could not create encounter.");
       return;
     }
-    router.push(`/consultation/${res.transId}`);
+    router.push(`/consultation/${res.transId}?new=1`);
   }
 
   function formatReferringPhysicianCell(value: string | number | null): string {
@@ -298,7 +386,7 @@ export default function ConsultationHome() {
 
       <Card sx={{ mb: 3 }}>
         <CardContent sx={{ p: 3 }}>
-          <ConsultationSectionTitle>Patient records</ConsultationSectionTitle>
+          <ConsultationSectionTitle>Patient Records</ConsultationSectionTitle>
           <Typography variant="body2" color="text.primary" sx={{ ...consultBodyTypoSx, mb: 2, display: "block" }}>
             Search and select a patient to load their encounters.
           </Typography>
@@ -310,7 +398,7 @@ export default function ConsultationHome() {
             <TextField
               id="consultation-patient-search"
               hiddenLabel
-              placeholder="NAME, CONTACT, EMAIL, ADDRESS, ID…"
+              placeholder="Name, Contact, Email, Address, ID…"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value.toUpperCase())}
               {...commonFieldProps}
@@ -415,11 +503,11 @@ export default function ConsultationHome() {
                 labelRowsPerPage="Rows per page"
                 sx={{
                   "& .MuiTablePagination-toolbar": {
-                    textTransform: "uppercase",
+                    textTransform: "none",
                     ...consultBodyTypoSx,
                     color: "text.primary",
                   },
-                  "& .MuiTablePagination-select": { textTransform: "uppercase" },
+                  "& .MuiTablePagination-select": { textTransform: "none" },
                   "& .MuiTablePagination-selectLabel, & .MuiTablePagination-displayedRows": {
                     ...consultBodyTypoSx,
                     color: "text.primary",
@@ -433,7 +521,20 @@ export default function ConsultationHome() {
 
       <Card>
         <CardContent sx={{ p: 3 }}>
-          <ConsultationSectionTitle>Encounters</ConsultationSectionTitle>
+          <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2, flexWrap: "wrap" }}>
+            <ConsultationSectionTitle>Encounters</ConsultationSectionTitle>
+            <Button
+              type="button"
+              variant="outlined"
+              size="small"
+              startIcon={<CalendarMonthOutlinedIcon />}
+              disabled={!selectedPatient}
+              onClick={(e) => setEncounterRangeAnchor(e.currentTarget)}
+              sx={{ textTransform: "none" }}
+            >
+              {rangeLabel}
+            </Button>
+          </Box>
           {selectedPatient ? (
             <Typography
               variant="body2"
@@ -448,6 +549,98 @@ export default function ConsultationHome() {
             </Typography>
           )}
 
+          <Popover
+            open={Boolean(encounterRangeAnchor)}
+            anchorEl={encounterRangeAnchor}
+            onClose={() => setEncounterRangeAnchor(null)}
+            anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+            transformOrigin={{ vertical: "top", horizontal: "right" }}
+            slotProps={{ paper: { sx: { p: 1.25, width: 320 } } }}
+          >
+            <List dense disablePadding sx={{ mb: 1 }}>
+              {[
+                { key: "today", label: "Today" },
+                { key: "yesterday", label: "Yesterday" },
+                { key: "last3", label: "Last 3 days" },
+                { key: "last7", label: "Last 7 days" },
+                { key: "last15", label: "Last 15 days" },
+                { key: "last30", label: "Last 30 days" },
+              ].map((p) => (
+                <ListItemButton
+                  key={p.key}
+                  selected={encounterRangePreset === (p.key as any)}
+                  onClick={() => {
+                    const k = p.key as typeof encounterRangePreset;
+                    setEncounterRangePreset(k);
+                    applyEncounterPreset(k);
+                    setEncounterRangeAnchor(null);
+                  }}
+                >
+                  <ListItemText primary={p.label} />
+                </ListItemButton>
+              ))}
+            </List>
+            <Box sx={{ display: "flex", gap: 1 }}>
+              <TextField
+                type="date"
+                size="small"
+                label="From"
+                value={encounterFrom}
+                onChange={(e) => {
+                  setEncounterRangePreset("last15");
+                  setEncounterFrom(e.target.value);
+                }}
+                sx={{ flex: 1 }}
+              />
+              <TextField
+                type="date"
+                size="small"
+                label="To"
+                value={encounterTo}
+                onChange={(e) => {
+                  setEncounterRangePreset("last15");
+                  setEncounterTo(e.target.value);
+                }}
+                sx={{ flex: 1 }}
+              />
+            </Box>
+          </Popover>
+
+          {selectedPatient && filteredEncounters.length > 0 ? (
+            <Box sx={{ mb: 2, maxWidth: 520 }}>
+              <TextField
+                size="small"
+                fullWidth
+                label="Search chief complaint"
+                placeholder="Type to filter…"
+                value={encounterChiefSearch}
+                onChange={(e) => setEncounterChiefSearch(e.target.value)}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <SearchIcon fontSize="small" />
+                    </InputAdornment>
+                  ),
+                }}
+                sx={{
+                  "& .MuiOutlinedInput-root": {
+                    minHeight: 44,
+                    alignItems: "center",
+                    bgcolor: "background.paper",
+                  },
+                  "& .MuiOutlinedInput-input": {
+                    py: 1.125,
+                    lineHeight: 1.5,
+                    height: "auto",
+                  },
+                  "& .MuiInputLabel-root": {
+                    lineHeight: 1.3,
+                  },
+                }}
+              />
+            </Box>
+          ) : null}
+
           {encountersError ? (
             <Alert severity="error" sx={{ mb: 2 }}>
               {encountersError}
@@ -458,9 +651,9 @@ export default function ConsultationHome() {
             <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
               <CircularProgress size={28} />
             </Box>
-          ) : encounters.length === 0 ? (
+          ) : visibleEncounters.length === 0 ? (
             <Typography variant="body2" color="text.primary" sx={consultBodyTypoSx}>
-              No encounters for this patient.
+              {encounterChiefSearch.trim() ? "No encounters match this chief complaint." : "No encounters in this date range."}
             </Typography>
           ) : (
             <TableContainer>
@@ -477,7 +670,7 @@ export default function ConsultationHome() {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {encounters.map((e) => (
+                  {visibleEncounters.map((e) => (
                     <TableRow key={e.id}>
                       <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
                         {formatDateMMDDYYYY(e.date)}

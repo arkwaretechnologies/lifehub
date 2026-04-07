@@ -4,8 +4,13 @@ import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import {
   Alert,
   Box,
+  Button,
   Checkbox,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   FormControl,
   FormControlLabel,
   Grid,
@@ -23,6 +28,10 @@ import {
   type EncounterDisposition,
   type EncounterPlansTreatmentForm,
 } from "@/lib/consultationData";
+import {
+  fetchLabCatalogGrouped,
+  type LabCatalogSection,
+} from "@/lib/labTests";
 
 const tabPanelSx = { pt: 2, minHeight: 280 };
 
@@ -86,6 +95,51 @@ export default function PlansTreatmentPanel({ transId }: { transId: string }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+
+  const [labsModalOpen, setLabsModalOpen] = useState(false);
+  const [labSections, setLabSections] = useState<LabCatalogSection[]>([]);
+  const [labTestsLoading, setLabTestsLoading] = useState(false);
+  const [labTestsError, setLabTestsError] = useState("");
+  const [selectedLabTestIds, setSelectedLabTestIds] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    setSelectedLabTestIds(new Set());
+  }, [transId]);
+
+  useEffect(() => {
+    if (!labsModalOpen) return;
+    let cancelled = false;
+    setLabTestsLoading(true);
+    setLabTestsError("");
+    void (async () => {
+      const { sections, error } = await fetchLabCatalogGrouped();
+      if (cancelled) return;
+      setLabTestsLoading(false);
+      if (error) {
+        setLabTestsError(error);
+        setLabSections([]);
+      } else {
+        setLabSections(sections);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [labsModalOpen]);
+
+  const toggleLabTestSelection = useCallback((testId: string) => {
+    setSelectedLabTestIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(testId)) next.delete(testId);
+      else next.add(testId);
+      return next;
+    });
+  }, []);
+
+  const visibleLabSections = useMemo(
+    () => labSections.filter((s) => s.tests.length > 0),
+    [labSections]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -168,18 +222,35 @@ export default function PlansTreatmentPanel({ transId }: { transId: string }) {
 
           <Grid container spacing={{ xs: 0.5, sm: 1 }} sx={{ mb: 2, alignItems: "center" }}>
             <Grid size={{ xs: "auto" }}>
-              <FormControlLabel
-                control={
-                  <Checkbox
+              <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", columnGap: 0.5 }}>
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={form.plan_labs}
+                      disabled={loading}
+                      onChange={(_, c) => {
+                        setForm((f) => ({ ...f, plan_labs: c }));
+                        if (c) setLabsModalOpen(true);
+                        else setLabsModalOpen(false);
+                      }}
+                    />
+                  }
+                  label="LABS"
+                  sx={consultFormControlLabelSx}
+                />
+                {form.plan_labs && !loading ? (
+                  <Button
+                    type="button"
+                    variant="text"
                     size="small"
-                    checked={form.plan_labs}
-                    disabled={loading}
-                    onChange={(_, c) => setForm((f) => ({ ...f, plan_labs: c }))}
-                  />
-                }
-                label="LABS"
-                sx={consultFormControlLabelSx}
-              />
+                    onClick={() => setLabsModalOpen(true)}
+                    sx={{ textTransform: "uppercase", minWidth: "auto", py: 0.25, px: 0.75 }}
+                  >
+                    View catalog
+                  </Button>
+                ) : null}
+              </Box>
             </Grid>
             <Grid size={{ xs: "auto" }}>
               <FormControlLabel
@@ -283,6 +354,122 @@ export default function PlansTreatmentPanel({ transId }: { transId: string }) {
           </FormControl>
         </Box>
       </Box>
+
+      <Dialog
+        open={labsModalOpen}
+        onClose={() => setLabsModalOpen(false)}
+        maxWidth="lg"
+        fullWidth
+        aria-labelledby="plans-labs-dialog-title"
+        slotProps={{
+          paper: {
+            sx: { maxHeight: "92vh" },
+          },
+        }}
+      >
+        <DialogTitle
+          id="plans-labs-dialog-title"
+          sx={{
+            fontWeight: 800,
+            textAlign: "center",
+            letterSpacing: "0.08em",
+            bgcolor: "info.main",
+            color: "info.contrastText",
+            py: 1.5,
+          }}
+        >
+          LABORATORY REQUEST
+        </DialogTitle>
+        <DialogContent
+          dividers
+          sx={{
+            px: { xs: 2, sm: 2.5 },
+            py: 2,
+            maxHeight: { xs: "70vh", md: "calc(92vh - 140px)" },
+            overflow: "auto",
+          }}
+        >
+          {labTestsLoading ? (
+            <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+              <CircularProgress size={32} />
+            </Box>
+          ) : labTestsError ? (
+            <Alert severity="error">{labTestsError}</Alert>
+          ) : visibleLabSections.length === 0 ? (
+            <Typography variant="body2" color="text.secondary">
+              No lab tests found in the catalog.
+            </Typography>
+          ) : (
+            <Box
+              sx={{
+                columnCount: { xs: 1, sm: 2, md: 3 },
+                columnGap: 2.5,
+              }}
+            >
+              {visibleLabSections.map((section) => (
+                <Box
+                  key={String(section.category.id)}
+                  sx={{
+                    breakInside: "avoid",
+                    pageBreakInside: "avoid",
+                    mb: 2.5,
+                    border: "1px solid",
+                    borderColor: "divider",
+                    borderRadius: 1,
+                    p: 1.5,
+                    bgcolor: "background.paper",
+                  }}
+                >
+                  <Typography
+                    component="h3"
+                    variant="subtitle2"
+                    fontWeight={800}
+                    color="info.main"
+                    sx={{
+                      letterSpacing: "0.06em",
+                      mb: 1.25,
+                      display: "block",
+                    }}
+                  >
+                    {section.category.name.toUpperCase()}
+                  </Typography>
+                  <Box sx={{ display: "flex", flexDirection: "column", gap: 0.25 }}>
+                    {section.tests.map((test) => (
+                      <FormControlLabel
+                        key={test.id}
+                        sx={{ ...consultFormControlLabelSx, alignItems: "flex-start", ml: 0, mr: 0 }}
+                        control={
+                          <Checkbox
+                            size="small"
+                            checked={selectedLabTestIds.has(test.id)}
+                            onChange={() => toggleLabTestSelection(test.id)}
+                            sx={{ pt: 0.25 }}
+                          />
+                        }
+                        label={
+                          <Typography component="span" variant="body2" sx={{ textTransform: "uppercase", lineHeight: 1.35 }}>
+                            {test.name}
+                          </Typography>
+                        }
+                      />
+                    ))}
+                  </Box>
+                </Box>
+              ))}
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ px: 2, py: 1.5, justifyContent: "space-between", flexWrap: "wrap", gap: 1 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ mr: "auto" }}>
+            {selectedLabTestIds.size > 0
+              ? `${selectedLabTestIds.size} test${selectedLabTestIds.size === 1 ? "" : "s"} selected`
+              : "Select tests to request"}
+          </Typography>
+          <Button onClick={() => setLabsModalOpen(false)} color="inherit" variant="text" sx={{ textTransform: "uppercase" }}>
+            Close
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

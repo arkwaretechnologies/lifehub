@@ -2,7 +2,7 @@
 
 import { usePathname } from "next/navigation";
 import Link from "next/link";
-import { Fragment, useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Drawer,
   List,
@@ -11,7 +11,6 @@ import {
   ListItemText,
   Box,
   Collapse,
-  Typography,
   useMediaQuery,
   useTheme,
 } from "@mui/material";
@@ -29,11 +28,7 @@ import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import AssessmentOutlinedIcon from "@mui/icons-material/AssessmentOutlined";
 import BusinessOutlinedIcon from "@mui/icons-material/BusinessOutlined";
 import AdminPanelSettingsOutlinedIcon from "@mui/icons-material/AdminPanelSettingsOutlined";
-import PeopleOutlinedIcon from "@mui/icons-material/PeopleOutlined";
-import RuleOutlinedIcon from "@mui/icons-material/RuleOutlined";
 import Image from "next/image";
-import { useAuth } from "@/components/AuthProvider";
-import type { MenuAccessState } from "@/lib/menuAccess";
 
 export const DRAWER_WIDTH = 280;
 
@@ -47,8 +42,6 @@ export interface MenuLinkItem {
   label: string;
   icon: React.ReactElement;
   href: string;
-  /** Matches `role_pages.page_key` for RBAC filtering. */
-  pageKey: string;
 }
 
 /** Collapsible group of links (e.g. Patient care). */
@@ -76,7 +69,6 @@ const menuSections: MenuSection[] = [
         label: "dashboard",
         icon: <DashboardOutlinedIcon />,
         href: "/dashboard",
-        pageKey: "dashboard",
       },
       {
         kind: "group",
@@ -84,18 +76,8 @@ const menuSections: MenuSection[] = [
         label: "Patient care",
         icon: <PersonOutlinedIcon />,
         children: [
-          {
-            label: "patients",
-            icon: <PersonOutlinedIcon />,
-            href: "/patient",
-            pageKey: "patient",
-          },
-          {
-            label: "appointments",
-            icon: <CalendarMonthOutlinedIcon />,
-            href: "/appointments",
-            pageKey: "appointments",
-          },
+          { label: "patients", icon: <PersonOutlinedIcon />, href: "/patient" },
+          { label: "appointments", icon: <CalendarMonthOutlinedIcon />, href: "/appointments" },
         ],
       },
     ],
@@ -103,116 +85,28 @@ const menuSections: MenuSection[] = [
   {
     heading: "OPERATIONS",
     items: [
-      {
-        kind: "link",
-        label: "reception",
-        icon: <MeetingRoomOutlinedIcon />,
-        href: "/reception",
-        pageKey: "reception",
-      },
-      {
-        kind: "link",
-        label: "consultation",
-        icon: <LocalHospitalOutlinedIcon />,
-        href: "/consultation",
-        pageKey: "consultation",
-      },
-      {
-        kind: "link",
-        label: "laboratory",
-        icon: <ScienceOutlinedIcon />,
-        href: "/laboratory",
-        pageKey: "laboratory",
-      },
-      {
-        kind: "link",
-        label: "pharmacy",
-        icon: <LocalPharmacyOutlinedIcon />,
-        href: "/pharmacy",
-        pageKey: "pharmacy",
-      },
-      {
-        kind: "link",
-        label: "cashier",
-        icon: <PointOfSaleOutlinedIcon />,
-        href: "/cashier",
-        pageKey: "cashier",
-      },
+      { kind: "link", label: "reception", icon: <MeetingRoomOutlinedIcon />, href: "/reception" },
+      { kind: "link", label: "consultation", icon: <LocalHospitalOutlinedIcon />, href: "/consultation" },
+      { kind: "link", label: "laboratory", icon: <ScienceOutlinedIcon />, href: "/laboratory" },
+      { kind: "link", label: "pharmacy", icon: <LocalPharmacyOutlinedIcon />, href: "/pharmacy" },
+      { kind: "link", label: "cashier", icon: <PointOfSaleOutlinedIcon />, href: "/cashier" },
     ],
   },
   {
     heading: "MANAGEMENT",
     items: [
+      { kind: "link", label: "reports", icon: <AssessmentOutlinedIcon />, href: "/reports" },
+      { kind: "link", label: "branches", icon: <BusinessOutlinedIcon />, href: "/branches" },
       {
         kind: "link",
-        label: "reports",
-        icon: <AssessmentOutlinedIcon />,
-        href: "/reports",
-        pageKey: "reports",
-      },
-      {
-        kind: "link",
-        label: "branches",
-        icon: <BusinessOutlinedIcon />,
-        href: "/branches",
-        pageKey: "branches",
-      },
-      {
-        kind: "group",
-        id: "user-management",
-        label: "User management",
+        label: "user management",
         icon: <AdminPanelSettingsOutlinedIcon />,
-        children: [
-          {
-            label: "users",
-            icon: <PeopleOutlinedIcon />,
-            href: "/user-management/users",
-            pageKey: "user-management/users",
-          },
-          {
-            label: "roles",
-            icon: <RuleOutlinedIcon />,
-            href: "/user-management/roles",
-            pageKey: "user-management/roles",
-          },
-        ],
+        href: "/user-management",
       },
-      {
-        kind: "link",
-        label: "settings",
-        icon: <SettingsOutlinedIcon />,
-        href: "/settings",
-        pageKey: "settings",
-      },
+      { kind: "link", label: "settings", icon: <SettingsOutlinedIcon />, href: "/settings" },
     ],
   },
 ];
-
-function filterMenuSectionsByRbac(
-  sections: MenuSection[],
-  menuAccess: MenuAccessState,
-): MenuSection[] {
-  if (!menuAccess.rbac) return sections;
-  const allowed = new Set(menuAccess.pageKeys);
-  const out: MenuSection[] = [];
-  for (const section of sections) {
-    const items: NavItem[] = [];
-    for (const item of section.items) {
-      if (item.kind === "link") {
-        if (allowed.has(item.pageKey)) items.push(item);
-      } else {
-        const kids = item.children.filter((c) => allowed.has(c.pageKey));
-        if (kids.length > 0) {
-          items.push({ ...item, children: kids });
-        }
-      }
-    }
-    if (items.length > 0) {
-      out.push({ ...section, items });
-    }
-  }
-  return out;
-}
 
 function sectionContainsPath(section: MenuSection, path: string): boolean {
   for (const item of section.items) {
@@ -222,8 +116,8 @@ function sectionContainsPath(section: MenuSection, path: string): boolean {
   return false;
 }
 
-function findGroupIdForPath(sections: MenuSection[], path: string): string | null {
-  for (const section of sections) {
+function findGroupIdForPath(path: string): string | null {
+  for (const section of menuSections) {
     for (const item of section.items) {
       if (item.kind === "group" && item.children.some((c) => c.href === path)) {
         return item.id;
@@ -237,13 +131,7 @@ const defaultOpenSections = Object.fromEntries(
   menuSections.map((s) => [s.heading, true]),
 ) as Record<string, boolean>;
 
-const emptyNavMessage =
-  "No menu access is assigned to your role. Ask an administrator to set permissions under User management → Roles.";
-
-const defaultOpenGroups: Record<string, boolean> = {
-  "patient-care": true,
-  "user-management": true,
-};
+const defaultOpenGroups: Record<string, boolean> = { "patient-care": true };
 
 interface SidebarProps {
   mobileOpen: boolean;
@@ -252,24 +140,15 @@ interface SidebarProps {
 
 function SidebarContent() {
   const pathname = usePathname();
-  const { menuAccess } = useAuth();
-  const visibleSections = useMemo(
-    () => filterMenuSectionsByRbac(menuSections, menuAccess),
-    [menuAccess],
-  );
-
   const [openSections, setOpenSections] = useState<Record<string, boolean>>(defaultOpenSections);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(defaultOpenGroups);
 
   const activeSectionHeading = useMemo(() => {
-    const section = visibleSections.find((s) => sectionContainsPath(s, pathname));
+    const section = menuSections.find((s) => sectionContainsPath(s, pathname));
     return section?.heading ?? null;
-  }, [pathname, visibleSections]);
+  }, [pathname]);
 
-  const activeGroupId = useMemo(
-    () => findGroupIdForPath(visibleSections, pathname),
-    [pathname, visibleSections],
-  );
+  const activeGroupId = useMemo(() => findGroupIdForPath(pathname), [pathname]);
 
   useEffect(() => {
     if (activeSectionHeading) {
@@ -300,6 +179,7 @@ function SidebarContent() {
     const active = pathname === item.href;
     return (
       <ListItemButton
+        key={item.href}
         component={Link}
         href={item.href}
         sx={{
@@ -439,7 +319,7 @@ function SidebarContent() {
     const childActive = group.children.some((c) => c.href === pathname);
 
     return (
-      <Box sx={{ mb: 0.75 }}>
+      <Box key={group.id} sx={{ mb: 0.75 }}>
         <ListItemButton
           onClick={() => toggleGroup(group.id)}
           aria-expanded={isOpen}
@@ -514,12 +394,7 @@ function SidebarContent() {
       </Box>
 
       <Box sx={{ flex: 1, overflowY: "auto", px: 2 }} component="nav" aria-label="Main navigation">
-        {visibleSections.length === 0 ? (
-          <Typography variant="body2" color="text.secondary" sx={{ px: 0.5, py: 2, lineHeight: 1.5 }}>
-            {emptyNavMessage}
-          </Typography>
-        ) : null}
-        {visibleSections.map((section) => {
+        {menuSections.map((section) => {
           const isOpen = openSections[section.heading] ?? true;
           const panelId = `sidebar-section-${section.heading.replace(/\s+/g, "-").toLowerCase()}`;
           return (
@@ -559,11 +434,7 @@ function SidebarContent() {
               <Collapse in={isOpen} timeout="auto" unmountOnExit id={panelId}>
                 <List component="div" disablePadding>
                   {section.items.map((entry) =>
-                    entry.kind === "link" ? (
-                      <Fragment key={entry.href}>{renderTopLevelLink(entry)}</Fragment>
-                    ) : (
-                      <Fragment key={entry.id}>{renderGroup(entry)}</Fragment>
-                    ),
+                    entry.kind === "link" ? renderTopLevelLink(entry) : renderGroup(entry),
                   )}
                 </List>
               </Collapse>

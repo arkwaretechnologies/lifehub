@@ -32,7 +32,23 @@ import {
 import SearchIcon from "@mui/icons-material/Search";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
+import { formatDateMMDDYYYY, isoDateFromUnknown } from "@/lib/dateDisplay";
 import { supabase } from "@/lib/supabaseClient";
+import { FormFieldLabel } from "@/components/FormFieldLabel";
+import {
+  commonFieldProps,
+  emailFieldInputSx,
+  fieldInputSx,
+  menuItemSx,
+} from "@/components/fieldInputStyles";
+import { ConsultationSectionTitle } from "@/components/consultation/ConsultationSectionTitle";
+import {
+  consultBodyTypoSx,
+  consultTableBodyCellSx,
+  consultTableHeadCellSx,
+  consultTableHeadRowSx,
+  consultTableSx,
+} from "@/components/consultation/consultListTableStyles";
 
 /** App users table: `fullname` + `role` (RLS must allow SELECT for signed-in role). */
 const APP_USERS_TABLE = "users";
@@ -81,80 +97,6 @@ const emptyForm: PatientForm = {
 };
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
-
-const commonFieldProps = {
-  fullWidth: true,
-  size: "small" as const,
-};
-
-/** Outlined inputs without floating label (label is a separate row above). */
-const fieldInputSx = {
-  "& .MuiInputBase-root": { height: 40 },
-  "& .MuiInputBase-input": {
-    height: "100%",
-    boxSizing: "border-box",
-    textTransform: "uppercase",
-  },
-  "& .MuiSelect-select": {
-    height: "100%",
-    display: "flex",
-    alignItems: "center",
-    textTransform: "uppercase",
-  },
-} as const;
-
-const emailFieldInputSx = {
-  "& .MuiInputBase-root": { height: 40 },
-  "& .MuiInputBase-input": {
-    height: "100%",
-    boxSizing: "border-box",
-    textTransform: "lowercase",
-  },
-  "& .MuiSelect-select": {
-    height: "100%",
-    display: "flex",
-    alignItems: "center",
-    textTransform: "uppercase",
-  },
-} as const;
-
-function FormFieldLabel({
-  htmlFor,
-  children,
-  uppercase = false,
-  required: fieldRequired = false,
-}: {
-  htmlFor: string;
-  children: React.ReactNode;
-  /** When true, label text is forced to all caps (default is sentence case). */
-  uppercase?: boolean;
-  required?: boolean;
-}) {
-  return (
-    <Typography
-      component="label"
-      variant="body2"
-      htmlFor={htmlFor}
-      sx={{
-        display: "block",
-        mb: 0.75,
-        fontWeight: 600,
-        letterSpacing: uppercase ? 0.02 : 0,
-        textTransform: uppercase ? "uppercase" : "none",
-        color: "text.primary",
-      }}
-    >
-      {children}
-      {fieldRequired ? (
-        <Box component="span" sx={{ color: "error.main", ml: 0.25 }} aria-hidden>
-          *
-        </Box>
-      ) : null}
-    </Typography>
-  );
-}
-
-const menuItemSx = { textTransform: "uppercase" as const };
 
 /** Philippine mobile: 09 + 9 digits (11 total). */
 function normalizeContactNoInput(raw: string): string {
@@ -211,16 +153,11 @@ function parsePhilhealthNo(value: string): number | null {
   return n;
 }
 
-function formatDateDisplay(iso: string | null): string {
-  if (!iso) return "";
-  return iso.length >= 10 ? iso.slice(0, 10) : iso;
-}
-
 function patientRowToForm(p: PatientRow): PatientForm {
   return {
     name: (p.name ?? "").toUpperCase(),
     sex: (p.sex ?? "").toUpperCase(),
-    dob: formatDateDisplay(p.date_of_birth),
+    dob: isoDateFromUnknown(p.date_of_birth),
     civilStatus: (p.civil_status ?? "").toUpperCase(),
     address: (p.address ?? "").toUpperCase(),
     contactNo: normalizeContactNoInput(String(p.contact_no ?? "")),
@@ -864,7 +801,13 @@ export default function PatientPage() {
               priority
             />
           </Box>
-          <Typography variant="h6" fontWeight={800} letterSpacing={-0.5} sx={{ color: "text.primary" }}>
+          <Typography
+            variant="subtitle1"
+            fontWeight={800}
+            letterSpacing="0.08em"
+            color="info.main"
+            sx={{ textTransform: "uppercase" }}
+          >
             LifeHub
           </Typography>
         </Box>
@@ -923,23 +866,25 @@ export default function PatientPage() {
               <CircularProgress />
             </Box>
           ) : patients.length === 0 ? (
-            <Typography color="text.secondary">{emptyMessage}</Typography>
+            <Typography variant="body2" color="text.primary" sx={consultBodyTypoSx}>
+              {emptyMessage}
+            </Typography>
           ) : (
             <>
               <TableContainer>
-                <Table size="small">
+                <Table size="small" sx={consultTableSx}>
                   <TableHead>
-                    <TableRow>
-                      <TableCell sx={{ textTransform: "uppercase" }}>ID</TableCell>
-                      <TableCell sx={{ textTransform: "uppercase" }}>Name</TableCell>
-                      <TableCell sx={{ textTransform: "uppercase" }}>Sex</TableCell>
-                      <TableCell sx={{ textTransform: "uppercase" }}>DOB</TableCell>
-                      <TableCell sx={{ textTransform: "uppercase" }}>Civil status</TableCell>
-                      <TableCell sx={{ textTransform: "uppercase" }}>Contact</TableCell>
-                      <TableCell sx={{ textTransform: "uppercase" }}>Email</TableCell>
-                      <TableCell sx={{ textTransform: "uppercase" }}>Referring</TableCell>
-                      <TableCell sx={{ textTransform: "uppercase" }}>PhilHealth</TableCell>
-                      <TableCell align="right" sx={{ textTransform: "uppercase" }}>
+                    <TableRow sx={consultTableHeadRowSx}>
+                      <TableCell sx={consultTableHeadCellSx}>ID</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>Name</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>Sex</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>DOB</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>Civil status</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>Contact</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>Email</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>Referring physician</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>PhilHealth</TableCell>
+                      <TableCell align="right" sx={consultTableHeadCellSx}>
                         Actions
                       </TableCell>
                     </TableRow>
@@ -947,20 +892,31 @@ export default function PatientPage() {
                   <TableBody>
                     {patients.map((p) => (
                       <TableRow key={String(p.id)}>
-                        <TableCell sx={{ textTransform: "uppercase" }}>{p.id}</TableCell>
-                        <TableCell sx={{ textTransform: "uppercase" }}>{p.name}</TableCell>
-                        <TableCell sx={{ textTransform: "uppercase" }}>{p.sex}</TableCell>
-                        <TableCell sx={{ textTransform: "uppercase" }}>
-                          {formatDateDisplay(p.date_of_birth)}
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>{p.id}</TableCell>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>{p.name}</TableCell>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>{p.sex}</TableCell>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
+                          {formatDateMMDDYYYY(p.date_of_birth)}
                         </TableCell>
-                        <TableCell sx={{ textTransform: "uppercase" }}>{p.civil_status}</TableCell>
-                        <TableCell sx={{ textTransform: "uppercase" }}>{p.contact_no}</TableCell>
-                        <TableCell sx={{ textTransform: "lowercase" }}>{p.email_address}</TableCell>
-                        <TableCell sx={{ textTransform: "uppercase" }}>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
+                          {p.civil_status}
+                        </TableCell>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
+                          {p.contact_no}
+                        </TableCell>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "lowercase" }}>
+                          {p.email_address}
+                        </TableCell>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
                           {formatReferringPhysicianCell(p.referring_physician)}
                         </TableCell>
-                        <TableCell sx={{ textTransform: "uppercase" }}>{p.philhealth_no ?? ""}</TableCell>
-                        <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
+                          {p.philhealth_no ?? ""}
+                        </TableCell>
+                        <TableCell
+                          align="right"
+                          sx={{ ...consultTableBodyCellSx, whiteSpace: "nowrap" }}
+                        >
                           <Tooltip title="Edit">
                             <IconButton size="small" color="primary" onClick={() => openEdit(p)}>
                               <EditIcon fontSize="small" />
@@ -987,8 +943,16 @@ export default function PatientPage() {
                 onRowsPerPageChange={handleRowsPerPageChange}
                 labelRowsPerPage="Rows per page"
                 sx={{
-                  "& .MuiTablePagination-toolbar": { textTransform: "uppercase" },
+                  "& .MuiTablePagination-toolbar": {
+                    textTransform: "uppercase",
+                    ...consultBodyTypoSx,
+                    color: "text.primary",
+                  },
                   "& .MuiTablePagination-select": { textTransform: "uppercase" },
+                  "& .MuiTablePagination-selectLabel, & .MuiTablePagination-displayedRows": {
+                    ...consultBodyTypoSx,
+                    color: "text.primary",
+                  },
                 }}
               />
             </>

@@ -14,7 +14,6 @@ import {
 } from "@mui/material";
 import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/components/AuthProvider";
-import { firstAllowedHref } from "@/lib/navPermissionCatalog";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -37,32 +36,20 @@ export default function LoginPage() {
 
       if (rpcError) {
         setError(rpcError.message);
+        setLoading(false);
         return;
       }
 
       if (!data) {
         setError("Invalid username or password.");
+        setLoading(false);
         return;
       }
 
-      await login(data);
-      let dest = "/dashboard";
-      try {
-        const raw = localStorage.getItem("lifehub_session");
-        if (raw) {
-          const { menuAccess } = JSON.parse(raw) as { menuAccess?: { rbac?: boolean; pageKeys?: string[] } };
-          if (menuAccess?.rbac && menuAccess.pageKeys?.length) {
-            const href = firstAllowedHref(menuAccess.pageKeys);
-            if (href) dest = href;
-          }
-        }
-      } catch {
-        /* keep /dashboard */
-      }
-      router.push(dest);
+      login(data);
+      router.push("/dashboard");
     } catch {
       setError("An unexpected error occurred.");
-    } finally {
       setLoading(false);
     }
   };

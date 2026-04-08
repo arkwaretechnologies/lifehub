@@ -42,6 +42,7 @@ import {
 import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
 import {
   createLabRequestWithItems,
+  deleteLabRequestsForEncounter,
   fetchLabRequestsForEncounter,
   parsePatientIdForLab,
   type EncounterLabRequestSummary,
@@ -50,6 +51,7 @@ import {
   fetchLabCatalogGrouped,
   type LabCatalogSection,
 } from "@/lib/labTests";
+import { fetchActiveLabPricesByTestIds } from "@/lib/labServicePrices";
 import { openPrescriptionPrintWindow } from "@/lib/prescriptionPrint";
 import type { UserProfile } from "@/lib/types";
 import {
@@ -63,6 +65,7 @@ import {
   fetchCurrentMedicationsForEncounter,
   replaceCurrentMedicationsForEncounter,
 } from "@/lib/currentMedications";
+import { fetchActivePhysicianServices, type PhysicianServiceRow } from "@/lib/physicianServices";
 
 const tabPanelSx = { pt: 2, minHeight: 280 };
 
@@ -278,6 +281,12 @@ function newMedicationLine(): MedicationLineDraft {
   };
 }
 
+function money2(v: number): string {
+  const n = Number(v);
+  const out = Number.isFinite(n) ? n : 0;
+  return out.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 function medicationLinesFromSnapshot(snapshot: string): MedicationLineDraft[] {
   try {
     const arr = JSON.parse(snapshot) as Array<{
@@ -333,9 +342,11 @@ const medicationOutlinedFieldSx = {
 export default function PlansTreatmentPanel({
   transId,
   patient,
+  isNew = false,
 }: {
   transId: string;
   patient: ConsultationPatient;
+  isNew?: boolean;
 }) {
   const { profile } = useAuth();
   const dispositionLabelId = `plans-disp-${useId().replace(/\W/g, "")}`;
@@ -358,9 +369,11 @@ export default function PlansTreatmentPanel({
   const [encounterLabRequests, setEncounterLabRequests] = useState<EncounterLabRequestSummary[]>([]);
   const [requestedTestIdSet, setRequestedTestIdSet] = useState<Set<string>>(() => new Set());
   const [labEncounterError, setLabEncounterError] = useState("");
+  const [labPriceByTestId, setLabPriceByTestId] = useState<Map<string, number>>(() => new Map());
 
   const [imagingModalOpen, setImagingModalOpen] = useState(false);
   const [imagingForm, setImagingForm] = useState<ImagingFormState>(emptyImagingForm);
+  const [imagingPriceByKey, setImagingPriceByKey] = useState<Record<string, number>>({});
 
   const [medicationsModalOpen, setMedicationsModalOpen] = useState(false);
   const [medProductPreview, setMedProductPreview] = useState<ProductCatalogRow[]>([]);
@@ -397,6 +410,35 @@ export default function PlansTreatmentPanel({
     } else {
       prevImagingOpenRef.current = false;
     }
+  }, [imagingModalOpen]);
+
+  useEffect(() => {
+    if (!imagingModalOpen) return;
+    let cancelled = false;
+    void (async () => {
+      const r = await fetchActivePhysicianServices();
+      if (cancelled || r.error) return;
+      const lookup = new Map<string, PhysicianServiceRow>();
+      for (const s of r.services) {
+        lookup.set(`${s.service_type}`.trim().toLowerCase() + "|" + `${s.name}`.trim().toLowerCase(), s);
+      }
+      const get = (serviceType: string, name: string): number => {
+        const key = `${serviceType}`.trim().toLowerCase() + "|" + `${name}`.trim().toLowerCase();
+        const s = lookup.get(key) ?? null;
+        const n = s ? (typeof s.default_fee === "number" ? s.default_fee : Number(String(s.default_fee ?? ""))) : 0;
+        return Number.isFinite(n) ? n : 0;
+      };
+      setImagingPriceByKey({
+        chestXray: get("Imaging", "Chest X-ray"),
+        wholeAbdomenUtz: get("Imaging", "Whole Abdomen UTZ"),
+        echo2d: get("Imaging", "2D Echo"),
+        thyroidScan: get("Imaging", "Thyroid Scan"),
+        tvs: get("Imaging", "Transvaginal UTZ (TVS)"),
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [imagingModalOpen]);
 
   const mergeIntoProductCache = useCallback((rows: ProductCatalogRow[]) => {
@@ -630,6 +672,16 @@ export default function PlansTreatmentPanel({
       } else {
         setLabSections(cat.sections);
       }
+
+      // Load prices for all tests in the catalog so each row can display a price.
+      if (!cat.error) {
+        const allTestIds = cat.sections.flatMap((s) => s.tests.map((t) => t.id));
+        const pricesAll = await fetchActiveLabPricesByTestIds(allTestIds);
+        if (!cancelled && !pricesAll.error) {
+          setLabPriceByTestId(pricesAll.pricesByTestId);
+        }
+      }
+
       if (enc.error) {
         setLabEncounterError(enc.error);
         setEncounterLabRequests([]);
@@ -637,12 +689,17 @@ export default function PlansTreatmentPanel({
       } else {
         setEncounterLabRequests(enc.requests);
         setRequestedTestIdSet(new Set(enc.requestedTestIds));
+        if (isNew) {
+          // In a new consultation, allow editing/removal of previously saved lab selections.
+          setSelectedLabTestIds(new Set(enc.requestedTestIds));
+        }
+        // Keep labPriceByTestId from the catalog fetch above.
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [labsModalOpen, transId]);
+  }, [labsModalOpen, transId, isNew]);
 
   const toggleLabTestSelection = useCallback((testId: string) => {
     setSelectedLabTestIds((prev) => {
@@ -742,14 +799,22 @@ export default function PlansTreatmentPanel({
     [labSections]
   );
 
+  const labSelectedTotal = useMemo(() => {
+    let sum = 0;
+    for (const id of selectedLabTestIds) {
+      sum += labPriceByTestId.get(id) ?? 0;
+    }
+    return sum;
+  }, [selectedLabTestIds, labPriceByTestId]);
+
   const labDialogFooterHint = useMemo(() => {
     const nReq = requestedTestIdSet.size;
     const nNew = selectedLabTestIds.size;
     if (nReq === 0 && nNew === 0) return "Select tests to request";
-    if (nReq === 0) return `${nNew} test${nNew === 1 ? "" : "s"} selected`;
+    if (nReq === 0) return `${nNew} test${nNew === 1 ? "" : "s"} selected · ${money2(labSelectedTotal)}`;
     if (nNew === 0) return `${nReq} already requested — select more to add another request`;
-    return `${nReq} already requested · ${nNew} new selected`;
-  }, [requestedTestIdSet, selectedLabTestIds]);
+    return `${nReq} already requested · ${nNew} new selected · ${money2(labSelectedTotal)}`;
+  }, [requestedTestIdSet, selectedLabTestIds, labSelectedTotal]);
 
   const submitLabRequest = useCallback(async () => {
     setLabDialogError("");
@@ -759,6 +824,15 @@ export default function PlansTreatmentPanel({
       profile != null && typeof profile.user_id === "number" && Number.isFinite(profile.user_id)
         ? profile.user_id
         : null;
+    if (isNew) {
+      const del = await deleteLabRequestsForEncounter(transId);
+      if (del.error) {
+        setLabSubmitting(false);
+        setLabDialogError(del.error);
+        return;
+      }
+    }
+
     const { labRequestId, error } = await createLabRequestWithItems({
       encounterId: transId,
       patientId: parsePatientIdForLab(patient.patientId),
@@ -781,6 +855,7 @@ export default function PlansTreatmentPanel({
       setEncounterLabRequests(encRefresh.requests);
       setRequestedTestIdSet(new Set(encRefresh.requestedTestIds));
       setLabEncounterError("");
+      window.dispatchEvent(new CustomEvent("lifehub:lab-requests-updated", { detail: { transId } }));
     }
   }, [
     transId,
@@ -788,6 +863,7 @@ export default function PlansTreatmentPanel({
     patient.referringPhysician,
     profile,
     selectedLabTestIds,
+    isNew,
   ]);
 
   const closeLabsModal = useCallback(() => {
@@ -1200,33 +1276,6 @@ export default function PlansTreatmentPanel({
               Could not load existing lab requests: {labEncounterError}
             </Alert>
           ) : null}
-          {!labTestsLoading && encounterLabRequests.length > 0 ? (
-            <Alert severity="info" sx={{ mb: 2 }}>
-              <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
-                Existing lab requests for this encounter
-              </Typography>
-              <Box component="ul" sx={{ m: 0, pl: 2.25 }}>
-                {encounterLabRequests.map((r) => {
-                  const timePart = formatLabRequestTime(r.request_time);
-                  const datePart = formatDateMMDDYYYY(r.request_date) || r.request_date;
-                  return (
-                    <Box component="li" key={r.id} sx={{ mb: 0.75 }}>
-                      <Typography variant="body2" component="span">
-                        <strong>{datePart}</strong>
-                        {timePart ? ` · ${timePart}` : ""} · {r.priority} · {r.labTestIds.length} test(s)
-                        {r.remarks
-                          ? ` — ${r.remarks.length > 72 ? `${r.remarks.slice(0, 72)}…` : r.remarks}`
-                          : ""}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
-                        ID {r.id.slice(0, 8)}…
-                      </Typography>
-                    </Box>
-                  );
-                })}
-              </Box>
-            </Alert>
-          ) : null}
           {labTestsLoading ? (
             <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
               <CircularProgress size={32} />
@@ -1273,7 +1322,7 @@ export default function PlansTreatmentPanel({
                   </Typography>
                   <Box sx={{ display: "flex", flexDirection: "column", gap: 0.25 }}>
                     {section.tests.map((test) => {
-                      const alreadyRequested = requestedTestIdSet.has(test.id);
+                      const alreadyRequested = !isNew && requestedTestIdSet.has(test.id);
                       const checked = alreadyRequested || selectedLabTestIds.has(test.id);
                       return (
                         <FormControlLabel
@@ -1300,9 +1349,14 @@ export default function PlansTreatmentPanel({
                             />
                           }
                           label={
-                            <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
-                              {test.name}
-                            </Typography>
+                            <Box component="span" sx={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 1 }}>
+                              <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
+                                {test.name}
+                              </Typography>
+                              <Typography component="span" variant="caption" sx={{ fontWeight: 800, whiteSpace: "nowrap" }}>
+                                {money2(labPriceByTestId.get(test.id) ?? 0)}
+                              </Typography>
+                            </Box>
                           }
                         />
                       );
@@ -1390,9 +1444,14 @@ export default function PlansTreatmentPanel({
                   />
                 }
                 label={
-                  <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
-                    Chest X-ray
-                  </Typography>
+                  <Box component="span" sx={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 1 }}>
+                    <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
+                      Chest X-ray
+                    </Typography>
+                    <Typography component="span" variant="caption" sx={{ fontWeight: 800, whiteSpace: "nowrap" }}>
+                      {money2(imagingPriceByKey.chestXray ?? 0)}
+                    </Typography>
+                  </Box>
                 }
               />
               <Box
@@ -1429,9 +1488,14 @@ export default function PlansTreatmentPanel({
                 />
               }
               label={
-                <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
-                  Whole Abdomen UTZ
-                </Typography>
+                <Box component="span" sx={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 1 }}>
+                  <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
+                    Whole Abdomen UTZ
+                  </Typography>
+                  <Typography component="span" variant="caption" sx={{ fontWeight: 800, whiteSpace: "nowrap" }}>
+                    {money2(imagingPriceByKey.wholeAbdomenUtz ?? 0)}
+                  </Typography>
+                </Box>
               }
             />
             <FormControlLabel
@@ -1444,9 +1508,14 @@ export default function PlansTreatmentPanel({
                 />
               }
               label={
-                <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
-                  2D Echo
-                </Typography>
+                <Box component="span" sx={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 1 }}>
+                  <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
+                    2D Echo
+                  </Typography>
+                  <Typography component="span" variant="caption" sx={{ fontWeight: 800, whiteSpace: "nowrap" }}>
+                    {money2(imagingPriceByKey.echo2d ?? 0)}
+                  </Typography>
+                </Box>
               }
             />
             <FormControlLabel
@@ -1459,9 +1528,14 @@ export default function PlansTreatmentPanel({
                 />
               }
               label={
-                <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
-                  Thyroid Scan
-                </Typography>
+                <Box component="span" sx={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 1 }}>
+                  <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
+                    Thyroid Scan
+                  </Typography>
+                  <Typography component="span" variant="caption" sx={{ fontWeight: 800, whiteSpace: "nowrap" }}>
+                    {money2(imagingPriceByKey.thyroidScan ?? 0)}
+                  </Typography>
+                </Box>
               }
             />
             <FormControlLabel
@@ -1474,9 +1548,14 @@ export default function PlansTreatmentPanel({
                 />
               }
               label={
-                <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
-                  Transvaginal UTZ (TVS)
-                </Typography>
+                <Box component="span" sx={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 1 }}>
+                  <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
+                    Transvaginal UTZ (TVS)
+                  </Typography>
+                  <Typography component="span" variant="caption" sx={{ fontWeight: 800, whiteSpace: "nowrap" }}>
+                    {money2(imagingPriceByKey.tvs ?? 0)}
+                  </Typography>
+                </Box>
               }
             />
           </Box>
@@ -1496,6 +1575,7 @@ export default function PlansTreatmentPanel({
                 plan_notes: upsertImagingBlock(f.plan_notes ?? "", lines),
               }));
               imagingBaselineRef.current = { ...imagingForm };
+              window.dispatchEvent(new CustomEvent("lifehub:imaging-updated", { detail: { transId } }));
               setImagingModalOpen(false);
             }}
             sx={{ textTransform: "none" }}

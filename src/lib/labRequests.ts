@@ -187,3 +187,25 @@ export async function fetchLabRequestsForEncounter(
     error: null,
   };
 }
+
+export async function deleteLabRequestsForEncounter(encounterId: string): Promise<{ error: string | null }> {
+  const id = encounterId.trim();
+  if (!id) return { error: null };
+
+  const { data: reqRows, error: reqErr } = await supabase
+    .from(LAB_REQUESTS_TABLE)
+    .select("id")
+    .eq("encounter_id", id);
+
+  if (reqErr) return { error: reqErr.message };
+  const reqIds = ((reqRows ?? []) as Array<{ id: string }>).map((r) => r.id).filter(Boolean);
+  if (reqIds.length === 0) return { error: null };
+
+  const { error: itemsErr } = await supabase.from(LAB_REQUEST_ITEMS_TABLE).delete().in("lab_request_id", reqIds);
+  if (itemsErr) return { error: itemsErr.message };
+
+  const { error: delErr } = await supabase.from(LAB_REQUESTS_TABLE).delete().in("id", reqIds);
+  if (delErr) return { error: delErr.message };
+
+  return { error: null };
+}

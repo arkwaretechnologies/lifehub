@@ -28,6 +28,21 @@ export type LabCatalogSection = {
   tests: LabTestCatalogItem[];
 };
 
+export async function fetchLabTestsByIds(ids: string[]): Promise<{
+  testsById: Map<string, { id: string; name: string }>;
+  error: string | null;
+}> {
+  const unique = [...new Set(ids.map((x) => x.trim()).filter(Boolean))];
+  if (unique.length === 0) return { testsById: new Map(), error: null };
+
+  const res = await supabase.from(LAB_TESTS_TABLE).select("id, name").in("id", unique);
+  if (res.error) return { testsById: new Map(), error: res.error.message };
+  const rows = (res.data ?? []) as Array<{ id: string; name: string }>;
+  const m = new Map<string, { id: string; name: string }>();
+  for (const r of rows) m.set(r.id, { id: r.id, name: r.name });
+  return { testsById: m, error: null };
+}
+
 function idStr(v: string | number | undefined | null): string {
   if (v === undefined || v === null) return "";
   return String(v);

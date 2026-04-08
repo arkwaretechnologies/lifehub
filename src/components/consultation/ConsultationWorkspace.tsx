@@ -17,6 +17,7 @@ import PatientInformationBanner from "./PatientInformationBanner";
 import PhysiciansRecordPanel from "./PhysiciansRecordPanel";
 import PlansTreatmentPanel from "./PlansTreatmentPanel";
 import ReviewOfSystemsPanel from "./ReviewOfSystemsPanel";
+import ChargesServicesPanel from "./ChargesServicesPanel";
 
 /** Same UI as `ReviewOfSystemsPanel` — kept so older references to this name still resolve. */
 function PhysicalAssessmentPanel({ transId }: { transId: string }) {
@@ -30,6 +31,7 @@ const PRIMARY_TABS = [
   "Focused exam / notes",
   "Assessment / diagnosis",
   "Plans / treatment",
+  "Charges / services",
 ] as const;
 
 function a11yProps(index: number) {
@@ -94,7 +96,7 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
           startIcon={<CloseIcon />}
           onClick={() => {
             if (dirty) setCloseConfirmOpen(true);
-            else router.push("/dashboard");
+            else router.push("/consultation");
           }}
           sx={{
             textTransform: "capitalize",
@@ -133,7 +135,7 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
           <Button
             onClick={() => {
               setCloseConfirmOpen(false);
-              router.push("/dashboard");
+              router.push("/consultation");
             }}
             color="secondary"
             variant="contained"
@@ -231,7 +233,10 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
             <AssessmentDiagnosisPanel transId={transId} />
           </Box>
           <Box role="tabpanel" id="consultation-tabpanel-5" aria-labelledby="consultation-tab-5" hidden={tab !== 5} sx={{ display: tab === 5 ? "block" : "none" }}>
-            <PlansTreatmentPanel transId={transId} patient={patient} />
+            <PlansTreatmentPanel transId={transId} patient={patient} isNew={isNew} />
+          </Box>
+          <Box role="tabpanel" id="consultation-tabpanel-6" aria-labelledby="consultation-tab-6" hidden={tab !== 6} sx={{ display: tab === 6 ? "block" : "none" }}>
+            <ChargesServicesPanel transId={transId} patient={patient} />
           </Box>
         </Box>
       </ConsultationActiveTabContext.Provider>

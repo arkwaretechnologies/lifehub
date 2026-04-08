@@ -367,12 +367,12 @@ export default function ConsultationHome() {
               size="large"
               disabled={!selectedPatient || creatingEncounter}
               onClick={() => void handleNewConsultation()}
-              sx={{ textTransform: "none", ml: "auto" }}
+              sx={{ textTransform: "uppercase", ml: "auto" }}
               startIcon={
                 creatingEncounter ? <CircularProgress size={18} color="inherit" /> : undefined
               }
             >
-              {creatingEncounter ? "Starting…" : "New Consultation"}
+              {creatingEncounter ? "Starting…" : "New consultation"}
             </Button>
           </span>
         </Tooltip>

@@ -26,6 +26,7 @@ import { fetchLabTestsByIds } from "@/lib/labTests";
 import { fetchEncounterPlansTreatment } from "@/lib/consultationData";
 import {
   fetchLatestPhysicianFeeSaleForEncounter,
+  replacePhysicianFeeSaleItems,
   resolveValidPhysicianId,
   upsertPhysicianFeeSaleForEncounter,
 } from "@/lib/physicianFeeSales";
@@ -414,7 +415,48 @@ export default function ChargesServicesPanel({ transId, patient }: { transId: st
         setToastOpen(true);
         return;
       }
-      if (r.id) setExistingSaleId(r.id);
+
+      const saleId = r.id;
+      if (!saleId) {
+        setToastSeverity("error");
+        setToastMessage("Charges saved but no sale id was returned.");
+        setToastOpen(true);
+        return;
+      }
+
+      const pickedLines = lines.filter((l) => l.serviceId.trim() !== "");
+      const itemRows: Parameters<typeof replacePhysicianFeeSaleItems>[1] = [];
+      for (const l of pickedLines) {
+        const sid = Number(l.serviceId.trim());
+        if (!Number.isFinite(sid) || sid <= 0) {
+          setToastSeverity("error");
+          setToastMessage("Invalid physician service on a charge line.");
+          setToastOpen(true);
+          return;
+        }
+        const unitFee = moneyNum(l.price);
+        const d = l.discountTypeId ? discountById.get(l.discountTypeId) ?? null : null;
+        const pct = pctNum(d?.discount_pct);
+        const out = unitFee * (1 - pct / 100);
+        const lineDiscount = unitFee - (Number.isFinite(out) ? out : unitFee);
+        itemRows.push({
+          physician_service_id: sid,
+          quantity: 1,
+          unit_fee: unitFee,
+          discount: lineDiscount,
+          notes: d?.name?.trim() ? `Discount: ${d.name}` : null,
+        });
+      }
+
+      const itemsRes = await replacePhysicianFeeSaleItems(saleId, itemRows);
+      if (itemsRes.error) {
+        setToastSeverity("error");
+        setToastMessage(itemsRes.error);
+        setToastOpen(true);
+        return;
+      }
+
+      setExistingSaleId(saleId);
       setToastSeverity("success");
       setToastMessage("Charges/services saved.");
       setToastOpen(true);
@@ -424,7 +466,7 @@ export default function ChargesServicesPanel({ transId, patient }: { transId: st
     } finally {
       setSaveLoading(false);
     }
-  }, [existingSaleId, lines, patient.patientId, profile, setPanelDirty, totals, transId]);
+  }, [discountById, existingSaleId, lines, patient.patientId, profile, setPanelDirty, totals, transId, user]);
 
   useEffect(() => {
     return registerSaveHandler("charges-services", saveCharges);

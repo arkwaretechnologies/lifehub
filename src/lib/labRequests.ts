@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabaseClient";
+import { fetchLabTestsByIds } from "@/lib/labTests";
 
 export const LAB_REQUESTS_TABLE = "lab_requests" as const;
 export const LAB_REQUEST_ITEMS_TABLE = "lab_request_items" as const;
@@ -6,7 +7,8 @@ export const LAB_REQUEST_ITEMS_TABLE = "lab_request_items" as const;
 export type LabRequestItemPriority = "Routine" | "STAT";
 
 export type CreateLabRequestInput = {
-  encounterId: string;
+  /** Set `null` for walk-in (no consultation visit); then `patientId` is required. */
+  encounterId: string | null;
   patientId: number | null;
   referringPhysician: string | null;
   physicianId: number | null;
@@ -43,6 +45,14 @@ export async function createLabRequestWithItems(
     return { labRequestId: null, error: "Select at least one lab test." };
   }
 
+  const enc = input.encounterId != null ? String(input.encounterId).trim() : "";
+  if (input.encounterId != null && enc === "") {
+    return { labRequestId: null, error: "Invalid encounter." };
+  }
+  if (input.encounterId == null && (input.patientId == null || !Number.isFinite(input.patientId) || input.patientId <= 0)) {
+    return { labRequestId: null, error: "Walk-in lab orders require a patient." };
+  }
+
   const now = new Date();
   const request_date = localDateYmd(now);
   const request_time = localTimeHms(now);
@@ -57,7 +67,7 @@ export async function createLabRequestWithItems(
   const { data: row, error: insErr } = await supabase
     .from(LAB_REQUESTS_TABLE)
     .insert({
-      encounter_id: input.encounterId,
+      encounter_id: enc === "" ? null : enc,
       patient_id: input.patientId,
       request_date,
       request_time,
@@ -112,6 +122,34 @@ export type EncounterLabRequestSummary = {
   created_at: string;
   labTestIds: string[];
 };
+
+export type LabRequestHeaderRow = {
+  id: string;
+  patient_id: number | null;
+  encounter_id: string | null;
+  request_date: string;
+  request_time: string | null;
+  priority: string;
+  remarks: string | null;
+  created_at: string;
+};
+
+export async function fetchLabRequestHeaderById(labRequestId: string): Promise<{
+  row: LabRequestHeaderRow | null;
+  error: string | null;
+}> {
+  const id = labRequestId.trim();
+  if (!id) return { row: null, error: "Missing lab order id." };
+
+  const { data, error } = await supabase
+    .from(LAB_REQUESTS_TABLE)
+    .select("id, patient_id, encounter_id, request_date, request_time, priority, remarks, created_at")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error) return { row: null, error: error.message };
+  return { row: (data as LabRequestHeaderRow | null) ?? null, error: null };
+}
 
 /**
  * All lab requests for an encounter, with item test ids (newest request first).
@@ -186,6 +224,60 @@ export async function fetchLabRequestsForEncounter(
     requestedTestIds: [...allTestIds],
     error: null,
   };
+}
+
+export type LabRequestItemDetailRow = {
+  id: string;
+  lab_request_id: string;
+  lab_test_id: string;
+  notes: string | null;
+  priority: string | null;
+  test_name: string | null;
+};
+
+/** All `lab_request_items` rows for the given requests, with `lab_tests.name`. */
+export async function fetchLabRequestItemDetailsForRequestIds(requestIds: string[]): Promise<{
+  items: LabRequestItemDetailRow[];
+  error: string | null;
+}> {
+  const ids = [...new Set(requestIds.map((x) => String(x).trim()).filter(Boolean))];
+  if (ids.length === 0) return { items: [], error: null };
+
+  const { data, error } = await supabase
+    .from(LAB_REQUEST_ITEMS_TABLE)
+    .select("id, lab_request_id, lab_test_id, notes, priority")
+    .in("lab_request_id", ids);
+
+  if (error) return { items: [], error: error.message };
+
+  const raw = (data ?? []) as Array<{
+    id: string;
+    lab_request_id: string;
+    lab_test_id: string;
+    notes: string | null;
+    priority: string | null;
+  }>;
+
+  const testIds = [...new Set(raw.map((r) => r.lab_test_id).filter(Boolean))];
+  const { testsById, error: testErr } = await fetchLabTestsByIds(testIds);
+  if (testErr) return { items: [], error: testErr };
+
+  const items: LabRequestItemDetailRow[] = raw.map((r) => ({
+    id: r.id,
+    lab_request_id: r.lab_request_id,
+    lab_test_id: r.lab_test_id,
+    notes: r.notes,
+    priority: r.priority,
+    test_name: testsById.get(r.lab_test_id)?.name ?? null,
+  }));
+
+  items.sort((a, b) => {
+    const cr = a.lab_request_id.localeCompare(b.lab_request_id);
+    if (cr !== 0) return cr;
+    return a.id.localeCompare(b.id);
+  });
+
+  return { items, error: null };
 }
 
 export async function deleteLabRequestsForEncounter(encounterId: string): Promise<{ error: string | null }> {

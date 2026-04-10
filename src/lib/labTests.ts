@@ -43,6 +43,40 @@ export async function fetchLabTestsByIds(ids: string[]): Promise<{
   return { testsById: m, error: null };
 }
 
+export async function fetchLabTestUnitPricesByIds(ids: string[]): Promise<{
+  unitPriceById: Map<string, number>;
+  error: string | null;
+}> {
+  const unique = [...new Set(ids.map((x) => x.trim()).filter(Boolean))];
+  if (unique.length === 0) return { unitPriceById: new Map(), error: null };
+
+  // Try common pricing column names. If your schema uses a different column,
+  // update this query accordingly.
+  const candidates = ["price", "unit_price", "selling_price", "amount", "rate"] as const;
+
+  for (const col of candidates) {
+    const res = await supabase.from(LAB_TESTS_TABLE).select(`id, ${col}`).in("id", unique);
+    if (res.error) {
+      // Column likely does not exist; try next.
+      continue;
+    }
+    const rows = (res.data ?? []) as Array<{ id: string } & Record<string, unknown>>;
+    const m = new Map<string, number>();
+    for (const r of rows) {
+      const raw = (r as Record<string, unknown>)[col];
+      const n = typeof raw === "number" ? raw : Number(String(raw ?? ""));
+      m.set(r.id, Number.isFinite(n) ? n : 0);
+    }
+    return { unitPriceById: m, error: null };
+  }
+
+  return {
+    unitPriceById: new Map(),
+    error:
+      "Could not load lab test prices. Add a price column to `lab_tests` (e.g. `price`) or update `fetchLabTestUnitPricesByIds` to match your schema.",
+  };
+}
+
 function idStr(v: string | number | undefined | null): string {
   if (v === undefined || v === null) return "";
   return String(v);

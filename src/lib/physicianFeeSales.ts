@@ -1,8 +1,12 @@
 import { supabase } from "@/lib/supabaseClient";
+import { PHYSICIAN_SERVICES_TABLE } from "@/lib/physicianServices";
 
 export const PHYSICIAN_FEE_SALES_TABLE = "physician_fee_sales" as const;
 export const PHYSICIAN_FEE_SALE_ITEMS_TABLE = "physician_fee_sale_items" as const;
 const USERS_TABLE = "users" as const;
+
+/** Cashier marks the sale paid with this `physician_fee_sales.status`. */
+export const PHYSICIAN_FEE_STATUS_PAID = "Paid" as const;
 
 export type PhysicianFeeSaleItemRow = {
   physician_service_id: number;
@@ -53,7 +57,112 @@ export type PhysicianFeeSaleRow = {
   total_amount: number | string;
   notes: string | null;
   created_at: string;
+  status?: string | null;
 };
+
+export type PhysicianFeeSaleWithStatus = PhysicianFeeSaleRow & { status: string | null };
+
+export type PhysicianFeeSaleItemDetail = {
+  id: string;
+  physician_fee_sale_id: string;
+  linenum: number;
+  physician_service_id: number;
+  quantity: number;
+  unit_fee: number | string;
+  discount: number | string;
+  total_fee: number | string | null;
+  notes: string | null;
+  service_name: string | null;
+};
+
+/** Sales for an encounter that are not marked Paid at cashier. */
+export async function fetchUnpaidPhysicianFeeSalesForEncounter(encounterId: string): Promise<{
+  sales: PhysicianFeeSaleWithStatus[];
+  error: string | null;
+}> {
+  const id = encounterId.trim();
+  if (!id) return { sales: [], error: null };
+
+  const res = await supabase
+    .from(PHYSICIAN_FEE_SALES_TABLE)
+    .select(
+      "id, patient_id, encounter_id, physician_id, subtotal, discount_type_id, discount_amount, total_amount, notes, created_at, status",
+    )
+    .eq("encounter_id", id)
+    .or(`status.is.null,status.neq.${PHYSICIAN_FEE_STATUS_PAID}`)
+    .order("created_at", { ascending: false });
+
+  if (res.error) return { sales: [], error: res.error.message };
+  const rows = (res.data ?? []) as PhysicianFeeSaleWithStatus[];
+  return { sales: rows, error: null };
+}
+
+/** Line items for one or more physician fee sales, with `physician_services.name`. */
+export async function fetchPhysicianFeeSaleItemsWithServiceNames(saleIds: string[]): Promise<{
+  itemsBySaleId: Map<string, PhysicianFeeSaleItemDetail[]>;
+  error: string | null;
+}> {
+  const ids = [...new Set(saleIds.map((x) => String(x).trim()).filter(Boolean))];
+  if (ids.length === 0) return { itemsBySaleId: new Map(), error: null };
+
+  const { data, error } = await supabase
+    .from(PHYSICIAN_FEE_SALE_ITEMS_TABLE)
+    .select(
+      "id, physician_fee_sale_id, linenum, physician_service_id, quantity, unit_fee, discount, total_fee, notes",
+    )
+    .in("physician_fee_sale_id", ids);
+
+  if (error) return { itemsBySaleId: new Map(), error: error.message };
+
+  type Raw = {
+    id: string;
+    physician_fee_sale_id: string;
+    linenum: number;
+    physician_service_id: number;
+    quantity: number;
+    unit_fee: number | string;
+    discount: number | string;
+    total_fee: number | string | null;
+    notes: string | null;
+  };
+
+  const rawRows = (data ?? []) as Raw[];
+  const svcIds = [...new Set(rawRows.map((r) => r.physician_service_id).filter((n) => Number.isFinite(n)))];
+  const nameByServiceId = new Map<number, string>();
+
+  if (svcIds.length > 0) {
+    const svcRes = await supabase.from(PHYSICIAN_SERVICES_TABLE).select("id, name").in("id", svcIds);
+    if (svcRes.error) return { itemsBySaleId: new Map(), error: svcRes.error.message };
+    for (const row of (svcRes.data ?? []) as Array<{ id: number; name: string }>) {
+      nameByServiceId.set(row.id, row.name ?? "");
+    }
+  }
+
+  const itemsBySaleId = new Map<string, PhysicianFeeSaleItemDetail[]>();
+  for (const r of rawRows) {
+    const detail: PhysicianFeeSaleItemDetail = {
+      id: r.id,
+      physician_fee_sale_id: r.physician_fee_sale_id,
+      linenum: r.linenum,
+      physician_service_id: r.physician_service_id,
+      quantity: r.quantity,
+      unit_fee: r.unit_fee,
+      discount: r.discount,
+      total_fee: r.total_fee,
+      notes: r.notes,
+      service_name: nameByServiceId.get(r.physician_service_id) ?? null,
+    };
+    const list = itemsBySaleId.get(r.physician_fee_sale_id) ?? [];
+    list.push(detail);
+    itemsBySaleId.set(r.physician_fee_sale_id, list);
+  }
+
+  for (const [, list] of itemsBySaleId) {
+    list.sort((a, b) => a.linenum - b.linenum);
+  }
+
+  return { itemsBySaleId, error: null };
+}
 
 export async function fetchLatestPhysicianFeeSaleForEncounter(encounterId: string): Promise<{
   sale: PhysicianFeeSaleRow | null;

@@ -4,6 +4,7 @@ import {
   type ConsultationPatient,
   type ConsultationPatientProfile,
 } from "@/components/consultation/consultationTypes";
+import { fetchCashierUnpaidPhysicianFeeEncounterCounts } from "@/lib/cashierLabQueue";
 import { supabase } from "@/lib/supabaseClient";
 
 const ENCOUNTERS_TABLE = "encounters";
@@ -19,6 +20,7 @@ export type ConsultationPatientRow = {
   civil_status: string | null;
   address: string | null;
   contact_no: string | null;
+  email_address?: string | null;
   occupation: string | null;
   referring_physician: string | number | null;
   philhealth_no: number | null;
@@ -208,6 +210,116 @@ const ENCOUNTER_SELECT = `
   )
 `;
 
+/** Cashier search list: encounter + patient row (includes `email_address` for parity with patient directory). */
+const CASHIER_ENCOUNTER_SEARCH_SELECT = `
+  trans_id,
+  patient_id,
+  encounter_date,
+  encounter_time,
+  queue_no,
+  chief_complaint,
+  referring_physician,
+  physician_id,
+  patients!encounters_patient_id_fkey (
+    id,
+    name,
+    date_of_birth,
+    sex,
+    civil_status,
+    address,
+    contact_no,
+    email_address,
+    occupation,
+    referring_physician,
+    philhealth_no
+  )
+`;
+
+export type CashierEncounterSearchRow = {
+  encounter: ConsultationEncounterSummary;
+  patient: ConsultationPatientListRow;
+};
+
+/**
+ * Patient ids whose name matches the token (and `id` when the token is all digits).
+ * Resolved separately because PostgREST cannot parse `patients.name` inside an `encounters` `.or()` filter.
+ */
+async function fetchPatientIdsForCashierSearchToken(
+  tok: string,
+): Promise<{ ids: number[]; error: string | null }> {
+  const t = tok.trim();
+  if (!t) return { ids: [], error: null };
+  // Patient names are stored uppercase; normalize for `name.ilike`.
+  const upper = t.toUpperCase();
+  const escaped = upper.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+  const likePattern = `%${escaped}%`;
+  let orFilter = `name.ilike.${likePattern}`;
+  if (/^\d+$/.test(t)) {
+    orFilter = `${orFilter},id.eq.${t}`;
+  }
+  const { data, error } = await supabase.from(PATIENTS_TABLE).select("id").or(orFilter).limit(2000);
+  if (error) return { ids: [], error: error.message };
+  const ids = [
+    ...new Set(
+      (data ?? [])
+        .map((r) => Number((r as { id: unknown }).id))
+        .filter((n) => Number.isFinite(n)),
+    ),
+  ];
+  return { ids, error: null };
+}
+
+/**
+ * `trans_id`s matching one token (OR): patient directory hits, full-UUID equality, numeric `patient_id`, and
+ * substring match on `trans_id` when the database accepts `ilike` on that column (PostgREST forbids `::` casts
+ * inside `or=(...)`, so substring cannot live in the same `.or()` string as `patient_id.in`).
+ */
+async function fetchTransIdsMatchingCashierToken(
+  tok: string,
+  patientIds: number[],
+): Promise<{ ids: Set<string>; error: string | null }> {
+  const t = tok.trim();
+  if (!t) return { ids: new Set(), error: null };
+  // `trans_id` UUIDs are stored lowercase; normalize for `ilike` / `eq`.
+  const lower = t.toLowerCase();
+  const escapedTrans = lower.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+  const transLikePattern = `%${escapedTrans}%`;
+  const out = new Set<string>();
+
+  const orParts: string[] = [];
+  if (patientIds.length > 0) {
+    orParts.push(`patient_id.in.(${patientIds.join(",")})`);
+  }
+  if (isUuid(t)) {
+    orParts.push(`trans_id.eq.${lower}`);
+  }
+  if (/^\d+$/.test(t)) {
+    orParts.push(`patient_id.eq.${t}`);
+  }
+
+  if (orParts.length > 0) {
+    const { data, error } = await supabase.from(ENCOUNTERS_TABLE).select("trans_id").or(orParts.join(","));
+    if (error) return { ids: new Set(), error: error.message };
+    for (const row of data ?? []) {
+      const id = (row as { trans_id: string | null }).trans_id;
+      if (id != null && id !== "") out.add(String(id));
+    }
+  }
+
+  const { data: byText, error: textErr } = await supabase
+    .from(ENCOUNTERS_TABLE)
+    .select("trans_id")
+    .ilike("trans_id", transLikePattern);
+  if (!textErr && byText) {
+    for (const row of byText) {
+      const id = (row as { trans_id: string | null }).trans_id;
+      if (id != null && id !== "") out.add(String(id));
+    }
+  }
+
+  return { ids: out, error: null };
+}
+
 async function fetchEncountersWithPatients(options: {
   limit: number;
   patientIds?: number[];
@@ -293,6 +405,161 @@ export async function fetchConsultationPatientsPage(
   };
 }
 
+/**
+ * Cashier: paginated encounter search by keywords (space-separated tokens are AND-ed).
+ * Each token matches if it appears in patient name (matched uppercase), encounter `trans_id` (partial, lowercase), full UUID equality, or numeric `patient_id`.
+ * Only encounters with at least one `physician_fee_sales` row whose `status` is not Paid (or null) are returned — same scope as the cashier unpaid queue.
+ */
+export async function fetchCashierEncountersSearchPage(
+  pageIndex: number,
+  pageSize: number,
+  searchRaw: string,
+): Promise<{ rows: CashierEncounterSearchRow[]; count: number; error: string | null }> {
+  const tokens = searchRaw
+    .trim()
+    .replace(/,/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  if (tokens.length === 0) {
+    return { rows: [], count: 0, error: null };
+  }
+
+  const from = pageIndex * pageSize;
+  const to = from + pageSize - 1;
+
+  const [patientMatches, unpaidQueueRes] = await Promise.all([
+    Promise.all(tokens.map((tok) => fetchPatientIdsForCashierSearchToken(tok))),
+    fetchCashierUnpaidPhysicianFeeEncounterCounts(),
+  ]);
+  const patientLookupError = patientMatches.find((m) => m.error)?.error;
+  if (patientLookupError) {
+    return { rows: [], count: 0, error: patientLookupError };
+  }
+  if (unpaidQueueRes.error) {
+    return { rows: [], count: 0, error: unpaidQueueRes.error };
+  }
+  const unpaidEncounterIds = new Set(
+    [...unpaidQueueRes.pendingByEncounterId.keys()].map((k) => String(k).trim().toLowerCase()),
+  );
+  if (unpaidEncounterIds.size === 0) {
+    return { rows: [], count: 0, error: null };
+  }
+
+  const transIdSets = await Promise.all(
+    tokens.map((tok, i) => fetchTransIdsMatchingCashierToken(tok, patientMatches[i]?.ids ?? [])),
+  );
+  const transIdLookupError = transIdSets.find((s) => s.error)?.error;
+  if (transIdLookupError) {
+    return { rows: [], count: 0, error: transIdLookupError };
+  }
+
+  let intersection: Set<string> | null = null;
+  for (const { ids } of transIdSets) {
+    if (intersection === null) {
+      intersection = new Set(ids);
+    } else {
+      const next = new Set<string>();
+      for (const id of intersection) {
+        if (ids.has(id)) next.add(id);
+      }
+      intersection = next;
+    }
+  }
+
+  const allIdsRaw = intersection ? [...intersection] : [];
+  const allIds = allIdsRaw.filter((id) => unpaidEncounterIds.has(String(id).trim().toLowerCase()));
+  if (allIds.length === 0) {
+    return { rows: [], count: 0, error: null };
+  }
+
+  type SortMeta = { trans_id: string; encounter_date: string; encounter_time: string | null };
+  const metaById = new Map<string, SortMeta>();
+  const metaChunk = 120;
+  for (let i = 0; i < allIds.length; i += metaChunk) {
+    const chunk = allIds.slice(i, i + metaChunk);
+    const { data: metaRows, error: metaErr } = await supabase
+      .from(ENCOUNTERS_TABLE)
+      .select("trans_id, encounter_date, encounter_time")
+      .in("trans_id", chunk);
+    if (metaErr) {
+      return { rows: [], count: 0, error: metaErr.message };
+    }
+    for (const row of metaRows ?? []) {
+      const r = row as SortMeta;
+      if (r.trans_id != null && r.trans_id !== "") {
+        metaById.set(String(r.trans_id), { ...r, trans_id: String(r.trans_id) });
+      }
+    }
+  }
+
+  const sortedIds = [...metaById.values()]
+    .sort((a, b) => {
+      const d = String(b.encounter_date).localeCompare(String(a.encounter_date));
+      if (d !== 0) return d;
+      return String(b.encounter_time ?? "").localeCompare(String(a.encounter_time ?? ""));
+    })
+    .map((r) => r.trans_id);
+
+  const total = sortedIds.length;
+  const pageIds = sortedIds.slice(from, to + 1);
+  if (pageIds.length === 0) {
+    return { rows: [], count: total, error: null };
+  }
+
+  const { data, error } = await supabase
+    .from(ENCOUNTERS_TABLE)
+    .select(CASHIER_ENCOUNTER_SEARCH_SELECT)
+    .in("trans_id", pageIds);
+
+  if (error) {
+    return { rows: [], count: 0, error: error.message };
+  }
+
+  const byTransId = new Map<string, EncounterWithPatient>();
+  for (const row of data ?? []) {
+    const r = row as EncounterWithPatient;
+    const tid = String((r as EncounterRow).trans_id);
+    byTransId.set(tid, r);
+  }
+
+  const rowsRaw = pageIds.map((id) => byTransId.get(id)).filter((x): x is EncounterWithPatient => x != null);
+  const rows: CashierEncounterSearchRow[] = [];
+  for (const r of rowsRaw) {
+    const p = unwrapPatient(r.patients);
+    if (!p) continue;
+    rows.push({
+      encounter: encounterToSummary(r as EncounterRow),
+      patient: {
+        id: p.id,
+        name: p.name,
+        date_of_birth: p.date_of_birth,
+        sex: p.sex,
+        civil_status: p.civil_status,
+        address: p.address,
+        contact_no: p.contact_no,
+        email_address: p.email_address ?? null,
+        occupation: p.occupation,
+        referring_physician: p.referring_physician,
+        philhealth_no: p.philhealth_no,
+      },
+    });
+  }
+
+  return { rows, count: total, error: null };
+}
+
+export async function fetchPatientListRowById(patientId: number): Promise<{
+  row: ConsultationPatientListRow | null;
+  error: string | null;
+}> {
+  if (!Number.isFinite(patientId) || patientId <= 0) {
+    return { row: null, error: null };
+  }
+  const { data, error } = await supabase.from(PATIENTS_TABLE).select("*").eq("id", patientId).maybeSingle();
+  if (error) return { row: null, error: error.message };
+  return { row: (data as ConsultationPatientListRow | null) ?? null, error: null };
+}
+
 export async function fetchEncountersForPatient(
   patientId: number
 ): Promise<{ encounters: ConsultationEncounterSummary[]; error: string | null }> {
@@ -313,6 +580,31 @@ export async function fetchEncountersForPatient(
   const encounters = (data ?? []).map((row) => encounterToSummary(row as EncounterRow));
   encounters.sort(sortEncountersDesc);
   return { encounters, error: null };
+}
+
+/** Cashier: load a single visit row for checkout, keyed by `trans_id`. */
+export async function fetchEncounterSummaryByTransId(
+  transIdRaw: string,
+): Promise<{ encounter: ConsultationEncounterSummary | null; error: string | null }> {
+  const id = transIdRaw.trim().toLowerCase();
+  if (!isUuid(id)) {
+    return { encounter: null, error: null };
+  }
+  const { data, error } = await supabase
+    .from(ENCOUNTERS_TABLE)
+    .select(
+      "trans_id, patient_id, encounter_date, encounter_time, queue_no, chief_complaint, referring_physician, physician_id",
+    )
+    .eq("trans_id", id)
+    .maybeSingle();
+
+  if (error) {
+    return { encounter: null, error: error.message };
+  }
+  if (!data) {
+    return { encounter: null, error: null };
+  }
+  return { encounter: encounterToSummary(data as EncounterRow), error: null };
 }
 
 export async function createEncounterForPatient(

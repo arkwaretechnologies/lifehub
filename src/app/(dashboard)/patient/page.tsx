@@ -33,6 +33,7 @@ import SearchIcon from "@mui/icons-material/Search";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import { formatDateMMDDYYYY, isoDateFromUnknown } from "@/lib/dateDisplay";
+import { buildPatientSearchOrFilter, PATIENT_DIRECTORY_SELECT } from "@/lib/patientsCatalog";
 import { supabase } from "@/lib/supabaseClient";
 import { FormFieldLabel } from "@/components/FormFieldLabel";
 import {
@@ -486,33 +487,6 @@ function PatientFormFields({
   );
 }
 
-/** PostgREST `.or()` filter: ilike across text columns; exact id / philhealth when numeric. */
-function buildPatientSearchOrFilter(raw: string): string {
-  const t = raw.trim().replace(/,/g, " ").toUpperCase();
-  if (!t) return "";
-  const escaped = t.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
-  const likePattern = `%${escaped}%`;
-  const textCols = [
-    "name",
-    "contact_no",
-    "email_address",
-    "address",
-    "occupation",
-    "civil_status",
-    "sex",
-  ] as const;
-  const parts = textCols.map((c) => `${c}.ilike.${likePattern}`);
-  if (/^\d+$/.test(t)) {
-    parts.push(`id.eq.${t}`);
-    parts.push(`referring_physician.eq.${t}`);
-    const n = Number.parseInt(t, 10);
-    if (Number.isFinite(n) && n >= 0 && n <= 2_147_483_647) {
-      parts.push(`philhealth_no.eq.${n}`);
-    }
-  }
-  return parts.join(",");
-}
-
 export default function PatientPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [addForm, setAddForm] = useState<PatientForm>(emptyForm);
@@ -578,7 +552,7 @@ export default function PatientPage() {
 
       let query = supabase
         .from("patients")
-        .select("*", { count: "exact" })
+        .select(PATIENT_DIRECTORY_SELECT, { count: "exact" })
         .order("created_at", { ascending: false });
 
       const orFilter = buildPatientSearchOrFilter(debouncedSearch);

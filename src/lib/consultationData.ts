@@ -5,6 +5,7 @@ import {
   type ConsultationPatientProfile,
 } from "@/components/consultation/consultationTypes";
 import { fetchCashierUnpaidPhysicianFeeEncounterCounts } from "@/lib/cashierLabQueue";
+import { buildPatientSearchOrFilter, PATIENT_DIRECTORY_SELECT, sanitizePatientSearchQuery } from "@/lib/patientsCatalog";
 import { supabase } from "@/lib/supabaseClient";
 
 const ENCOUNTERS_TABLE = "encounters";
@@ -39,6 +40,9 @@ export type ConsultationPatientListRow = {
   occupation: string | null;
   referring_physician: string | number | null;
   philhealth_no: number | null;
+  /** Present when loaded via {@link PATIENT_DIRECTORY_SELECT} (directory / pagination). */
+  created_at?: string;
+  updated_at?: string | null;
 };
 
 export type EncounterRow = {
@@ -65,33 +69,6 @@ type EncounterWithPatient = EncounterRow & { patients: ConsultationPatientRow | 
 function unwrapPatient(embed: ConsultationPatientRow | ConsultationPatientRow[] | null): ConsultationPatientRow | null {
   if (!embed) return null;
   return Array.isArray(embed) ? embed[0] ?? null : embed;
-}
-
-/** PostgREST `.or()` filter for patient text search (aligned with patient page). */
-function buildPatientSearchOrFilter(raw: string): string {
-  const t = raw.trim().replace(/,/g, " ").toUpperCase();
-  if (!t) return "";
-  const escaped = t.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
-  const likePattern = `%${escaped}%`;
-  const textCols = [
-    "name",
-    "contact_no",
-    "email_address",
-    "address",
-    "occupation",
-    "civil_status",
-    "sex",
-  ] as const;
-  const parts = textCols.map((c) => `${c}.ilike.${likePattern}`);
-  if (/^\d+$/.test(t)) {
-    parts.push(`id.eq.${t}`);
-    parts.push(`referring_physician.eq.${t}`);
-    const n = Number.parseInt(t, 10);
-    if (Number.isFinite(n) && n >= 0 && n <= 2_147_483_647) {
-      parts.push(`philhealth_no.eq.${n}`);
-    }
-  }
-  return parts.join(",");
 }
 
 function isUuid(s: string): boolean {
@@ -250,14 +227,16 @@ async function fetchPatientIdsForCashierSearchToken(
   const t = tok.trim();
   if (!t) return { ids: [], error: null };
   // Patient names are stored uppercase; normalize for `name.ilike`.
-  const upper = t.toUpperCase();
+  const safeTok = sanitizePatientSearchQuery(t);
+  const upper = safeTok.toUpperCase();
+  if (!upper) return { ids: [], error: null };
   const escaped = upper.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
   const likePattern = `%${escaped}%`;
   let orFilter = `name.ilike.${likePattern}`;
-  if (/^\d+$/.test(t)) {
-    orFilter = `${orFilter},id.eq.${t}`;
+  if (/^\d+$/.test(safeTok)) {
+    orFilter = `${orFilter},id.eq.${safeTok}`;
   }
-  const { data, error } = await supabase.from(PATIENTS_TABLE).select("id").or(orFilter).limit(2000);
+  const { data, error } = await supabase.from(PATIENTS_TABLE).select("id").or(orFilter).limit(200);
   if (error) return { ids: [], error: error.message };
   const ids = [
     ...new Set(
@@ -384,7 +363,7 @@ export async function fetchConsultationPatientsPage(
 
   let query = supabase
     .from(PATIENTS_TABLE)
-    .select("*", { count: "exact" })
+    .select(PATIENT_DIRECTORY_SELECT, { count: "exact" })
     .order("created_at", { ascending: false });
 
   const orFilter = buildPatientSearchOrFilter(searchRaw);
@@ -555,7 +534,7 @@ export async function fetchPatientListRowById(patientId: number): Promise<{
   if (!Number.isFinite(patientId) || patientId <= 0) {
     return { row: null, error: null };
   }
-  const { data, error } = await supabase.from(PATIENTS_TABLE).select("*").eq("id", patientId).maybeSingle();
+  const { data, error } = await supabase.from(PATIENTS_TABLE).select(PATIENT_DIRECTORY_SELECT).eq("id", patientId).maybeSingle();
   if (error) return { row: null, error: error.message };
   return { row: (data as ConsultationPatientListRow | null) ?? null, error: null };
 }

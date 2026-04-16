@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabaseClient";
+import { fetchActiveLabPricesByTestIds } from "@/lib/labServicePrices";
 
 export const LAB_TESTS_TABLE = "lab_tests" as const;
 export const LAB_CATEGORIES_TABLE = "lab_categories" as const;
@@ -43,6 +44,10 @@ export async function fetchLabTestsByIds(ids: string[]): Promise<{
   return { testsById: m, error: null };
 }
 
+/**
+ * Unit prices for lab tests: same source as consultation (`lab_service_prices` via
+ * `fetchActiveLabPricesByTestIds`), then optional fallback to price-like columns on `lab_tests`.
+ */
 export async function fetchLabTestUnitPricesByIds(ids: string[]): Promise<{
   unitPriceById: Map<string, number>;
   error: string | null;
@@ -50,30 +55,40 @@ export async function fetchLabTestUnitPricesByIds(ids: string[]): Promise<{
   const unique = [...new Set(ids.map((x) => x.trim()).filter(Boolean))];
   if (unique.length === 0) return { unitPriceById: new Map(), error: null };
 
-  // Try common pricing column names. If your schema uses a different column,
-  // update this query accordingly.
-  const candidates = ["price", "unit_price", "selling_price", "amount", "rate"] as const;
+  const m = new Map<string, number>();
+  for (const id of unique) m.set(id, 0);
 
-  for (const col of candidates) {
-    const res = await supabase.from(LAB_TESTS_TABLE).select(`id, ${col}`).in("id", unique);
-    if (res.error) {
-      // Column likely does not exist; try next.
-      continue;
+  const svc = await fetchActiveLabPricesByTestIds(unique);
+  if (!svc.error) {
+    for (const id of unique) {
+      const p = svc.pricesByTestId.get(id);
+      if (p != null && Number.isFinite(p) && p > 0) m.set(id, p);
     }
+  }
+
+  const candidates = ["price", "unit_price", "selling_price", "amount", "rate"] as const;
+  for (const col of candidates) {
+    const remaining = unique.filter((id) => (m.get(id) ?? 0) <= 0);
+    if (remaining.length === 0) break;
+    const res = await supabase.from(LAB_TESTS_TABLE).select(`id, ${col}`).in("id", remaining);
+    if (res.error) continue;
     const rows = (res.data ?? []) as Array<{ id: string } & Record<string, unknown>>;
-    const m = new Map<string, number>();
     for (const r of rows) {
       const raw = (r as Record<string, unknown>)[col];
       const n = typeof raw === "number" ? raw : Number(String(raw ?? ""));
-      m.set(r.id, Number.isFinite(n) ? n : 0);
+      const v = Number.isFinite(n) ? n : 0;
+      if (v > 0 && (m.get(r.id) ?? 0) <= 0) m.set(r.id, v);
     }
-    return { unitPriceById: m, error: null };
   }
 
+  const unresolved = unique.filter((id) => (m.get(id) ?? 0) <= 0);
+  if (unresolved.length === 0) return { unitPriceById: m, error: null };
+
   return {
-    unitPriceById: new Map(),
+    unitPriceById: m,
     error:
-      "Could not load lab test prices. Add a price column to `lab_tests` (e.g. `price`) or update `fetchLabTestUnitPricesByIds` to match your schema.",
+      svc.error ??
+      "Some lab tests have no active price. Add rows to lab_service_prices (same as consultation) or a price column on lab_tests.",
   };
 }
 

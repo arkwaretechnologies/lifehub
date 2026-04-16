@@ -11,6 +11,7 @@ import {
   type QueueTicketRow,
   type QueueTicketStatus,
 } from "@/lib/queueReception";
+import { numericIdFromUnknown } from "@/lib/sessionUserId";
 
 const ACTIVE_STATUSES: QueueTicketStatus[] = ["Waiting", "Called", "Serving"];
 
@@ -225,6 +226,186 @@ export async function adminUpdateTicketStatus(
   return { error: error?.message ?? null };
 }
 
+export type CallQueueForEncounterResult = {
+  error: string | null;
+  queueDisplay?: string;
+  patientName?: string | null;
+  counterName?: string | null;
+};
+
+export type CompleteQueueForEncounterResult = {
+  error: string | null;
+  updatedCount?: number;
+};
+
+/**
+ * Appointments / physician: set today's Waiting doctor-queue ticket for this encounter to Called.
+ * Authorizes via `encounters.physician_id`. Prefers tickets on counters whose `user_id` matches the physician.
+ */
+export async function adminCallQueueTicketForPhysicianEncounter(
+  encounterTransIdRaw: string,
+  physicianUserId: number,
+): Promise<CallQueueForEncounterResult> {
+  const admin = queueAdminClient();
+  if (!admin) {
+    return { error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." };
+  }
+  if (!Number.isFinite(physicianUserId) || physicianUserId <= 0) {
+    return { error: "Invalid physician user id." };
+  }
+
+  const encounterTransId = encounterTransIdRaw.trim().toLowerCase();
+  if (!encounterTransId) {
+    return { error: "Missing encounter id." };
+  }
+
+  const { data: enc, error: encErr } = await admin
+    .from("encounters")
+    .select("trans_id, physician_id")
+    .eq("trans_id", encounterTransId)
+    .maybeSingle();
+
+  if (encErr) {
+    return { error: encErr.message };
+  }
+  if (!enc) {
+    return { error: "Encounter not found." };
+  }
+  const encPhysician = numericIdFromUnknown((enc as { physician_id?: unknown }).physician_id);
+  if (encPhysician !== physicianUserId) {
+    return { error: "This encounter is not assigned to your user account." };
+  }
+
+  const today = todayIsoDate();
+
+  const { data: counterRows, error: cErr } = await admin.from("queue_counters").select("id, user_id").eq("is_active", true);
+  if (cErr) {
+    return { error: cErr.message };
+  }
+
+  const myCounterIds: (string | number)[] = [];
+  for (const row of counterRows ?? []) {
+    const r = row as { id: string | number; user_id?: unknown };
+    if (numericIdFromUnknown(r.user_id) === physicianUserId) {
+      myCounterIds.push(r.id);
+    }
+  }
+
+  type TicketPick = {
+    id: string;
+    queue_display: string;
+    patient_name: string | null;
+    counter_id: string | number;
+  };
+
+  let ticket: TicketPick | null = null;
+
+  if (myCounterIds.length > 0) {
+    const { data, error } = await admin
+      .from("queue_tickets")
+      .select("id, queue_display, patient_name, counter_id")
+      .eq("encounter_id", encounterTransId)
+      .eq("ticket_date", today)
+      .eq("status", "Waiting")
+      .in("counter_id", myCounterIds)
+      .order("issued_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (error) {
+      return { error: error.message };
+    }
+    if (data) {
+      ticket = data as TicketPick;
+    }
+  }
+
+  if (!ticket) {
+    const { data, error } = await admin
+      .from("queue_tickets")
+      .select("id, queue_display, patient_name, counter_id")
+      .eq("encounter_id", encounterTransId)
+      .eq("ticket_date", today)
+      .eq("status", "Waiting")
+      .order("issued_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (error) {
+      return { error: error.message };
+    }
+    if (data) {
+      ticket = data as TicketPick;
+    }
+  }
+
+  if (!ticket) {
+    return { error: "No waiting queue ticket for this visit today." };
+  }
+
+  const now = new Date().toISOString();
+  const upd = await adminUpdateTicketStatus(String(ticket.id), "Called", { called_at: now, serving_at: null });
+  if (upd.error) {
+    return { error: upd.error };
+  }
+
+  const { data: ctr } = await admin.from("queue_counters").select("name, code").eq("id", ticket.counter_id).maybeSingle();
+  const cn = ctr as { name?: string | null; code?: string | null } | null;
+  const counterName = (cn?.name ?? cn?.code ?? "").trim() || null;
+
+  return {
+    error: null,
+    queueDisplay: ticket.queue_display,
+    patientName: ticket.patient_name,
+    counterName,
+  };
+}
+
+/**
+ * Consultation: mark today's Called/Serving ticket(s) for this encounter as Completed.
+ * This is best-effort; if no ticket exists we return ok with updatedCount=0.
+ */
+export async function adminCompleteQueueTicketsForEncounter(
+  encounterTransIdRaw: string,
+): Promise<CompleteQueueForEncounterResult> {
+  const admin = queueAdminClient();
+  if (!admin) {
+    return { error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." };
+  }
+
+  const encounterId = encounterTransIdRaw.trim().toLowerCase();
+  if (!encounterId) {
+    return { error: "Missing encounter id." };
+  }
+
+  const today = todayIsoDate();
+  const now = new Date().toISOString();
+
+  const { data: tickets, error: tErr } = await admin
+    .from("queue_tickets")
+    .select("id")
+    .eq("encounter_id", encounterId)
+    .eq("ticket_date", today)
+    .in("status", ["Called", "Serving"]);
+
+  if (tErr) {
+    return { error: tErr.message };
+  }
+
+  const ids = (tickets ?? []).map((r) => String((r as { id: string | number }).id)).filter(Boolean);
+  if (ids.length === 0) {
+    return { error: null, updatedCount: 0 };
+  }
+
+  const { error: upErr } = await admin
+    .from("queue_tickets")
+    .update({ status: "Completed", completed_at: now, updated_at: now })
+    .in("id", ids);
+  if (upErr) {
+    return { error: upErr.message };
+  }
+
+  return { error: null, updatedCount: ids.length };
+}
+
 export type ReceptionTriageRoute = "consultation" | "laboratory";
 
 type ReceptionVitalsInput = {
@@ -332,11 +513,7 @@ function parseCounterId(row: QueueCounterRow): number | null {
 
 /** `queue_counters.user_id` → `encounters.physician_id` (app users PK). */
 function parseQueueCounterPhysicianUserId(row: QueueCounterRow): number | null {
-  const v = row.user_id;
-  if (v == null || v === "") return null;
-  const n = typeof v === "number" ? v : Number.parseInt(String(v).trim(), 10);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  return n;
+  return numericIdFromUnknown(row.user_id);
 }
 
 async function adminResolveCounterByCode(admin: SupabaseClient, code: string): Promise<{ row: QueueCounterRow | null; numericId: number | null; error: string | null }> {
@@ -632,6 +809,7 @@ async function adminUpsertVitalSigns(transId: string, vitals: ReceptionVitalsInp
 
   const existingId = (existing as { id?: string } | null)?.id ?? null;
   if (existingId) {
+    // Match `persistVitalSigns` in vitalSigns.ts — this table may not have created_at/updated_at.
     const { error } = await admin.from("vital_signs").update(payload).eq("id", existingId);
     return { error: error?.message ?? null };
   }

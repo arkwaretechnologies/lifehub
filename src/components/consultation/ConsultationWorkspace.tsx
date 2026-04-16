@@ -72,7 +72,14 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
           onClick={() => {
             void (async () => {
               const r = await runSaveAll();
-              if (r.ok) router.push("/consultation");
+              if (r.ok) {
+                await fetch("/api/consultation/complete-queue-ticket", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ transId }),
+                }).catch(() => {});
+                router.push("/consultation");
+              }
               else window.alert(r.error ?? "Failed to save consultation.");
             })();
           }}

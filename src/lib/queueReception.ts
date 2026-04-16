@@ -47,11 +47,13 @@ export type QueueTicketRow = {
   issued_at: string;
   called_at: string | null;
   serving_at: string | null;
+  /** `encounters.trans_id` when linked (consultation / lab check-in). */
+  encounter_id?: string | null;
 };
 
 /** Columns loaded for reception (keep in sync with `receptionQueueServer`). */
 export const QUEUE_TICKET_RECEPTION_SELECT =
-  "id, counter_id, priority_id, patient_id, queue_number, queue_display, ticket_date, status, registration_type, patient_name, contact_no, reason, notes, issued_at, called_at, serving_at" as const;
+  "id, counter_id, priority_id, patient_id, queue_number, queue_display, ticket_date, status, registration_type, patient_name, contact_no, reason, notes, issued_at, called_at, serving_at, encounter_id" as const;
 
 const ACTIVE_STATUSES: QueueTicketStatus[] = ["Waiting", "Called", "Serving"];
 
@@ -390,6 +392,40 @@ export async function patchReceptionQueueTicket(
     };
   }
   return { error: null };
+}
+
+export type CallQueueForEncounterApiResult = {
+  error: string | null;
+  queueDisplay?: string;
+  patientName?: string | null;
+  counterName?: string | null;
+};
+
+/** Physician Appointments: call today's Waiting ticket linked to the encounter (`encounter_id` = transId). */
+export async function callQueueForEncounterFromApi(
+  transId: string,
+  physicianUserId: number,
+): Promise<CallQueueForEncounterApiResult> {
+  const res = await fetch("/api/reception/queue-call-by-encounter", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ transId: transId.trim(), physicianUserId }),
+  });
+  const json = (await res.json().catch(() => ({}))) as {
+    error?: string;
+    queueDisplay?: string;
+    patientName?: string | null;
+    counterName?: string | null;
+  };
+  if (!res.ok) {
+    return { error: json.error ?? `Request failed (${res.status})` };
+  }
+  return {
+    error: null,
+    queueDisplay: json.queueDisplay,
+    patientName: json.patientName,
+    counterName: json.counterName,
+  };
 }
 
 export async function prepareReceptionLabCheckinFromApi(body: {

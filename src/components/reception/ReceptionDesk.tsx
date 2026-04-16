@@ -145,6 +145,20 @@ function TicketDetails({
           Note: {notes}
         </Typography>
       ) : null}
+      {t.encounter_id?.trim() ? (
+        <Box sx={{ mt: 0.35 }}>
+          <Link
+            href={`/consultation/${encodeURIComponent(t.encounter_id.trim())}`}
+            prefetch={false}
+            style={{ fontWeight: 700, fontSize: "0.75rem", textDecoration: "underline" }}
+          >
+            Open visit
+          </Link>
+          <Typography component="span" variant="caption" color="text.disabled" sx={{ ml: 1, fontFamily: "monospace" }}>
+            {t.encounter_id.trim().slice(0, 8)}…
+          </Typography>
+        </Box>
+      ) : null}
       <Typography variant="caption" color="text.disabled">
         Issued {new Date(t.issued_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
       </Typography>

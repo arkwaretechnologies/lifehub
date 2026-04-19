@@ -750,6 +750,283 @@ async function adminIssueDestinationQueueTicket(input: {
   };
 }
 
+async function adminPickEntranceCounterRow(admin: SupabaseClient): Promise<QueueCounterRow | null> {
+  const { data: counterData, error: counterErr } = await admin
+    .from("queue_counters")
+    .select("id, code, name, description, prefix, user_id")
+    .eq("is_active", true)
+    .order("name", { ascending: true });
+  if (counterErr || !counterData?.length) return null;
+  const allCounters = counterData as QueueCounterRow[];
+  const { data: tAll, error: tAllErr } = await admin
+    .from("queue_tickets")
+    .select(QUEUE_TICKET_RECEPTION_SELECT)
+    .in(
+      "counter_id",
+      allCounters.map((c) => c.id),
+    )
+    .eq("ticket_date", todayIsoDate())
+    .in("status", ACTIVE_STATUSES)
+    .order("issued_at", { ascending: true });
+  if (tAllErr) return null;
+  const allTodayTickets = (tAll ?? []) as QueueTicketRow[];
+  const candidates = entranceCodeCandidates();
+  let entrance: QueueCounterRow | null = pickEntranceByCodes(candidates, allCounters);
+  if (!entrance) entrance = pickBusiestCounter(allTodayTickets, allCounters);
+  if (!entrance) entrance = pickEntranceByNameHint(allCounters);
+  return entrance;
+}
+
+async function adminLatestEntranceQueueTicketForEncounter(
+  admin: SupabaseClient,
+  encounterTransId: string,
+  entranceCounterId: number,
+  ticketDate: string,
+): Promise<{ priority_id: number } | null> {
+  const { data, error } = await admin
+    .from("queue_tickets")
+    .select("priority_id")
+    .eq("encounter_id", encounterTransId)
+    .eq("ticket_date", ticketDate)
+    .eq("counter_id", entranceCounterId)
+    .order("issued_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return null;
+  const pid = (data as { priority_id?: number | null }).priority_id;
+  if (pid == null || !Number.isFinite(Number(pid))) return null;
+  return { priority_id: Number(pid) };
+}
+
+async function adminResolveActiveQueuePriorityById(
+  admin: SupabaseClient,
+  priorityId: number,
+): Promise<{ id: number; code: string; name: string | null; error: string | null }> {
+  const { data: p, error: pErr } = await admin
+    .from("queue_priorities")
+    .select("id, code, name")
+    .eq("id", priorityId)
+    .eq("is_active", true)
+    .maybeSingle();
+  if (pErr) return { id: 0, code: "", name: null, error: pErr.message };
+  const row = p as { id?: number; code?: string; name?: string | null } | null;
+  if (row?.id == null) return { id: 0, code: "", name: null, error: "Invalid or inactive queue priority." };
+  return { id: row.id, code: String(row.code ?? "Q"), name: row.name ?? null, error: null };
+}
+
+async function adminPatchEncounterQueueNoIfEmpty(
+  admin: SupabaseClient,
+  encounterTransId: string,
+  queueDisplay: string,
+): Promise<{ error: string | null }> {
+  const { data: enc, error: e0 } = await admin.from("encounters").select("queue_no").eq("trans_id", encounterTransId).maybeSingle();
+  if (e0) return { error: e0.message };
+  const existing = ((enc as { queue_no?: string | null } | null)?.queue_no ?? "").trim();
+  if (existing) return { error: null };
+  const now = new Date().toISOString();
+  const { error } = await admin
+    .from("encounters")
+    .update({ queue_no: queueDisplay, updated_at: now })
+    .eq("trans_id", encounterTransId);
+  return { error: error?.message ?? null };
+}
+
+async function adminFindExistingActiveLabTicketForRequest(
+  admin: SupabaseClient,
+  args: {
+    encounterTransId: string;
+    ticketDate: string;
+    labRequestId: string;
+    labCounterNumericId: number;
+  },
+): Promise<{ queueTicketId: string; queueDisplay: string; counterCode: string } | null> {
+  const { data, error } = await admin
+    .from("queue_tickets")
+    .select("id, queue_display")
+    .eq("encounter_id", args.encounterTransId)
+    .eq("ticket_date", args.ticketDate)
+    .eq("counter_id", args.labCounterNumericId)
+    .eq("lab_request_id", args.labRequestId)
+    .in("status", ACTIVE_STATUSES)
+    .order("issued_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return null;
+  const id = (data as { id?: string; queue_display?: string }).id;
+  const qd = (data as { queue_display?: string }).queue_display;
+  if (!id || !qd) return null;
+  return { queueTicketId: id, queueDisplay: qd, counterCode: labQueueCode() };
+}
+
+export type CashierLabQueueTicketResult = ReceptionDestinationTicketResult & { reused: boolean };
+
+/**
+ * After cashier payment for one or more lab requests on the same visit: one LAB destination ticket
+ * (primary `lab_request_id` is the first sorted id; additional ids are listed in `notes`).
+ */
+export async function adminIssueCashierLaboratoryQueueTicket(input: {
+  encounterTransId: string;
+  patient: { id: number; name: string; contact_no: string | null };
+  labRequestIds: string[];
+  /** Used when this encounter has no reception entrance ticket today to copy priority from. */
+  cashierPriorityId: number | null;
+}): Promise<{ error: string | null; result?: CashierLabQueueTicketResult }> {
+  const admin = queueAdminClient();
+  if (!admin) return { error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." };
+
+  const encounterTransId = input.encounterTransId.trim();
+  const uniq = [...new Set(input.labRequestIds.map((x) => String(x).trim()).filter(Boolean))].sort();
+  if (!encounterTransId || uniq.length === 0) {
+    return { error: "encounterTransId and at least one labRequestId are required." };
+  }
+
+  const ticketDate = todayIsoDate();
+  const { row: labCounterRow, numericId: labCounterId, error: labCntErr } = await adminResolveCounterByCode(
+    admin,
+    labQueueCode(),
+  );
+  if (labCntErr || labCounterId == null || !labCounterRow) {
+    return { error: labCntErr ?? "Laboratory queue counter not found." };
+  }
+
+  const primaryLabRequestId = uniq[0]!;
+  const existing = await adminFindExistingActiveLabTicketForRequest(admin, {
+    encounterTransId,
+    ticketDate,
+    labRequestId: primaryLabRequestId,
+    labCounterNumericId: labCounterId,
+  });
+  if (existing) {
+    const qnErr = await adminPatchEncounterQueueNoIfEmpty(admin, encounterTransId, existing.queueDisplay);
+    if (qnErr.error) return { error: qnErr.error };
+    return {
+      error: null,
+      result: {
+        queueDisplay: existing.queueDisplay,
+        queueTicketId: existing.queueTicketId,
+        counterCode: existing.counterCode,
+        reused: true,
+      },
+    };
+  }
+
+  let priorityId = 0;
+  let priorityCode = "";
+  let priorityName: string | null = null;
+
+  const entrance = await adminPickEntranceCounterRow(admin);
+  const entranceNum = entrance ? parseCounterId(entrance) : null;
+  if (entrance && entranceNum != null) {
+    const entT = await adminLatestEntranceQueueTicketForEncounter(admin, encounterTransId, entranceNum, ticketDate);
+    if (entT) {
+      const pr = await adminResolveActiveQueuePriorityById(admin, entT.priority_id);
+      if (!pr.error) {
+        priorityId = pr.id;
+        priorityCode = pr.code;
+        priorityName = pr.name;
+      }
+    }
+  }
+
+  if (priorityId <= 0) {
+    const pick = input.cashierPriorityId;
+    if (pick != null && Number.isFinite(pick)) {
+      const pr = await adminResolveActiveQueuePriorityById(admin, pick);
+      if (pr.error) return { error: pr.error };
+      priorityId = pr.id;
+      priorityCode = pr.code;
+      priorityName = pr.name;
+    } else {
+      const def = await adminDefaultPriorityId(admin);
+      if (def.error || def.id <= 0) {
+        return {
+          error:
+            def.error ??
+            "Could not resolve queue priority. Configure active rows in queue_priorities, link a reception entrance ticket for this visit, or pass cashierPriorityId.",
+        };
+      }
+      priorityId = def.id;
+      priorityCode = def.code;
+      priorityName = def.name;
+    }
+  }
+
+  const idsNote = uniq.length > 1 ? `Lab requests: ${uniq.join(", ")}` : `Lab request ${primaryLabRequestId}`;
+  const issued = await adminIssueDestinationQueueTicket({
+    counterCode: labQueueCode(),
+    ticketDate,
+    patient: input.patient,
+    encounterId: encounterTransId,
+    labRequestId: primaryLabRequestId,
+    priorityId,
+    priorityCode,
+    priorityName,
+    registrationType: "Walk-in",
+    reason: uniq.length > 1 ? "Laboratory (multiple orders)" : "Laboratory",
+    notesTail: `Cashier · ${idsNote} · trans_id ${encounterTransId}`,
+    counterRowResolved: labCounterRow,
+  });
+  if (issued.error || !issued.result) return { error: issued.error ?? "Could not issue laboratory queue ticket." };
+
+  const qnErr = await adminPatchEncounterQueueNoIfEmpty(admin, encounterTransId, issued.result.queueDisplay);
+  if (qnErr.error) return { error: qnErr.error };
+
+  return {
+    error: null,
+    result: {
+      ...issued.result,
+      reused: false,
+    },
+  };
+}
+
+export async function adminGetQueueTicketReceiptPayload(ticketId: string): Promise<{
+  error: string | null;
+  patientName?: string;
+  queueDisplay?: string;
+  transId?: string;
+  destinationLabel?: string;
+}> {
+  const admin = queueAdminClient();
+  if (!admin) return { error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." };
+  const tid = ticketId.trim();
+  if (!tid) return { error: "ticketId is required." };
+
+  const { data: t, error: tErr } = await admin
+    .from("queue_tickets")
+    .select("queue_display, patient_name, encounter_id, counter_id")
+    .eq("id", tid)
+    .maybeSingle();
+  if (tErr) return { error: tErr.message };
+  if (!t) return { error: "Queue ticket not found." };
+
+  const row = t as {
+    queue_display?: string | null;
+    patient_name?: string | null;
+    encounter_id?: string | null;
+    counter_id?: string | number;
+  };
+  const counterId = row.counter_id;
+  let destinationLabel = "Laboratory";
+  if (counterId != null) {
+    const { data: c } = await admin.from("queue_counters").select("name, code").eq("id", counterId).maybeSingle();
+    const cr = c as { name?: string | null; code?: string | null } | null;
+    if (cr?.name?.trim()) destinationLabel = cr.name.trim();
+    else if (cr?.code?.trim()) destinationLabel = cr.code.trim();
+  }
+
+  const transId = (row.encounter_id ?? "").trim();
+  if (!transId) return { error: "Ticket is not linked to a visit." };
+
+  return {
+    error: null,
+    patientName: (row.patient_name ?? "").trim() || "Patient",
+    queueDisplay: (row.queue_display ?? "").trim() || "—",
+    transId,
+    destinationLabel,
+  };
+}
+
 export type ReceptionConsultationCheckinResult = {
   transId: string;
   destinationQueueDisplay: string;
@@ -1011,23 +1288,46 @@ export async function adminFinalizeLaboratoryCheckin(input: {
   );
   if (pErr) return { error: pErr };
 
-  const issued = await adminIssueDestinationQueueTicket({
-    counterCode: labQueueCode(),
-    ticketDate,
-    patient: input.patient,
-    encounterId: transId,
-    labRequestId,
-    priorityId,
-    priorityCode,
-    priorityName,
-    registrationType: "Walk-in",
-    reason: "Laboratory",
-    notesTail: `Lab request ${labRequestId.slice(0, 8)}… · trans_id ${transId}`,
-  });
-  if (issued.error || !issued.result) return { error: issued.error ?? "Could not issue laboratory queue ticket." };
+  const { row: labCounterRow, numericId: labCounterId, error: labCntErr } = await adminResolveCounterByCode(admin, labQueueCode());
+  if (labCntErr || labCounterId == null || !labCounterRow) {
+    return { error: labCntErr ?? "Laboratory queue counter not found." };
+  }
 
-  const { error: qnErr } = await admin.from("encounters").update({ queue_no: issued.result.queueDisplay, updated_at: now }).eq("trans_id", transId);
-  if (qnErr) return { error: qnErr.message };
+  const existingLab = await adminFindExistingActiveLabTicketForRequest(admin, {
+    encounterTransId: transId,
+    ticketDate,
+    labRequestId,
+    labCounterNumericId: labCounterId,
+  });
+
+  let destinationQueueDisplay: string;
+  let destinationCounterCode: string;
+
+  if (existingLab) {
+    destinationQueueDisplay = existingLab.queueDisplay;
+    destinationCounterCode = existingLab.counterCode;
+  } else {
+    const issued = await adminIssueDestinationQueueTicket({
+      counterCode: labQueueCode(),
+      ticketDate,
+      patient: input.patient,
+      encounterId: transId,
+      labRequestId,
+      priorityId,
+      priorityCode,
+      priorityName,
+      registrationType: "Walk-in",
+      reason: "Laboratory",
+      notesTail: `Lab request ${labRequestId.slice(0, 8)}… · trans_id ${transId}`,
+      counterRowResolved: labCounterRow,
+    });
+    if (issued.error || !issued.result) return { error: issued.error ?? "Could not issue laboratory queue ticket." };
+    destinationQueueDisplay = issued.result.queueDisplay;
+    destinationCounterCode = issued.result.counterCode;
+  }
+
+  const { error: qnErr } = await adminPatchEncounterQueueNoIfEmpty(admin, transId, destinationQueueDisplay);
+  if (qnErr) return { error: qnErr };
 
   const { data: entRow, error: entErr } = await admin.from("queue_tickets").select("notes").eq("id", input.entranceTicketId).maybeSingle();
   if (entErr) return { error: entErr.message };
@@ -1050,8 +1350,8 @@ export async function adminFinalizeLaboratoryCheckin(input: {
     error: null,
     result: {
       transId,
-      destinationQueueDisplay: issued.result.queueDisplay,
-      destinationCounterCode: issued.result.counterCode,
+      destinationQueueDisplay,
+      destinationCounterCode,
     },
   };
 }

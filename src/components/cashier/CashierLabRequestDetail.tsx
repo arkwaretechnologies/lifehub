@@ -27,7 +27,7 @@ import {
   consultTableHeadRowSx,
   consultTableSx,
 } from "@/components/consultation/consultListTableStyles";
-import { fetchPatientListRowById } from "@/lib/consultationData";
+import { fetchEncounterSummaryByTransId, fetchPatientListRowById } from "@/lib/consultationData";
 import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
 import {
   fetchLabRequestHeaderById,
@@ -40,6 +40,8 @@ import { fetchActivePaymentMethods, type PaymentMethodRow } from "@/lib/paymentM
 import { fetchLabTestUnitPricesByIds } from "@/lib/labTests";
 import { createLabSaleWithItems, generateNextDailyOrNumber } from "@/lib/cashierPayments";
 import { fetchActiveDiscountTypes, type DiscountTypeRow } from "@/lib/discountTypes";
+import { fetchQueuePriorities, type QueuePriorityRow } from "@/lib/queueReception";
+import { openCashierQueueReceiptReprintByTicketId, openReceptionQueueReceiptPrint } from "@/lib/receptionQueueReceiptPrint";
 
 function isUuid(s: string): boolean {
   const t = s.trim();
@@ -54,6 +56,10 @@ function formatLabTime(value: string | null | undefined): string {
   return m?.[1] ?? "—";
 }
 
+function receptionQueueNoLine(queueNoTrimmed: string): string {
+  return queueNoTrimmed ? `Queue No.: ${queueNoTrimmed}` : "No queue no assigned";
+}
+
 export default function CashierLabRequestDetail() {
   const params = useParams();
   const router = useRouter();
@@ -64,6 +70,7 @@ export default function CashierLabRequestDetail() {
   const [header, setHeader] = useState<LabRequestHeaderRow | null>(null);
   const [patientName, setPatientName] = useState<string | null>(null);
   const [patientIdStr, setPatientIdStr] = useState<string | null>(null);
+  const [patientContactNo, setPatientContactNo] = useState<string | null>(null);
   const [items, setItems] = useState<LabRequestItemDetailRow[]>([]);
 
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethodRow[]>([]);
@@ -75,42 +82,49 @@ export default function CashierLabRequestDetail() {
   const [labTotalDue, setLabTotalDue] = useState<number>(0);
   const [labTotalLoading, setLabTotalLoading] = useState(false);
   const [payModalKey, setPayModalKey] = useState(0);
+  const [queuePriorities, setQueuePriorities] = useState<QueuePriorityRow[]>([]);
+  const [labQueuePriorityBanner, setLabQueuePriorityBanner] = useState<{
+    severity: "error" | "warning";
+    message: string;
+  } | null>(null);
+  const [labQueuePrioritySel, setLabQueuePrioritySel] = useState<number | "">("");
+  const [labReceiptTicketId, setLabReceiptTicketId] = useState<string | null>(null);
+  const [labReceiptQueueDisplay, setLabReceiptQueueDisplay] = useState("");
+  const [labReceiptCounterLabel, setLabReceiptCounterLabel] = useState("");
+  const [encounterTransId, setEncounterTransId] = useState("");
 
-  const reloadAll = useCallback(async () => {
+  const reloadAll = useCallback(async (): Promise<{ receptionQueueNo: string }> => {
     setLoadError("");
+    setLabQueuePriorityBanner(null);
     setLoading(true);
     setHeader(null);
     setPatientName(null);
     setPatientIdStr(null);
+    setPatientContactNo(null);
     setItems([]);
 
     if (!isUuid(labRequestId)) {
       setLoadError("Invalid order reference.");
       setLoading(false);
-      return;
+      return { receptionQueueNo: "" };
     }
 
     const headRes = await fetchLabRequestHeaderById(labRequestId);
     if (headRes.error) {
       setLoadError(headRes.error);
       setLoading(false);
-      return;
+      return { receptionQueueNo: "" };
     }
     if (!headRes.row) {
       setLoadError("Lab order not found.");
       setLoading(false);
-      return;
-    }
-
-    if (headRes.row.encounter_id != null && String(headRes.row.encounter_id).trim() !== "") {
-      setLoadError(
-        "This laboratory order is linked to a visit. Use Visit checkout on the Cashier page and open that visit.",
-      );
-      setLoading(false);
-      return;
+      return { receptionQueueNo: "" };
     }
 
     setHeader(headRes.row);
+    const encRaw = headRes.row.encounter_id != null ? String(headRes.row.encounter_id).trim() : "";
+    const encUuid = isUuid(encRaw) ? encRaw : "";
+    setEncounterTransId(encUuid);
     const pid = headRes.row.patient_id;
     if (pid != null && Number.isFinite(pid) && pid > 0) {
       const patRes = await fetchPatientListRowById(pid);
@@ -118,19 +132,28 @@ export default function CashierLabRequestDetail() {
         setHeader(null);
         setLoadError(patRes.error);
         setLoading(false);
-        return;
+        return { receptionQueueNo: "" };
       }
       setPatientIdStr(String(pid));
       setPatientName(patRes.row?.name?.trim() ? patRes.row.name.trim() : null);
+      const cn = patRes.row?.contact_no?.trim();
+      setPatientContactNo(cn ? cn : null);
     }
 
     const itemsRes = await fetchLabRequestItemDetailsForRequestIds([labRequestId]);
     setLoading(false);
     if (itemsRes.error) {
       setLoadError(itemsRes.error);
-      return;
+      return { receptionQueueNo: "" };
     }
     setItems(itemsRes.items);
+
+    let visitQn = "";
+    if (encUuid) {
+      const encSum = await fetchEncounterSummaryByTransId(encUuid);
+      visitQn = (encSum.encounter?.queueNo ?? "").trim();
+    }
+    return { receptionQueueNo: visitQn };
   }, [labRequestId]);
 
   useEffect(() => {
@@ -139,7 +162,7 @@ export default function CashierLabRequestDetail() {
     void (async () => {
       await Promise.resolve();
       if (cancelled) return;
-      await reloadAll();
+      const { receptionQueueNo: visitQueueNo } = await reloadAll();
       const methodsRes = await fetchActivePaymentMethods();
       if (!cancelled) {
         setPaymentMethods(methodsRes.error ? [] : methodsRes.methods);
@@ -148,6 +171,27 @@ export default function CashierLabRequestDetail() {
       const discRes = await fetchActiveDiscountTypes();
       if (!cancelled) {
         setDiscountTypes(discRes.error ? [] : discRes.discounts);
+      }
+
+      const pq = await fetchQueuePriorities();
+      if (!cancelled) {
+        if (pq.error) {
+          setQueuePriorities([]);
+          setLabQueuePriorityBanner({
+            severity: "error",
+            message: `Could not load queue priorities (${pq.error}). Pay is still allowed for visit-linked orders; the server will try a default priority when issuing the laboratory queue ticket.\n\n${receptionQueueNoLine(visitQueueNo)}`,
+          });
+        } else {
+          setQueuePriorities(pq.priorities);
+          if (pq.priorities.length === 0) {
+            setLabQueuePriorityBanner({
+              severity: "warning",
+              message: receptionQueueNoLine(visitQueueNo),
+            });
+          } else {
+            setLabQueuePriorityBanner(null);
+          }
+        }
       }
     })();
 
@@ -175,6 +219,7 @@ export default function CashierLabRequestDetail() {
     discountAmount: number;
     amountTendered: number | null;
     changeAmount: number | null;
+    labQueuePriorityId: number | null;
   }) {
     if (!req) {
       setPayError("Lab order not loaded.");
@@ -216,8 +261,51 @@ export default function CashierLabRequestDetail() {
       });
       if (res.error) throw new Error(res.error);
 
+      let labQueueLine = "";
+      const encId = encounterTransId.trim();
+      const pidStr = patientIdStr?.trim() ?? "";
+      if (encId && pidStr && /^\d+$/.test(pidStr)) {
+        const pid = Number.parseInt(pidStr, 10);
+        const queueRes = await fetch("/api/cashier/lab-queue-ticket", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            encounterTransId: encId,
+            labRequestIds: [labRequestId],
+            cashierPriorityId: args.labQueuePriorityId,
+            patient: {
+              id: pid,
+              name: (patientName ?? "").trim() || "Patient",
+              contact_no: patientContactNo,
+            },
+          }),
+        });
+        const qj = (await queueRes.json().catch(() => ({}))) as {
+          error?: string;
+          queueDisplay?: string;
+          queueTicketId?: string;
+          counterCode?: string;
+        };
+        if (!queueRes.ok || qj.error) throw new Error(qj.error ?? "Could not create laboratory queue ticket.");
+        const qd = (qj.queueDisplay ?? "").trim();
+        const qtid = (qj.queueTicketId ?? "").trim();
+        setLabReceiptTicketId(qtid || null);
+        setLabReceiptQueueDisplay(qd);
+        setLabReceiptCounterLabel((qj.counterCode ?? "LAB").trim());
+        labQueueLine = qd ? ` Laboratory queue: ${qd}.` : " Laboratory queue ticket issued.";
+        if (qd && qtid) {
+          await openReceptionQueueReceiptPrint({
+            patientName: (patientName ?? "").trim() || "Patient",
+            destinationLabel: (qj.counterCode ?? "Laboratory").trim(),
+            queueDisplay: qd,
+            transId: encId,
+            queueTicketId: qtid,
+          });
+        }
+      }
+
       setPayOpen(false);
-      setPaySuccess("Payment saved.");
+      setPaySuccess(`Payment saved.${labQueueLine}`);
       await reloadAll();
       router.replace("/cashier?tab=walkin");
     } catch (e) {
@@ -249,8 +337,14 @@ export default function CashierLabRequestDetail() {
           onClick={() => {
             setPayError("");
             setPaySuccess("");
+            setLabReceiptTicketId(null);
+            setLabReceiptQueueDisplay("");
+            setLabReceiptCounterLabel("");
             setPayModalKey((k) => k + 1);
             setPayOpen(true);
+            if (encounterTransId && queuePriorities.length > 0) {
+              setLabQueuePrioritySel(queuePriorities[0]!.id);
+            }
             if (items.length === 0) {
               setLabTotalDue(0);
               return;
@@ -294,9 +388,64 @@ export default function CashierLabRequestDetail() {
         </Alert>
       ) : null}
 
+      {labQueuePriorityBanner && encounterTransId ? (
+        <Alert
+          severity={labQueuePriorityBanner.severity}
+          sx={{ mb: 2, whiteSpace: "pre-line" }}
+          onClose={() => setLabQueuePriorityBanner(null)}
+        >
+          {labQueuePriorityBanner.message}
+        </Alert>
+      ) : null}
+
       {paySuccess ? (
         <Alert severity="success" sx={{ mb: 2 }} onClose={() => setPaySuccess("")}>
           {paySuccess}
+        </Alert>
+      ) : null}
+
+      {labReceiptTicketId ? (
+        <Alert
+          severity="info"
+          sx={{ mb: 2 }}
+          onClose={() => {
+            setLabReceiptTicketId(null);
+            setLabReceiptQueueDisplay("");
+            setLabReceiptCounterLabel("");
+          }}
+          action={
+            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1, alignItems: "center", py: 0.5 }}>
+              <Button
+                size="small"
+                variant="outlined"
+                color="inherit"
+                sx={{ textTransform: "none" }}
+                onClick={() =>
+                  void openReceptionQueueReceiptPrint({
+                    patientName: (patientName ?? "").trim() || "Patient",
+                    destinationLabel: labReceiptCounterLabel || "Laboratory",
+                    queueDisplay: labReceiptQueueDisplay,
+                    transId: encounterTransId,
+                    queueTicketId: labReceiptTicketId,
+                  })
+                }
+              >
+                Print slip
+              </Button>
+              <Button
+                size="small"
+                variant="outlined"
+                color="inherit"
+                sx={{ textTransform: "none" }}
+                onClick={() => void openCashierQueueReceiptReprintByTicketId(labReceiptTicketId)}
+              >
+                Reprint
+              </Button>
+            </Box>
+          }
+        >
+          Laboratory queue <strong>{labReceiptQueueDisplay || "—"}</strong>. Use Reprint if the slip was lost (reloads
+          from the server).
         </Alert>
       ) : null}
 
@@ -316,8 +465,24 @@ export default function CashierLabRequestDetail() {
         onClose={() => setPayOpen(false)}
         totalDue={totalDue}
         summaryRows={[{ label: "Laboratory tests", amount: labTotalDue }]}
+        labQueuePrioritySelect={
+          encounterTransId && queuePriorities.length > 0
+            ? {
+                priorities: queuePriorities,
+                value: labQueuePrioritySel,
+                onChange: setLabQueuePrioritySel,
+              }
+            : null
+        }
         onConfirm={handleConfirmPay}
       />
+
+      {!loading && !loadError && req && !encounterTransId ? (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          This lab order is not linked to a visit. After reception registers the patient and links this order to a
+          visit, payment here can issue a laboratory queue ticket.
+        </Alert>
+      ) : null}
 
       {!loading && !loadError && req ? (
         <>

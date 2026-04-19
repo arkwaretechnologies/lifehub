@@ -5,6 +5,8 @@ export type ReceptionQueueReceiptArgs = {
   destinationLabel: string;
   queueDisplay: string;
   transId: string;
+  /** When set, QR encodes the queue ticket id for cashier reprint via `/api/cashier/lab-queue-ticket/reprint`. */
+  queueTicketId?: string | null;
 };
 
 /**
@@ -12,7 +14,8 @@ export type ReceptionQueueReceiptArgs = {
  */
 export async function openReceptionQueueReceiptPrint(args: ReceptionQueueReceiptArgs): Promise<void> {
   const QRCode = (await import("qrcode")).default;
-  const qrDataUrl = await QRCode.toDataURL(args.transId.trim(), {
+  const qrPayload = (args.queueTicketId ?? "").trim() || args.transId.trim();
+  const qrDataUrl = await QRCode.toDataURL(qrPayload, {
     width: 200,
     margin: 1,
     errorCorrectionLevel: "M",
@@ -64,4 +67,31 @@ function escapeHtml(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+/** Loads queue slip fields by ticket id (cashier reprint). */
+export async function openCashierQueueReceiptReprintByTicketId(ticketId: string): Promise<{ ok: boolean; error?: string }> {
+  const id = ticketId.trim();
+  if (!id) return { ok: false, error: "Missing ticket id." };
+  const res = await fetch(`/api/cashier/lab-queue-ticket/reprint?ticketId=${encodeURIComponent(id)}`, { cache: "no-store" });
+  const j = (await res.json().catch(() => ({}))) as {
+    ok?: boolean;
+    error?: string;
+    patientName?: string;
+    queueDisplay?: string;
+    transId?: string;
+    destinationLabel?: string;
+    queueTicketId?: string;
+  };
+  if (!res.ok || !j.ok || !j.patientName || !j.queueDisplay || !j.transId || !j.destinationLabel) {
+    return { ok: false, error: j.error ?? "Could not load queue ticket for reprint." };
+  }
+  await openReceptionQueueReceiptPrint({
+    patientName: j.patientName,
+    destinationLabel: j.destinationLabel,
+    queueDisplay: j.queueDisplay,
+    transId: j.transId,
+    queueTicketId: j.queueTicketId ?? id,
+  });
+  return { ok: true };
 }

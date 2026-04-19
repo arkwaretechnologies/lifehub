@@ -787,7 +787,9 @@ export default function ReceptionDesk() {
     discountAmount: number;
     amountTendered: number | null;
     changeAmount: number | null;
+    labQueuePriorityId: number | null;
   }) => {
+    void args.labQueuePriorityId;
     const pending = labCheckout;
     if (!pending) return;
     setLabPayBusy(true);

@@ -19,6 +19,7 @@ import {
 
 import type { PaymentMethodRow } from "@/lib/paymentMethods";
 import type { DiscountTypeRow } from "@/lib/discountTypes";
+import type { QueuePriorityRow } from "@/lib/queueReception";
 
 function moneyNum(v: number | string | null | undefined): number {
   if (v == null) return 0;
@@ -58,6 +59,12 @@ export function PaymentModal(props: {
   errorText?: string;
   onGenerateOrNumber?: () => Promise<string>;
   onClose: () => void;
+  /** Shown when paying laboratory orders: used if reception did not link an entrance ticket for this visit today. */
+  labQueuePrioritySelect?: {
+    priorities: QueuePriorityRow[];
+    value: number | "";
+    onChange: (v: number | "") => void;
+  } | null;
   onConfirm: (args: {
     paymentMethod: PaymentMethodRow;
     orNumber: string;
@@ -67,6 +74,8 @@ export function PaymentModal(props: {
     discountAmount: number;
     amountTendered: number | null;
     changeAmount: number | null;
+    /** Resolved from {@link labQueuePrioritySelect} when present. */
+    labQueuePriorityId: number | null;
   }) => Promise<void> | void;
 }) {
   const {
@@ -81,6 +90,7 @@ export function PaymentModal(props: {
     onGenerateOrNumber,
     onClose,
     onConfirm,
+    labQueuePrioritySelect,
   } = props;
 
   const fieldSx = useMemo(
@@ -267,6 +277,17 @@ export function PaymentModal(props: {
       }
     }
 
+    let labQueuePriorityId: number | null = null;
+    if (labQueuePrioritySelect && labQueuePrioritySelect.priorities.length > 0) {
+      const v = labQueuePrioritySelect.value;
+      if (v !== "" && Number.isFinite(v)) {
+        labQueuePriorityId = Number(v);
+      } else {
+        const first = labQueuePrioritySelect.priorities[0]?.id;
+        labQueuePriorityId = first != null && Number.isFinite(first) ? first : null;
+      }
+    }
+
     await onConfirm({
       paymentMethod: selectedMethod,
       orNumber: or,
@@ -276,6 +297,7 @@ export function PaymentModal(props: {
       discountAmount,
       amountTendered: cashMode ? (amountTendered ?? 0) : null,
       changeAmount: cashMode ? (computedChange ?? 0) : null,
+      labQueuePriorityId,
     });
   }
 
@@ -362,6 +384,33 @@ export function PaymentModal(props: {
             ))}
           </Select>
         </FormControl>
+
+        {labQueuePrioritySelect && labQueuePrioritySelect.priorities.length > 0 ? (
+          <FormControl fullWidth size="small" sx={{ mb: 2, ...fieldSx }}>
+            <InputLabel id="lab-queue-priority-label">Laboratory queue priority</InputLabel>
+            <Select
+              labelId="lab-queue-priority-label"
+              value={labQueuePrioritySelect.value === "" ? "" : labQueuePrioritySelect.value}
+              label="Laboratory queue priority"
+              onChange={(e) => {
+                const raw = e.target.value as number | string;
+                if (raw === "" || raw === undefined) labQueuePrioritySelect.onChange("");
+                else labQueuePrioritySelect.onChange(Number(raw));
+              }}
+              disabled={busy || genBusy}
+            >
+              {labQueuePrioritySelect.priorities.map((p) => (
+                <MenuItem key={p.id} value={p.id}>
+                  {p.name?.trim() ? p.name : p.code}
+                </MenuItem>
+              ))}
+            </Select>
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
+              Used when no reception entrance ticket is found for this visit today (priority is copied from reception
+              when available).
+            </Typography>
+          </FormControl>
+        ) : null}
 
         <TextField
           fullWidth

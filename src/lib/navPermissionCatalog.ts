@@ -64,12 +64,14 @@ export const PERMISSION_MODULES: PermissionModule[] = [
     href: "/consultation",
   },
   {
-    kind: "leaf",
+    kind: "group",
     id: "laboratory",
     sectionHeading: "OPERATIONS",
     label: "Laboratory",
-    pageKey: "laboratory",
-    href: "/laboratory",
+    children: [
+      { label: "Lab Appointments", pageKey: "laboratory", href: "/laboratory" },
+      { label: "Lab Results", pageKey: "laboratory/results", href: "/laboratory/results" },
+    ],
   },
   {
     kind: "leaf",

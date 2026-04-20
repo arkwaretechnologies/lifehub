@@ -95,7 +95,7 @@ const theme = createTheme({
   },
   typography: {
     fontFamily:
-      "'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'Liberation Sans', sans-serif",
+      "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', sans-serif",
     h3: { fontWeight: 800, letterSpacing: -0.6 },
     h4: { fontWeight: 800, letterSpacing: -0.5 },
     h5: { fontWeight: 750, letterSpacing: -0.3 },

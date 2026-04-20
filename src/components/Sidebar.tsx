@@ -118,11 +118,24 @@ const menuSections: MenuSection[] = [
         pageKey: "consultation",
       },
       {
-        kind: "link",
-        label: "laboratory",
+        kind: "group",
+        id: "laboratory",
+        label: "Laboratory",
         icon: <ScienceOutlinedIcon />,
-        href: "/laboratory",
-        pageKey: "laboratory",
+        children: [
+          {
+            label: "Lab Appointments",
+            icon: <CalendarMonthOutlinedIcon />,
+            href: "/laboratory",
+            pageKey: "laboratory",
+          },
+          {
+            label: "Lab Results",
+            icon: <AssessmentOutlinedIcon />,
+            href: "/laboratory/results",
+            pageKey: "laboratory/results",
+          },
+        ],
       },
       {
         kind: "link",

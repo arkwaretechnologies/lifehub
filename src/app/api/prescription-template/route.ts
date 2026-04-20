@@ -2,9 +2,9 @@ import { readFile } from "fs/promises";
 import path from "path";
 import { NextResponse } from "next/server";
 
-const TEMPLATE_NAME = "LifeHub_Prescription_Pad_Improved.pdf";
+const TEMPLATE_NAME = "RX Template.pdf";
 
-/** Serves `templates/LifeHub_Prescription_Pad_Improved.pdf` for client-side filling. */
+/** Serves `templates/RX Template.pdf` for client-side filling (Consultation → Medication → Print RX). */
 export async function GET() {
   try {
     const filePath = path.join(process.cwd(), "templates", TEMPLATE_NAME);

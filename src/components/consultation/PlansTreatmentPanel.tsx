@@ -747,7 +747,7 @@ export default function PlansTreatmentPanel({
       });
       if (!ok) {
         window.alert(
-          "Could not load the prescription PDF template. Ensure templates/LifeHub_Prescription_Pad_Improved.pdf is present on the server.",
+          "Could not load the prescription PDF template. Ensure templates/RX Template.pdf is present on the server.",
         );
       }
     } finally {

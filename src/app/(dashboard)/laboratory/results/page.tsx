@@ -343,188 +343,253 @@ export default function LabResultsPage() {
           alignItems: "start",
         }}
       >
-        <Card>
-          <CardContent sx={{ p: 3 }}>
-            <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 2, gap: 2, flexWrap: "wrap" }}>
-              <Typography variant="subtitle1" fontWeight={700}>
-                Lab queue (LAB)
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                Today · Active tickets only (search is separate)
-              </Typography>
-            </Box>
-
-            {loading ? (
-              <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
-                <CircularProgress size={32} />
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <Card>
+            <CardContent sx={{ p: 3 }}>
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  mb: 2,
+                  gap: 2,
+                  flexWrap: "wrap",
+                }}
+              >
+                <Typography variant="subtitle1" fontWeight={700}>
+                  Today’s LAB queue
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Active tickets only
+                </Typography>
               </Box>
-            ) : sorted.length === 0 ? (
-              <Typography variant="body2" color="text.secondary">
-                No active LAB queue tickets for today.
-              </Typography>
-            ) : (
-              <>
-                <Box sx={{ mb: 2 }}>
-                  <FormFieldLabel htmlFor="lab-results-queue-search" variant="consultation">
-                    Find patient / encounter
-                  </FormFieldLabel>
-                  <TextField
-                    id="lab-results-queue-search"
-                    hiddenLabel
-                    placeholder="Patient name or encounter ID (trans_id)…"
-                    value={queueSearch}
-                    onChange={(e) => {
-                      setQueueSearch(e.target.value);
-                      setQueueSearchPage(0);
-                    }}
-                    {...commonFieldProps}
-                    sx={[fieldInputSx, { "& .MuiInputBase-input": { textTransform: "none" } }]}
-                    slotProps={{
-                      input: {
-                        startAdornment: (
-                          <InputAdornment position="start">
-                            <SearchIcon fontSize="small" sx={{ color: "info.main" }} />
-                          </InputAdornment>
-                        ),
-                      },
-                    }}
-                  />
-                  {queueSearchError ? (
-                    <Alert severity="error" sx={{ mt: 1 }}>
-                      {queueSearchError}
-                    </Alert>
-                  ) : null}
-                  {queueSearch.trim() ? (
-                    <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
-                      Showing {queueListRows.length} of {showPaginatedSearch ? queueSearchCount : sorted.length} ticket
-                      {(showPaginatedSearch ? queueSearchCount : sorted.length) === 1 ? "" : "s"}
-                    </Typography>
-                  ) : null}
-                </Box>
 
-                {showPaginatedSearch && queueSearchLoading ? (
-                  <Box sx={{ display: "flex", justifyContent: "center", py: 2 }}>
-                    <CircularProgress size={24} />
-                  </Box>
-                ) : queueListRows.length === 0 ? (
-                  <Typography variant="body2" color="text.secondary">
-                    No tickets match your search.
+              {loading ? (
+                <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+                  <CircularProgress size={32} />
+                </Box>
+              ) : sorted.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">
+                  No active LAB queue tickets for today.
+                </Typography>
+              ) : (
+                <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                  {sorted.map((t) => {
+                    const active = (t.lab_request_id ?? "").trim() === selectedRequestId;
+                    return (
+                      <Card
+                        key={t.id}
+                        variant="outlined"
+                        sx={{
+                          borderRadius: 2,
+                          cursor: t.lab_request_id ? "pointer" : "default",
+                          borderColor: active ? "secondary.main" : "divider",
+                          bgcolor: active ? "action.hover" : "background.paper",
+                        }}
+                        onClick={() => {
+                          const lr = (t.lab_request_id ?? "").trim();
+                          if (!lr) return;
+                          router.replace(`/laboratory/results?labRequestId=${encodeURIComponent(lr)}`);
+                        }}
+                      >
+                        <CardContent sx={{ p: 1.5, "&:last-child": { pb: 1.5 } }}>
+                          <Box sx={{ display: "flex", justifyContent: "space-between", gap: 2 }}>
+                            <Box sx={{ minWidth: 0 }}>
+                              <Typography variant="body2" fontWeight={800} sx={{ fontFamily: "monospace" }}>
+                                {t.queue_display}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary" noWrap>
+                                {t.patient_name ?? "—"}
+                              </Typography>
+                            </Box>
+                            <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 0.75 }}>
+                              <Chip label={t.status} color={statusColor[t.status]} size="small" />
+                              <Typography variant="caption" color="text.secondary">
+                                {new Date(t.issued_at).toLocaleTimeString()}
+                              </Typography>
+                            </Box>
+                          </Box>
+                          <Box sx={{ mt: 1, display: "flex", justifyContent: "flex-end", gap: 1, flexWrap: "wrap" }}>
+                            <Tooltip title={t.status === "Waiting" ? "Call patient" : "Only waiting tickets can be called"}>
+                              <span>
+                                <Button
+                                  variant="contained"
+                                  color="secondary"
+                                  size="small"
+                                  startIcon={
+                                    actionBusyId === t.id ? (
+                                      <CircularProgress size={16} color="inherit" />
+                                    ) : (
+                                      <CampaignOutlinedIcon fontSize="small" />
+                                    )
+                                  }
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void callPatient(t.id);
+                                  }}
+                                  disabled={t.status !== "Waiting" || actionBusyId === t.id}
+                                  sx={{ borderRadius: 999, textTransform: "none", fontWeight: 700 }}
+                                >
+                                  Call
+                                </Button>
+                              </span>
+                            </Tooltip>
+                            <Tooltip title={t.lab_request_id ? "Open request" : "No lab request linked"}>
+                              <span>
+                                <Button
+                                  variant="outlined"
+                                  size="small"
+                                  startIcon={<ScienceOutlinedIcon fontSize="small" />}
+                                  disabled={!t.lab_request_id}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const lr = (t.lab_request_id ?? "").trim();
+                                    if (!lr) return;
+                                    router.replace(`/laboratory/results?labRequestId=${encodeURIComponent(lr)}`);
+                                  }}
+                                  sx={{ borderRadius: 999, textTransform: "none", fontWeight: 700 }}
+                                >
+                                  Request
+                                </Button>
+                              </span>
+                            </Tooltip>
+                          </Box>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </Box>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent sx={{ p: 3 }}>
+              <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 2, gap: 2, flexWrap: "wrap" }}>
+                <Typography variant="subtitle1" fontWeight={700}>
+                  Search patient / encounter
+                </Typography>
+              </Box>
+
+              <Box sx={{ mb: 2 }}>
+                <FormFieldLabel htmlFor="lab-results-queue-search" variant="consultation">
+                  Find patient / encounter
+                </FormFieldLabel>
+                <TextField
+                  id="lab-results-queue-search"
+                  hiddenLabel
+                  placeholder="Patient name or encounter ID (trans_id)…"
+                  value={queueSearch}
+                  onChange={(e) => {
+                    setQueueSearch(e.target.value);
+                    setQueueSearchPage(0);
+                  }}
+                  {...commonFieldProps}
+                  sx={[fieldInputSx, { "& .MuiInputBase-input": { textTransform: "none" } }]}
+                  slotProps={{
+                    input: {
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <SearchIcon fontSize="small" sx={{ color: "info.main" }} />
+                        </InputAdornment>
+                      ),
+                    },
+                  }}
+                />
+                {queueSearchError ? (
+                  <Alert severity="error" sx={{ mt: 1 }}>
+                    {queueSearchError}
+                  </Alert>
+                ) : null}
+                {queueSearch.trim() ? (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
+                    Showing {queueListRows.length} of {showPaginatedSearch ? queueSearchCount : sorted.length} ticket
+                    {(showPaginatedSearch ? queueSearchCount : sorted.length) === 1 ? "" : "s"}
                   </Typography>
                 ) : (
-                  <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-                    {queueListRows.map((t) => {
-                  const active = (t.lab_request_id ?? "").trim() === selectedRequestId;
-                  return (
-                    <Card
-                      key={t.id}
-                      variant="outlined"
-                      sx={{
-                        borderRadius: 2,
-                        cursor: t.lab_request_id ? "pointer" : "default",
-                        borderColor: active ? "secondary.main" : "divider",
-                        bgcolor: active ? "action.hover" : "background.paper",
-                      }}
-                      onClick={() => {
-                        const lr = (t.lab_request_id ?? "").trim();
-                        if (!lr) return;
-                        router.replace(`/laboratory/results?labRequestId=${encodeURIComponent(lr)}`);
-                      }}
-                    >
-                      <CardContent sx={{ p: 1.5, "&:last-child": { pb: 1.5 } }}>
-                        <Box sx={{ display: "flex", justifyContent: "space-between", gap: 2 }}>
-                          <Box sx={{ minWidth: 0 }}>
-                            <Typography variant="body2" fontWeight={800} sx={{ fontFamily: "monospace" }}>
-                              {t.queue_display}
-                            </Typography>
-                            <Typography variant="caption" color="text.secondary" noWrap>
-                              {t.patient_name ?? "—"}
-                            </Typography>
-                          </Box>
-                          <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 0.75 }}>
-                            <Chip label={t.status} color={statusColor[t.status]} size="small" />
-                            <Typography variant="caption" color="text.secondary">
-                              {new Date(t.issued_at).toLocaleTimeString()}
-                            </Typography>
-                          </Box>
-                        </Box>
-                        <Box sx={{ mt: 1, display: "flex", justifyContent: "flex-end", gap: 1, flexWrap: "wrap" }}>
-                          <Tooltip title={t.status === "Waiting" ? "Call patient" : "Only waiting tickets can be called"}>
-                            <span>
-                              <Button
-                                variant="contained"
-                                color="secondary"
-                                size="small"
-                                startIcon={
-                                  actionBusyId === t.id ? (
-                                    <CircularProgress size={16} color="inherit" />
-                                  ) : (
-                                    <CampaignOutlinedIcon fontSize="small" />
-                                  )
-                                }
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  void callPatient(t.id);
-                                }}
-                                disabled={t.status !== "Waiting" || actionBusyId === t.id}
-                                sx={{ borderRadius: 999, textTransform: "none", fontWeight: 700 }}
-                              >
-                                Call
-                              </Button>
-                            </span>
-                          </Tooltip>
-                          <Tooltip title={t.lab_request_id ? "Open request" : "No lab request linked"}>
-                            <span>
-                              <Button
-                                variant="outlined"
-                                size="small"
-                                startIcon={<ScienceOutlinedIcon fontSize="small" />}
-                                disabled={!t.lab_request_id}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  const lr = (t.lab_request_id ?? "").trim();
-                                  if (!lr) return;
-                                  router.replace(`/laboratory/results?labRequestId=${encodeURIComponent(lr)}`);
-                                }}
-                                sx={{ borderRadius: 999, textTransform: "none", fontWeight: 700 }}
-                              >
-                                Request
-                              </Button>
-                            </span>
-                          </Tooltip>
-                        </Box>
-                      </CardContent>
-                    </Card>
-                  );
-                    })}
-                  </Box>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
+                    Type at least 2 characters to search.
+                  </Typography>
                 )}
+              </Box>
 
-                {showPaginatedSearch ? (
-                  <TablePagination
-                    component="div"
-                    count={queueSearchCount}
-                    page={queueSearchPage}
-                    onPageChange={(_, p) => setQueueSearchPage(p)}
-                    rowsPerPage={queueSearchPageSize}
-                    rowsPerPageOptions={[5, 10, 20, 50]}
-                    onRowsPerPageChange={(e) => {
-                      const n = Number.parseInt(String(e.target.value ?? "10"), 10);
-                      setQueueSearchPageSize(Number.isFinite(n) && n > 0 ? n : 10);
-                      setQueueSearchPage(0);
-                    }}
-                    labelRowsPerPage="Rows per page"
-                    sx={{
-                      mt: 1,
-                      "& .MuiTablePagination-toolbar": { textTransform: "none" },
-                      "& .MuiTablePagination-select": { textTransform: "none" },
-                      "& .MuiTablePagination-selectLabel, & .MuiTablePagination-displayedRows": { textTransform: "none" },
-                    }}
-                  />
-                ) : null}
-              </>
-            )}
-          </CardContent>
-        </Card>
+              {showPaginatedSearch && queueSearchLoading ? (
+                <Box sx={{ display: "flex", justifyContent: "center", py: 2 }}>
+                  <CircularProgress size={24} />
+                </Box>
+              ) : queueListRows.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">
+                  No tickets match your search.
+                </Typography>
+              ) : (
+                <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                  {queueListRows.map((t) => {
+                    const active = (t.lab_request_id ?? "").trim() === selectedRequestId;
+                    return (
+                      <Card
+                        key={t.id}
+                        variant="outlined"
+                        sx={{
+                          borderRadius: 2,
+                          cursor: t.lab_request_id ? "pointer" : "default",
+                          borderColor: active ? "secondary.main" : "divider",
+                          bgcolor: active ? "action.hover" : "background.paper",
+                        }}
+                        onClick={() => {
+                          const lr = (t.lab_request_id ?? "").trim();
+                          if (!lr) return;
+                          router.replace(`/laboratory/results?labRequestId=${encodeURIComponent(lr)}`);
+                        }}
+                      >
+                        <CardContent sx={{ p: 1.5, "&:last-child": { pb: 1.5 } }}>
+                          <Box sx={{ display: "flex", justifyContent: "space-between", gap: 2 }}>
+                            <Box sx={{ minWidth: 0 }}>
+                              <Typography variant="body2" fontWeight={800} sx={{ fontFamily: "monospace" }}>
+                                {t.queue_display}
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary" noWrap>
+                                {t.patient_name ?? "—"}
+                              </Typography>
+                            </Box>
+                            <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 0.75 }}>
+                              <Chip label={t.status} color={statusColor[t.status]} size="small" />
+                              <Typography variant="caption" color="text.secondary">
+                                {new Date(t.issued_at).toLocaleTimeString()}
+                              </Typography>
+                            </Box>
+                          </Box>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </Box>
+              )}
+
+              {showPaginatedSearch ? (
+                <TablePagination
+                  component="div"
+                  count={queueSearchCount}
+                  page={queueSearchPage}
+                  onPageChange={(_, p) => setQueueSearchPage(p)}
+                  rowsPerPage={queueSearchPageSize}
+                  rowsPerPageOptions={[5, 10, 20, 50]}
+                  onRowsPerPageChange={(e) => {
+                    const n = Number.parseInt(String(e.target.value ?? "10"), 10);
+                    setQueueSearchPageSize(Number.isFinite(n) && n > 0 ? n : 10);
+                    setQueueSearchPage(0);
+                  }}
+                  labelRowsPerPage="Rows per page"
+                  sx={{
+                    mt: 1,
+                    "& .MuiTablePagination-toolbar": { textTransform: "none" },
+                    "& .MuiTablePagination-select": { textTransform: "none" },
+                    "& .MuiTablePagination-selectLabel, & .MuiTablePagination-displayedRows": { textTransform: "none" },
+                  }}
+                />
+              ) : null}
+            </CardContent>
+          </Card>
+        </Box>
 
         <Card>
           <CardContent sx={{ p: 3 }}>

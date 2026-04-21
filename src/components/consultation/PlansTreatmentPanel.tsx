@@ -6,6 +6,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import PrintOutlinedIcon from "@mui/icons-material/PrintOutlined";
 import SaveOutlinedIcon from "@mui/icons-material/SaveOutlined";
+import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
 import {
   Alert,
   Box,
@@ -24,6 +25,12 @@ import {
   Radio,
   RadioGroup,
   Snackbar,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
   TextField,
   Typography,
 } from "@mui/material";
@@ -61,11 +68,13 @@ import {
   searchActiveProducts,
   type ProductCatalogRow,
 } from "@/lib/pharmacyProducts";
+import { supabase } from "@/lib/supabaseClient";
 import {
   fetchCurrentMedicationsForEncounter,
   replaceCurrentMedicationsForEncounter,
 } from "@/lib/currentMedications";
 import { fetchActivePhysicianServices, type PhysicianServiceRow } from "@/lib/physicianServices";
+import type { LabRequestItemView } from "@/app/api/laboratory/lab-request/route";
 
 const tabPanelSx = { pt: 2, minHeight: 280 };
 
@@ -118,6 +127,10 @@ function formatLabRequestTime(t: string | null | undefined): string {
   if (s.length >= 5 && s[2] === ":") return s.slice(0, 5);
   const m = s.match(/(\d{1,2}:\d{2})/);
   return m?.[1] ?? "";
+}
+
+function isCollectedY(v: string | null | undefined): boolean {
+  return String(v ?? "").trim().toUpperCase() === "Y";
 }
 
 const emptyPlansForm: EncounterPlansTreatmentForm = {
@@ -370,6 +383,13 @@ export default function PlansTreatmentPanel({
   const [requestedTestIdSet, setRequestedTestIdSet] = useState<Set<string>>(() => new Set());
   const [labEncounterError, setLabEncounterError] = useState("");
   const [labPriceByTestId, setLabPriceByTestId] = useState<Map<string, number>>(() => new Map());
+  const [paidLabRequestIds, setPaidLabRequestIds] = useState<Set<string>>(() => new Set());
+
+  const [labResultsModalOpen, setLabResultsModalOpen] = useState(false);
+  const [labResultsRequestId, setLabResultsRequestId] = useState("");
+  const [labResultsLoading, setLabResultsLoading] = useState(false);
+  const [labResultsError, setLabResultsError] = useState("");
+  const [labResultsItems, setLabResultsItems] = useState<LabRequestItemView[]>([]);
 
   const [imagingModalOpen, setImagingModalOpen] = useState(false);
   const [imagingForm, setImagingForm] = useState<ImagingFormState>(emptyImagingForm);
@@ -686,6 +706,7 @@ export default function PlansTreatmentPanel({
         setLabEncounterError(enc.error);
         setEncounterLabRequests([]);
         setRequestedTestIdSet(new Set());
+        setPaidLabRequestIds(new Set());
       } else {
         setEncounterLabRequests(enc.requests);
         setRequestedTestIdSet(new Set(enc.requestedTestIds));
@@ -694,12 +715,67 @@ export default function PlansTreatmentPanel({
           setSelectedLabTestIds(new Set(enc.requestedTestIds));
         }
         // Keep labPriceByTestId from the catalog fetch above.
+
+        // Paid lab requests (lab_sales exists) determine whether we show View Result vs View Catalog.
+        const reqIds = enc.requests.map((r) => r.id).filter(Boolean);
+        if (reqIds.length === 0) {
+          setPaidLabRequestIds(new Set());
+        } else {
+          const { data: salesRows } = await supabase
+            .from("lab_sales")
+            .select("lab_request_id")
+            .in("lab_request_id", reqIds);
+          if (!cancelled) {
+            const paid = new Set<string>();
+            for (const row of (salesRows ?? []) as Array<{ lab_request_id: string | null }>) {
+              const id = String(row.lab_request_id ?? "").trim();
+              if (id) paid.add(id);
+            }
+            setPaidLabRequestIds(paid);
+          }
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [labsModalOpen, transId, isNew]);
+
+  // Keep paid/unpaid LAB state fresh even when the catalog modal is closed.
+  // This drives the "View catalog" vs "View result" action next to LABS.
+  useEffect(() => {
+    if (!hydrated || loading) return;
+    let cancelled = false;
+    void (async () => {
+      const enc = await fetchLabRequestsForEncounter(transId);
+      if (cancelled) return;
+      if (enc.error) {
+        setLabEncounterError(enc.error);
+        setEncounterLabRequests([]);
+        setRequestedTestIdSet(new Set());
+        setPaidLabRequestIds(new Set());
+        return;
+      }
+      setEncounterLabRequests(enc.requests);
+      setRequestedTestIdSet(new Set(enc.requestedTestIds));
+      const reqIds = enc.requests.map((r) => r.id).filter(Boolean);
+      if (reqIds.length === 0) {
+        setPaidLabRequestIds(new Set());
+        return;
+      }
+      const { data: salesRows } = await supabase.from("lab_sales").select("lab_request_id").in("lab_request_id", reqIds);
+      if (cancelled) return;
+      const paid = new Set<string>();
+      for (const row of (salesRows ?? []) as Array<{ lab_request_id: string | null }>) {
+        const id = String(row.lab_request_id ?? "").trim();
+        if (id) paid.add(id);
+      }
+      setPaidLabRequestIds(paid);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [transId, hydrated, loading]);
 
   const toggleLabTestSelection = useCallback((testId: string) => {
     setSelectedLabTestIds((prev) => {
@@ -806,6 +882,63 @@ export default function PlansTreatmentPanel({
     }
     return sum;
   }, [selectedLabTestIds, labPriceByTestId]);
+
+  const anyLabsPaid = useMemo(() => {
+    if (encounterLabRequests.length === 0) return false;
+    // Consider "Paid" if at least one request has a lab_sales row.
+    for (const r of encounterLabRequests) {
+      if (paidLabRequestIds.has(r.id)) return true;
+    }
+    return false;
+  }, [encounterLabRequests, paidLabRequestIds]);
+
+  const viewResultsLabRequestId = useMemo(() => {
+    // Prefer most recent paid request; fall back to most recent request.
+    for (const r of encounterLabRequests) {
+      if (paidLabRequestIds.has(r.id)) return r.id;
+    }
+    return encounterLabRequests[0]?.id ?? "";
+  }, [encounterLabRequests, paidLabRequestIds]);
+
+  const openLabResultsModal = useCallback((labRequestId: string) => {
+    const id = String(labRequestId ?? "").trim();
+    if (!id) return;
+    setLabResultsError("");
+    setLabResultsItems([]);
+    setLabResultsRequestId(id);
+    setLabResultsModalOpen(true);
+  }, []);
+
+  useEffect(() => {
+    if (!labResultsModalOpen) return;
+    const id = labResultsRequestId.trim();
+    if (!id) return;
+    let cancelled = false;
+    setLabResultsLoading(true);
+    setLabResultsError("");
+    void (async () => {
+      try {
+        const res = await fetch(`/api/laboratory/lab-request?labRequestId=${encodeURIComponent(id)}`, { cache: "no-store" });
+        const json = (await res.json().catch(() => ({}))) as { error?: string; items?: LabRequestItemView[] };
+        if (cancelled) return;
+        if (!res.ok) {
+          setLabResultsError(json.error ?? `Request failed (${res.status})`);
+          setLabResultsItems([]);
+          return;
+        }
+        setLabResultsItems(Array.isArray(json.items) ? json.items : []);
+      } catch {
+        if (cancelled) return;
+        setLabResultsError("Failed to load lab results.");
+        setLabResultsItems([]);
+      } finally {
+        if (!cancelled) setLabResultsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [labResultsModalOpen, labResultsRequestId]);
 
   const labDialogFooterHint = useMemo(() => {
     const nReq = requestedTestIdSet.size;
@@ -1077,10 +1210,16 @@ export default function PlansTreatmentPanel({
                     type="button"
                     variant="text"
                     size="small"
-                    onClick={() => setLabsModalOpen(true)}
+                    onClick={() => {
+                      if (anyLabsPaid && viewResultsLabRequestId) {
+                        openLabResultsModal(viewResultsLabRequestId);
+                        return;
+                      }
+                      setLabsModalOpen(true);
+                    }}
                     sx={{ textTransform: "uppercase", minWidth: "auto", py: 0.25, px: 0.75 }}
                   >
-                    View catalog
+                    {anyLabsPaid ? "View result" : "View catalog"}
                   </Button>
                 ) : null}
               </Box>
@@ -1390,6 +1529,108 @@ export default function PlansTreatmentPanel({
               startIcon={<CloseIcon />}
               sx={{ textTransform: "none" }}
             >
+              Close
+            </Button>
+          </Box>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={labResultsModalOpen}
+        onClose={() => setLabResultsModalOpen(false)}
+        maxWidth="lg"
+        fullWidth
+        aria-labelledby="plans-lab-results-dialog-title"
+        slotProps={{
+          paper: {
+            sx: { maxHeight: "92vh" },
+          },
+        }}
+      >
+        <DialogTitle
+          id="plans-lab-results-dialog-title"
+          sx={{
+            fontWeight: 800,
+            textAlign: "center",
+            letterSpacing: "0.08em",
+            bgcolor: "info.main",
+            color: "info.contrastText",
+            py: 1.5,
+          }}
+        >
+          LAB RESULTS
+        </DialogTitle>
+        <DialogContent dividers sx={{ px: { xs: 2, sm: 2.5 }, py: 2, overflow: "auto" }}>
+          {labResultsError ? (
+            <Alert severity="error" sx={{ mb: 2 }} onClose={() => setLabResultsError("")}>
+              {labResultsError}
+            </Alert>
+          ) : null}
+          {labResultsLoading ? (
+            <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+              <CircularProgress size={32} />
+            </Box>
+          ) : labResultsItems.length === 0 ? (
+            <Typography variant="body2" color="text.secondary">
+              No lab results found for this request.
+            </Typography>
+          ) : (
+            <TableContainer>
+              <Table size="small" sx={{ "& th, & td": { verticalAlign: "top" } }}>
+                <TableHead>
+                  <TableRow>
+                    <TableCell sx={{ fontWeight: 800 }}>Test</TableCell>
+                    <TableCell sx={{ fontWeight: 800 }}>Collected</TableCell>
+                    <TableCell sx={{ fontWeight: 800 }}>Result</TableCell>
+                    <TableCell sx={{ fontWeight: 800 }}>Unit</TableCell>
+                    <TableCell sx={{ fontWeight: 800 }}>Reference</TableCell>
+                    <TableCell sx={{ fontWeight: 800 }}>Flag</TableCell>
+                    <TableCell sx={{ fontWeight: 800 }}>Status</TableCell>
+                    <TableCell sx={{ fontWeight: 800 }}>Remarks</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {labResultsItems.map((it) => (
+                    <TableRow key={it.id} hover>
+                      <TableCell sx={{ fontWeight: 700 }}>
+                        {it.test_name ?? it.lab_test_id}
+                        <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                          Specimen: {it.specimen_type ?? "—"}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>{isCollectedY(it.collected_item) ? "Y" : "—"}</TableCell>
+                      <TableCell>{(it.result_value ?? "").trim() || "—"}</TableCell>
+                      <TableCell>{(it.result_unit ?? "").trim() || "—"}</TableCell>
+                      <TableCell>{(it.reference_range ?? "").trim() || "—"}</TableCell>
+                      <TableCell>{(it.flag ?? "").trim() || "—"}</TableCell>
+                      <TableCell>{(it.result_status ?? "").trim() || "—"}</TableCell>
+                      <TableCell>{(it.remarks ?? "").trim() || "—"}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ px: 2, py: 1.5, justifyContent: "space-between", flexWrap: "wrap", gap: 1 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ mr: "auto" }}>
+            Request ID: <Box component="span" sx={{ fontFamily: "monospace" }}>{labResultsRequestId}</Box>
+          </Typography>
+          <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
+            <Button
+              type="button"
+              variant="outlined"
+              startIcon={<ScienceOutlinedIcon />}
+              onClick={() => {
+                const id = labResultsRequestId.trim();
+                if (!id) return;
+                window.open(`/laboratory/results?labRequestId=${encodeURIComponent(id)}`, "_blank", "noopener,noreferrer");
+              }}
+              sx={{ textTransform: "none" }}
+            >
+              Open in Lab Results
+            </Button>
+            <Button onClick={() => setLabResultsModalOpen(false)} color="error" variant="outlined" startIcon={<CloseIcon />} sx={{ textTransform: "none" }}>
               Close
             </Button>
           </Box>

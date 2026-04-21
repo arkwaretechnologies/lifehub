@@ -19,6 +19,14 @@ export type LabRequestItemView = {
   specimen_type: string | null;
   priority: string | null;
   notes: string | null;
+  collected_item?: string | null;
+  // lab_results (optional; present when available)
+  result_value?: string | null;
+  result_unit?: string | null;
+  reference_range?: string | null;
+  flag?: string | null;
+  remarks?: string | null;
+  result_status?: string | null;
 };
 
 export async function GET(req: Request) {
@@ -43,7 +51,7 @@ export async function GET(req: Request) {
 
   const { data: items, error: iErr } = await admin
     .from("lab_request_items")
-    .select("id, lab_test_id, notes, priority")
+    .select("id, lab_test_id, notes, priority, collected_item")
     .eq("lab_request_id", id);
 
   if (iErr) return NextResponse.json({ error: iErr.message }, { status: 500 });
@@ -53,7 +61,47 @@ export async function GET(req: Request) {
     lab_test_id: string;
     notes: string | null;
     priority: string | null;
+    collected_item?: string | null;
   }>;
+
+  // Load existing lab results keyed by item id (1 row per item).
+  const itemIds = itemRows.map((r) => r.id).filter(Boolean);
+  const resultsByItemId = new Map<
+    string,
+    {
+      result_value: string | null;
+      result_unit: string | null;
+      reference_range: string | null;
+      flag: string | null;
+      remarks: string | null;
+      status: string | null;
+    }
+  >();
+  if (itemIds.length > 0) {
+    const { data: rRows, error: rErr } = await admin
+      .from("lab_results")
+      .select("lab_request_item_id, result_value, result_unit, reference_range, flag, remarks, status")
+      .in("lab_request_item_id", itemIds);
+    if (rErr) return NextResponse.json({ error: rErr.message }, { status: 500 });
+    for (const r of (rRows ?? []) as Array<{
+      lab_request_item_id: string;
+      result_value: string | null;
+      result_unit: string | null;
+      reference_range: string | null;
+      flag: string | null;
+      remarks: string | null;
+      status: string | null;
+    }>) {
+      resultsByItemId.set(r.lab_request_item_id, {
+        result_value: r.result_value,
+        result_unit: r.result_unit,
+        reference_range: r.reference_range,
+        flag: r.flag,
+        remarks: r.remarks,
+        status: r.status,
+      });
+    }
+  }
 
   const testIds = [...new Set(itemRows.map((r) => r.lab_test_id).filter(Boolean))];
   const testsById = new Map<string, { name: string | null; specimen_type: string | null }>();
@@ -70,6 +118,7 @@ export async function GET(req: Request) {
 
   const outItems: LabRequestItemView[] = itemRows.map((r) => {
     const t = testsById.get(r.lab_test_id);
+    const rr = resultsByItemId.get(r.id) ?? null;
     return {
       id: r.id,
       lab_test_id: r.lab_test_id,
@@ -77,6 +126,13 @@ export async function GET(req: Request) {
       specimen_type: t?.specimen_type ?? null,
       priority: r.priority,
       notes: r.notes,
+      collected_item: r.collected_item ?? null,
+      result_value: rr?.result_value ?? null,
+      result_unit: rr?.result_unit ?? null,
+      reference_range: rr?.reference_range ?? null,
+      flag: rr?.flag ?? null,
+      remarks: rr?.remarks ?? null,
+      result_status: rr?.status ?? null,
     };
   });
 

@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { Box, Typography } from "@mui/material";
+import type { SxProps, Theme } from "@mui/material/styles";
 
 export function FormFieldLabel({
   htmlFor,
@@ -10,6 +11,7 @@ export function FormFieldLabel({
   required: fieldRequired = false,
   /** Aligns with consultation Physician's Record field labels (`info.main`, 700). */
   variant = "default",
+  sx,
 }: {
   htmlFor: string;
   children: ReactNode;
@@ -17,6 +19,7 @@ export function FormFieldLabel({
   uppercase?: boolean;
   required?: boolean;
   variant?: "default" | "consultation";
+  sx?: SxProps<Theme>;
 }) {
   const isConsult = variant === "consultation";
   return (
@@ -24,14 +27,17 @@ export function FormFieldLabel({
       component="label"
       variant="body2"
       htmlFor={htmlFor}
-      sx={{
-        display: "block",
-        mb: 0.75,
-        fontWeight: isConsult ? 700 : 600,
-        letterSpacing: isConsult ? 0.02 : uppercase ? 0.02 : 0,
-        textTransform: uppercase ? "uppercase" : "none",
-        color: isConsult ? "info.main" : "text.primary",
-      }}
+      sx={[
+        {
+          display: "block",
+          mb: 0.75,
+          fontWeight: isConsult ? 700 : 600,
+          letterSpacing: isConsult ? 0.02 : uppercase ? 0.02 : 0,
+          textTransform: uppercase ? "uppercase" : "none",
+          color: isConsult ? "info.main" : "text.primary",
+        },
+        ...(sx ? (Array.isArray(sx) ? sx : [sx]) : []),
+      ]}
     >
       {children}
       {fieldRequired ? (

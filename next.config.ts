@@ -16,7 +16,8 @@ const nextConfig: NextConfig = {
       source: "/:path*",
       headers: [{ key: "ngrok-skip-browser-warning", value: "true" }]
     }];
-  }
+  },
+  allowedDevOrigins: ["untensing-heike-burdensome.ngrok-free.dev"]
 };
 
 export default nextConfig;

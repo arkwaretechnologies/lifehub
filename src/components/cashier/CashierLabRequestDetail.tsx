@@ -42,6 +42,8 @@ import { createLabSaleWithItems, generateNextDailyOrNumber } from "@/lib/cashier
 import { fetchActiveDiscountTypes, type DiscountTypeRow } from "@/lib/discountTypes";
 import { fetchQueuePriorities, type QueuePriorityRow } from "@/lib/queueReception";
 import { openCashierQueueReceiptReprintByTicketId, openReceptionQueueReceiptPrint } from "@/lib/receptionQueueReceiptPrint";
+import { openCashierAcknowledgementReceiptPrint } from "@/lib/cashierAcknowledgementReceiptPrint";
+import { CONSULTATION_BRANDING } from "@/components/consultation/consultationTypes";
 
 function isUuid(s: string): boolean {
   const t = s.trim();
@@ -69,6 +71,7 @@ export default function CashierLabRequestDetail() {
   const [loading, setLoading] = useState(true);
   const [header, setHeader] = useState<LabRequestHeaderRow | null>(null);
   const [patientName, setPatientName] = useState<string | null>(null);
+  const [patientAddress, setPatientAddress] = useState<string | null>(null);
   const [patientIdStr, setPatientIdStr] = useState<string | null>(null);
   const [patientContactNo, setPatientContactNo] = useState<string | null>(null);
   const [items, setItems] = useState<LabRequestItemDetailRow[]>([]);
@@ -99,6 +102,7 @@ export default function CashierLabRequestDetail() {
     setLoading(true);
     setHeader(null);
     setPatientName(null);
+    setPatientAddress(null);
     setPatientIdStr(null);
     setPatientContactNo(null);
     setItems([]);
@@ -136,6 +140,8 @@ export default function CashierLabRequestDetail() {
       }
       setPatientIdStr(String(pid));
       setPatientName(patRes.row?.name?.trim() ? patRes.row.name.trim() : null);
+      const addr = patRes.row?.address?.trim();
+      setPatientAddress(addr ? addr : null);
       const cn = patRes.row?.contact_no?.trim();
       setPatientContactNo(cn ? cn : null);
     }
@@ -305,6 +311,29 @@ export default function CashierLabRequestDetail() {
       }
 
       setPayOpen(false);
+      const paymentLines = items.map((it) => ({
+        label: (it.test_name ?? "").trim() || `Test ${it.lab_test_id}`,
+        amount: priceRes.unitPriceById.get(it.lab_test_id) ?? 0,
+      }));
+
+      await openCashierAcknowledgementReceiptPrint({
+        facilityName: "LifeHub Medical & Diagnostic Center",
+        facilityAddressLines: ["Poblacion, Imelda, Zamboanga Sibugay"],
+        facilityContactLine: `Contact: ${CONSULTATION_BRANDING.tel}`,
+        facilityEmailLine: `Email: ${CONSULTATION_BRANDING.email}`,
+        customerName: (patientName ?? "").trim() || "Customer",
+        customerAddress: (patientAddress ?? "").trim() || "—",
+        transId: encounterTransId.trim() || undefined,
+        orNumber: args.orNumber,
+        paymentMethodLabel:
+          (args.paymentMethod.name ?? "").trim() || `Method #${args.paymentMethod.id}`,
+        paymentLines,
+        subtotal,
+        discountAmount: totalDiscount,
+        totalDue: Math.max(0, subtotal - totalDiscount),
+        amountTendered: args.amountTendered,
+        changeAmount: args.changeAmount,
+      });
       setPaySuccess(`Payment saved.${labQueueLine}`);
       await reloadAll();
       router.replace("/cashier?tab=walkin");

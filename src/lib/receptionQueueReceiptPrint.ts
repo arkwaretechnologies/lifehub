@@ -16,7 +16,7 @@ export async function openReceptionQueueReceiptPrint(args: ReceptionQueueReceipt
   const QRCode = (await import("qrcode")).default;
   const qrPayload = (args.queueTicketId ?? "").trim() || args.transId.trim();
   const qrDataUrl = await QRCode.toDataURL(qrPayload, {
-    width: 200,
+    width: 140,
     margin: 1,
     errorCorrectionLevel: "M",
   });
@@ -30,15 +30,43 @@ export async function openReceptionQueueReceiptPrint(args: ReceptionQueueReceipt
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Queue receipt</title>
+  <!-- Empty title so browser print header (top-right) does not show "Queue receipt" / "Queue…" -->
+  <title></title>
   <style>
-    body { font-family: system-ui, Segoe UI, Roboto, sans-serif; padding: 24px; max-width: 400px; margin: 0 auto; color: #1a1a2e; }
-    h1 { font-size: 1rem; letter-spacing: 0.08em; text-transform: uppercase; color: #1f4e79; margin: 0 0 16px; text-align: center; }
-    .queue { font-size: 2rem; font-weight: 800; text-align: center; margin: 12px 0; font-variant-numeric: tabular-nums; }
-    .muted { color: #666; font-size: 0.85rem; }
-    .row { margin: 8px 0; }
-    .tid { font-family: ui-monospace, monospace; font-size: 0.75rem; word-break: break-all; }
-    .qr { display: block; margin: 20px auto 0; width: 200px; height: 200px; }
+    @page { size: 80mm auto; margin: 4mm; }
+    html, body { padding: 0; margin: 0; }
+    body {
+      box-sizing: border-box;
+      width: 80mm;
+      max-width: 80mm;
+      font-family: system-ui, Segoe UI, Roboto, sans-serif;
+      padding: 3mm 4mm;
+      margin: 0 auto;
+      color: #1a1a2e;
+      font-size: 11px;
+      line-height: 1.25;
+    }
+    h1 {
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #1f4e79;
+      margin: 0 0 6px;
+      text-align: center;
+      font-weight: 800;
+    }
+    .queue {
+      font-size: 1.65rem;
+      font-weight: 800;
+      text-align: center;
+      margin: 6px 0;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.1;
+    }
+    .muted { color: #666; font-size: 10px; }
+    .row { margin: 4px 0; }
+    .tid { font-family: ui-monospace, monospace; font-size: 8px; word-break: break-all; line-height: 1.2; }
+    .qr { display: block; margin: 8px auto 0; width: 120px; height: 120px; }
   </style>
 </head>
 <body>
@@ -51,14 +79,31 @@ export async function openReceptionQueueReceiptPrint(args: ReceptionQueueReceipt
   <div class="row" style="margin-top:16px"><strong>Transaction ID</strong></div>
   <div class="tid">${escapeHtml(args.transId.trim())}</div>
   <img class="qr" src="${qrDataUrl}" alt="QR" />
-  <script>window.onload = function () { window.print(); };</script>
 </body>
 </html>`;
 
-  const w = window.open("", "_blank", "noopener,noreferrer,width=420,height=640");
-  if (!w) return;
-  w.document.write(html);
-  w.document.close();
+  const iframe = document.createElement("iframe");
+  iframe.setAttribute("title", "Queue receipt print");
+  iframe.style.position = "fixed";
+  iframe.style.right = "0";
+  iframe.style.bottom = "0";
+  iframe.style.width = "0";
+  iframe.style.height = "0";
+  iframe.style.border = "none";
+  iframe.style.visibility = "hidden";
+  /** Use srcdoc instead of a blob URL so the browser print footer does not show a long `blob:` page link. */
+  iframe.srcdoc = html;
+  document.body.appendChild(iframe);
+  iframe.onload = () => {
+    const win = iframe.contentWindow;
+    if (win != null) {
+      win.focus();
+      win.print();
+    }
+    window.setTimeout(() => {
+      iframe.remove();
+    }, 120_000);
+  };
 }
 
 function escapeHtml(s: string): string {

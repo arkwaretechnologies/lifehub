@@ -49,6 +49,8 @@ import {
 } from "@/components/consultation/consultListTableStyles";
 import { fetchQueuePriorities, type QueuePriorityRow } from "@/lib/queueReception";
 import { openCashierQueueReceiptReprintByTicketId, openReceptionQueueReceiptPrint } from "@/lib/receptionQueueReceiptPrint";
+import { openCashierAcknowledgementReceiptPrint } from "@/lib/cashierAcknowledgementReceiptPrint";
+import { CONSULTATION_BRANDING } from "@/components/consultation/consultationTypes";
 
 function isUuid(s: string): boolean {
   const t = s.trim();
@@ -417,6 +419,30 @@ export default function CashierEncounterDetail() {
       }
 
       setPayOpen(false);
+      const paymentLines: { label: string; amount: number }[] = [];
+      if (feeTotalDue > 0) paymentLines.push({ label: "Consultation charges", amount: feeTotalDue });
+      if (openLabRequests.length > 0 && labTotalDue > 0) {
+        paymentLines.push({ label: "Laboratory orders", amount: labTotalDue });
+      }
+
+      await openCashierAcknowledgementReceiptPrint({
+        facilityName: "LifeHub Medical & Diagnostic Center",
+        facilityAddressLines: ["Poblacion, Imelda, Zamboanga Sibugay"],
+        facilityContactLine: `Contact: ${CONSULTATION_BRANDING.tel}`,
+        facilityEmailLine: `Email: ${CONSULTATION_BRANDING.email}`,
+        customerName: (patient.name ?? "").trim() || "Customer",
+        customerAddress: (patient.address ?? "").trim() || "—",
+        transId: encounterId,
+        orNumber: args.orNumber,
+        paymentMethodLabel:
+          (args.paymentMethod.name ?? "").trim() || `Method #${args.paymentMethod.id}`,
+        paymentLines,
+        subtotal: grandSubtotal,
+        discountAmount: totalDiscount,
+        totalDue: Math.max(0, grandSubtotal - totalDiscount),
+        amountTendered: args.amountTendered,
+        changeAmount: args.changeAmount,
+      });
       setPaySuccess(`Payment saved.${labQueueLine}`);
       await reloadAll();
       router.replace("/cashier?tab=visit");

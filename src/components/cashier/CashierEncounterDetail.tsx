@@ -49,7 +49,6 @@ import {
   consultTableSx,
 } from "@/components/consultation/consultListTableStyles";
 import { fetchQueuePriorities, type QueuePriorityRow } from "@/lib/queueReception";
-import { openCashierQueueReceiptReprintByTicketId, openReceptionQueueReceiptPrint } from "@/lib/receptionQueueReceiptPrint";
 import { openCashierAcknowledgementReceiptPrint } from "@/lib/cashierAcknowledgementReceiptPrint";
 import { CONSULTATION_BRANDING } from "@/components/consultation/consultationTypes";
 
@@ -120,9 +119,8 @@ export default function CashierEncounterDetail() {
     message: string;
   } | null>(null);
   const [labQueuePrioritySel, setLabQueuePrioritySel] = useState<number | "">("");
-  const [labReceiptTicketId, setLabReceiptTicketId] = useState<string | null>(null);
+  /** After-pay lab queue identifier (shown on-screen only; slips are printed at reception). */
   const [labReceiptQueueDisplay, setLabReceiptQueueDisplay] = useState("");
-  const [labReceiptCounterLabel, setLabReceiptCounterLabel] = useState("");
 
   const reloadAll = useCallback(async (): Promise<{ receptionQueueNo: string }> => {
     setPaySuccess("");
@@ -138,9 +136,7 @@ export default function CashierEncounterDetail() {
       setFeeItemsBySale(new Map());
       setOpenLabRequests([]);
       setLabItemRows([]);
-      setLabReceiptTicketId(null);
       setLabReceiptQueueDisplay("");
-      setLabReceiptCounterLabel("");
       return { receptionQueueNo: "" };
     }
 
@@ -524,25 +520,13 @@ export default function CashierEncounterDetail() {
         const qj = (await queueRes.json().catch(() => ({}))) as {
           error?: string;
           queueDisplay?: string;
-          queueTicketId?: string;
-          counterCode?: string;
         };
         if (!queueRes.ok || qj.error) throw new Error(qj.error ?? "Could not create laboratory queue ticket.");
         const qd = (qj.queueDisplay ?? "").trim();
-        const qtid = (qj.queueTicketId ?? "").trim();
-        setLabReceiptTicketId(qtid || null);
         setLabReceiptQueueDisplay(qd);
-        setLabReceiptCounterLabel((qj.counterCode ?? "LAB").trim());
-        labQueueLine = qd ? ` Laboratory queue: ${qd}.` : " Laboratory queue ticket issued.";
-        if (qd && qtid) {
-          await openReceptionQueueReceiptPrint({
-            patientName: (patient.name ?? "").trim() || "Patient",
-            destinationLabel: (qj.counterCode ?? "Laboratory").trim(),
-            queueDisplay: qd,
-            transId: encounterId,
-            queueTicketId: qtid,
-          });
-        }
+        labQueueLine = qd
+          ? ` Laboratory queue: ${qd}. Collect your laboratory slip at reception.`
+          : " Laboratory queue assigned. Collect your laboratory slip at reception.";
       }
 
       setPayOpen(false);
@@ -604,9 +588,7 @@ export default function CashierEncounterDetail() {
           onClick={() => {
             setPayError("");
             setPaySuccess("");
-            setLabReceiptTicketId(null);
             setLabReceiptQueueDisplay("");
-            setLabReceiptCounterLabel("");
             setPayModalKey((k) => k + 1);
             setPayOpen(true);
             if (openLabRequests.length > 0 && queuePriorities.length > 0) {
@@ -654,48 +636,23 @@ export default function CashierEncounterDetail() {
         </Alert>
       ) : null}
 
-      {labReceiptTicketId ? (
+      {labReceiptQueueDisplay.trim() ? (
         <Alert
           severity="info"
           sx={{ mb: 2 }}
           onClose={() => {
-            setLabReceiptTicketId(null);
             setLabReceiptQueueDisplay("");
-            setLabReceiptCounterLabel("");
           }}
-          action={
-            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1, alignItems: "center", py: 0.5 }}>
-              <Button
-                size="small"
-                variant="outlined"
-                color="inherit"
-                sx={{ textTransform: "none" }}
-                onClick={() =>
-                  void openReceptionQueueReceiptPrint({
-                    patientName: (patient?.name ?? "").trim() || "Patient",
-                    destinationLabel: labReceiptCounterLabel || "Laboratory",
-                    queueDisplay: labReceiptQueueDisplay,
-                    transId: encounterId,
-                    queueTicketId: labReceiptTicketId,
-                  })
-                }
-              >
-                Print slip
-              </Button>
-              <Button
-                size="small"
-                variant="outlined"
-                color="inherit"
-                sx={{ textTransform: "none" }}
-                onClick={() => void openCashierQueueReceiptReprintByTicketId(labReceiptTicketId)}
-              >
-                Reprint
-              </Button>
-            </Box>
-          }
         >
-          Laboratory queue <strong>{labReceiptQueueDisplay || "—"}</strong>. Use Reprint if the slip was lost (reloads
-          from the server).
+          Laboratory queue{" "}
+          <Box component="strong" sx={{ fontFamily: "monospace" }}>
+            {labReceiptQueueDisplay}
+          </Box>
+          . Your laboratory slip will be printed at{" "}
+          <Box component="strong" display="inline">
+            reception
+          </Box>
+          .
         </Alert>
       ) : null}
 

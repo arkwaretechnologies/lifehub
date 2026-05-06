@@ -12,6 +12,12 @@ type LabRequestHeader = {
   created_at: string;
 };
 
+/** Full header returned by GET (includes resolved patient label + LAB queue ticket if any). */
+export type LabRequestHeaderView = LabRequestHeader & {
+  patient_name: string | null;
+  queue_display: string | null;
+};
+
 export type LabRequestItemView = {
   id: string;
   lab_test_id: string;
@@ -48,6 +54,29 @@ export async function GET(req: Request) {
 
   if (hErr) return NextResponse.json({ error: hErr.message }, { status: 500 });
   if (!header) return NextResponse.json({ error: "Lab request not found." }, { status: 404 });
+
+  const baseHeader = header as LabRequestHeader;
+  let patient_name: string | null = null;
+  if (baseHeader.patient_id != null) {
+    const { data: pat, error: pErr } = await admin.from("patients").select("name").eq("id", baseHeader.patient_id).maybeSingle();
+    if (pErr) return NextResponse.json({ error: pErr.message }, { status: 500 });
+    const rawName = (pat as { name?: string | null } | null)?.name ?? null;
+    patient_name =
+      rawName != null && String(rawName).trim() !== ""
+        ? String(rawName).trim()
+        : null;
+  }
+
+  const { data: qtRow, error: qtErr } = await admin
+    .from("queue_tickets")
+    .select("queue_display")
+    .eq("lab_request_id", id)
+    .order("issued_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (qtErr) return NextResponse.json({ error: qtErr.message }, { status: 500 });
+  const queue_display = ((qtRow as { queue_display?: string | null } | null)?.queue_display ?? null)?.trim() || null;
 
   const { data: items, error: iErr } = await admin
     .from("lab_request_items")
@@ -138,8 +167,14 @@ export async function GET(req: Request) {
 
   outItems.sort((a, b) => (a.test_name ?? a.lab_test_id).localeCompare(b.test_name ?? b.lab_test_id));
 
+  const headerOut: LabRequestHeaderView = {
+    ...baseHeader,
+    patient_name,
+    queue_display,
+  };
+
   return NextResponse.json({
-    header: header as LabRequestHeader,
+    header: headerOut,
     items: outItems,
   });
 }

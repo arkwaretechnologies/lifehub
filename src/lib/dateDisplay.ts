@@ -29,3 +29,12 @@ export function isoDateFromUnknown(value: string | null | undefined): string {
   const s = String(value).trim();
   return s.length >= 10 ? s.slice(0, 10) : s;
 }
+
+/** Lab request clock time (`HH:mm` if parseable); otherwise em dash when empty. */
+export function formatLabTime(value: string | null | undefined): string {
+  if (value == null || String(value).trim() === "") return "—";
+  const s = String(value);
+  if (s.length >= 5 && s[4] === ":") return s.slice(0, 5);
+  const m = s.match(/(\d{1,2}:\d{2})/);
+  return m?.[1] ?? "—";
+}

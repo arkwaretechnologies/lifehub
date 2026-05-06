@@ -28,11 +28,19 @@ import {
   Typography,
 } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
+
+function formatLabRequestDateTime(requestDate: string, requestTime: string | null): string {
+  const d = formatDateMMDDYYYY(requestDate);
+  const t = formatLabTime(requestTime);
+  if (!d) return t === "—" ? "—" : t;
+  return t === "—" ? d : `${d} · ${t}`;
+}
 import { commonFieldProps, fieldInputSx } from "@/components/fieldInputStyles";
 import { FormFieldLabel } from "@/components/FormFieldLabel";
 import type { QueueTicketStatus } from "@/lib/queueReception";
 import type { LabQueueRow } from "@/app/api/laboratory/lab-queue/route";
-import type { LabRequestItemView } from "@/app/api/laboratory/lab-request/route";
+import type { LabRequestHeaderView, LabRequestItemView } from "@/app/api/laboratory/lab-request/route";
+import { formatDateMMDDYYYY, formatLabTime } from "@/lib/dateDisplay";
 
 export default function LabResultsPage() {
   const theme = useTheme();
@@ -57,6 +65,7 @@ export default function LabResultsPage() {
   const [reqLoading, setReqLoading] = useState(false);
   const [reqError, setReqError] = useState("");
   const [reqItems, setReqItems] = useState<LabRequestItemView[]>([]);
+  const [reqHeader, setReqHeader] = useState<LabRequestHeaderView | null>(null);
   const [itemSavingId, setItemSavingId] = useState<string | null>(null);
   const [toastOpen, setToastOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState("");
@@ -95,6 +104,7 @@ export default function LabResultsPage() {
   const loadRequest = async (labRequestIdRaw: string) => {
     const labRequestId = (labRequestIdRaw ?? "").trim();
     setReqItems([]);
+    setReqHeader(null);
     setReqError("");
     setSelectedRequestId(labRequestId);
     if (!labRequestId) return;
@@ -103,11 +113,16 @@ export default function LabResultsPage() {
       const res = await fetch(`/api/laboratory/lab-request?labRequestId=${encodeURIComponent(labRequestId)}`, {
         cache: "no-store",
       });
-      const json = (await res.json().catch(() => ({}))) as { error?: string; items?: LabRequestItemView[] };
+      const json = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        items?: LabRequestItemView[];
+        header?: LabRequestHeaderView;
+      };
       if (!res.ok) {
         setReqError(json.error ?? `Request failed (${res.status})`);
         return;
       }
+      setReqHeader(json.header ?? null);
       setReqItems(Array.isArray(json.items) ? json.items : []);
     } catch {
       setReqError("Failed to load lab request details.");
@@ -195,8 +210,9 @@ export default function LabResultsPage() {
 
   const selectedTicket = useMemo(() => {
     if (!selectedRequestId) return null;
-    return sorted.find((t) => (t.lab_request_id ?? "").trim() === selectedRequestId) ?? null;
-  }, [selectedRequestId, sorted]);
+    const match = (t: LabQueueRow) => (t.lab_request_id ?? "").trim() === selectedRequestId;
+    return sorted.find(match) ?? queueSearchRows.find(match) ?? null;
+  }, [selectedRequestId, sorted, queueSearchRows]);
 
   const callPatient = async (ticketId: string) => {
     const id = ticketId.trim();
@@ -656,14 +672,51 @@ export default function LabResultsPage() {
               Select a ticket on the left to view requested tests. Mark each item as collected to enable result entry.
             </Typography>
 
-            {selectedTicket ? (
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                Queue:&nbsp;
-                <Box component="span" sx={{ fontFamily: "monospace" }}>
-                  {selectedTicket.queue_display}
+            {reqHeader ? (
+              <Box
+                sx={{
+                  mb: 2,
+                  p: 1.5,
+                  borderRadius: 2,
+                  border: "1px solid",
+                  borderColor: "divider",
+                  bgcolor: alpha(theme.palette.primary.main, 0.04),
+                  display: "grid",
+                  gap: 1.25,
+                  gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))" },
+                }}
+              >
+                <Box>
+                  <Typography variant="caption" color="text.secondary" fontWeight={700} display="block">
+                    Patient ID
+                  </Typography>
+                  <Typography variant="body2" sx={{ fontFamily: "monospace" }}>
+                    {reqHeader.patient_id != null ? String(reqHeader.patient_id) : "—"}
+                  </Typography>
                 </Box>
-                &nbsp;· Patient: {selectedTicket.patient_name ?? "—"}
-              </Typography>
+                <Box>
+                  <Typography variant="caption" color="text.secondary" fontWeight={700} display="block">
+                    Name
+                  </Typography>
+                  <Typography variant="body2">{reqHeader.patient_name ?? selectedTicket?.patient_name ?? "—"}</Typography>
+                </Box>
+                <Box>
+                  <Typography variant="caption" color="text.secondary" fontWeight={700} display="block">
+                    Date / time
+                  </Typography>
+                  <Typography variant="body2">
+                    {formatLabRequestDateTime(reqHeader.request_date, reqHeader.request_time)}
+                  </Typography>
+                </Box>
+                <Box>
+                  <Typography variant="caption" color="text.secondary" fontWeight={700} display="block">
+                    Queue No
+                  </Typography>
+                  <Typography variant="body2" sx={{ fontFamily: "monospace" }}>
+                    {reqHeader.queue_display ?? selectedTicket?.queue_display ?? "—"}
+                  </Typography>
+                </Box>
+              </Box>
             ) : null}
 
             <Divider sx={{ mb: 2 }} />

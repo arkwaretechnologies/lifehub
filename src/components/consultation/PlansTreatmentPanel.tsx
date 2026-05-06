@@ -843,7 +843,6 @@ export default function PlansTreatmentPanel({
           drugLine: p ? formatProductOptionLabel(p) : l.productId,
           quantity: l.quantity,
           unit: l.unit,
-          frequency: l.frequency,
           notes: l.notes,
         };
       });
@@ -1911,7 +1910,7 @@ export default function PlansTreatmentPanel({
             overflow: "auto",
           }}
         >
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5 }}>
             Select pharmacy products, quantity, and unit. The list starts with the first products alphabetically; type at
             least two letters to search the full catalog. Unit defaults from each product's recorded unit of measure and
             can be edited.
@@ -1947,8 +1946,8 @@ export default function PlansTreatmentPanel({
           ) : null}
           {!medProductsLoading && !medProductsError && medProductPreview.length > 0 ? (
             <>
-              <Grid container spacing={1} sx={{ mb: 1, display: { xs: "none", sm: "flex" } }}>
-                <Grid size={{ sm: 5 }}>
+              <Grid container spacing={1.5} sx={{ mb: 1.5, display: { xs: "none", sm: "flex" } }}>
+                <Grid size={{ sm: 4 }}>
                   <Typography variant="caption" fontWeight={700} color="info.main" sx={{ letterSpacing: "0.06em" }}>
                     PRODUCT
                   </Typography>
@@ -1958,29 +1957,24 @@ export default function PlansTreatmentPanel({
                     QTY
                   </Typography>
                 </Grid>
-                <Grid size={{ sm: 3 }}>
+                <Grid size={{ sm: 2 }}>
                   <Typography variant="caption" fontWeight={700} color="info.main" sx={{ letterSpacing: "0.06em" }}>
                     UNIT
                   </Typography>
                 </Grid>
-                <Grid size={{ sm: 2 }}>
+                <Grid size={{ sm: 3 }}>
                   <Typography variant="caption" fontWeight={700} color="info.main" sx={{ letterSpacing: "0.06em" }}>
-                    FREQUENCY
+                    SIG
                   </Typography>
                 </Grid>
-                <Grid size={{ sm: 4 }}>
-                  <Typography variant="caption" fontWeight={700} color="info.main" sx={{ letterSpacing: "0.06em" }}>
-                    NOTES
-                  </Typography>
-                </Grid>
-                <Grid size={{ sm: 1 }} />
+                <Grid size={{ sm: 1 }} sx={{ minWidth: 40 }} />
               </Grid>
               {medicationLines.map((line, idx) => {
                 const selected = line.productId ? (productCache[line.productId] ?? null) : null;
                 return (
-                  <Box key={line.key} sx={{ mb: 1.25 }}>
-                    <Grid container spacing={1} alignItems="center">
-                      <Grid size={{ xs: 12, sm: 5 }}>
+                  <Box key={line.key} sx={{ mb: 1.75 }}>
+                    <Grid container spacing={1.5} alignItems="flex-start">
+                      <Grid size={{ xs: 12, sm: 4 }}>
                         <MedicationProductAutocomplete
                           previewProducts={medProductPreview}
                           previewLoading={medProductsLoading}
@@ -2020,7 +2014,7 @@ export default function PlansTreatmentPanel({
                           sx={medicationOutlinedFieldSx}
                         />
                       </Grid>
-                      <Grid size={{ xs: 6, sm: 3 }}>
+                      <Grid size={{ xs: 6, sm: 2 }}>
                         <TextField
                           size="small"
                           fullWidth
@@ -2035,26 +2029,11 @@ export default function PlansTreatmentPanel({
                           sx={medicationOutlinedFieldSx}
                         />
                       </Grid>
-                      <Grid size={{ xs: 12, sm: 2 }}>
+                      <Grid size={{ xs: 12, sm: 3 }} sx={{ mt: { xs: 1, sm: 0 } }}>
                         <TextField
                           size="small"
                           fullWidth
-                          label="Frequency"
-                          placeholder=" "
-                          value={line.frequency}
-                          onChange={(e) =>
-                            setMedicationLines((rows) =>
-                              rows.map((r) => (r.key === line.key ? { ...r, frequency: e.target.value } : r)),
-                            )
-                          }
-                          sx={medicationOutlinedFieldSx}
-                        />
-                      </Grid>
-                      <Grid size={{ xs: 12, sm: 4 }}>
-                        <TextField
-                          size="small"
-                          fullWidth
-                          label="Notes"
+                          label="Sig"
                           placeholder=" "
                           value={line.notes}
                           onChange={(e) =>
@@ -2065,7 +2044,10 @@ export default function PlansTreatmentPanel({
                           sx={medicationOutlinedFieldSx}
                         />
                       </Grid>
-                      <Grid size={{ xs: 12, sm: "auto" }} sx={{ display: "flex", alignItems: "center" }}>
+                      <Grid
+                        size={{ xs: 12, sm: 1 }}
+                        sx={{ display: "flex", alignItems: "center", justifyContent: { xs: "flex-end", sm: "center" }, pt: { xs: 0.5, sm: 1 } }}
+                      >
                         <IconButton
                           aria-label="Remove medication line"
                           size="small"
@@ -2080,7 +2062,7 @@ export default function PlansTreatmentPanel({
                         </IconButton>
                       </Grid>
                     </Grid>
-                    {idx < medicationLines.length - 1 ? <Divider sx={{ mt: 1.25 }} /> : null}
+                    {idx < medicationLines.length - 1 ? <Divider sx={{ mt: 2 }} /> : null}
                   </Box>
                 );
               })}
@@ -2090,7 +2072,7 @@ export default function PlansTreatmentPanel({
                 size="small"
                 onClick={() => setMedicationLines((prev) => [...prev, newMedicationLine()])}
                 startIcon={<AddOutlinedIcon />}
-                sx={{ textTransform: "none", mt: 1 }}
+                sx={{ textTransform: "none", mt: 1.75 }}
               >
                 Add medication
               </Button>

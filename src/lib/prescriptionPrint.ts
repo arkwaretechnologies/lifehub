@@ -6,7 +6,6 @@ export type PrescriptionPrintMedicationLine = {
   drugLine: string;
   quantity: string;
   unit: string;
-  frequency?: string;
   notes?: string;
 };
 
@@ -33,6 +32,76 @@ function formatDobMMDDYYYY(raw: string): string {
   if (m3) return `${m3[1]}-${m3[2]}-${m3[3]}`;
   // Fallback: return as-is if unknown format.
   return s;
+}
+
+const RX_UNIT_ALREADY_PLURAL = new Set([
+  "tablets",
+  "pieces",
+  "capsules",
+  "drops",
+  "tabs",
+  "vials",
+  "ampules",
+  "sachets",
+  "suppositories",
+  "patches",
+  "sprays",
+  "units",
+  "boxes",
+  "strips",
+  "bottles",
+  "kits",
+  "puffs",
+]);
+
+/** Pluralize dispensary unit on printed RX when quantity is greater than 1. */
+function pluralizeRxUnit(unit: string, quantityRaw: string): string {
+  const u = unit.trim();
+  if (!u) return u;
+
+  const raw = (quantityRaw ?? "").trim().replace(/,/g, "");
+  if (!raw) return u;
+  const n = Number.parseFloat(raw);
+  if (!Number.isFinite(n) || n <= 1) return u;
+
+  const lower = u.toLowerCase();
+  if (RX_UNIT_ALREADY_PLURAL.has(lower)) return u;
+
+  // Volume/mass abbreviations — do not append "s".
+  if (/^(ml|l|mg|g|mcg|iu)$/i.test(lower)) return u;
+
+  const irregular: Record<string, string> = {
+    piece: "pieces",
+    tablet: "tablets",
+    tab: "tabs",
+    capsule: "capsules",
+    cap: "caps",
+    drop: "drops",
+    ampule: "ampules",
+    vial: "vials",
+    sachet: "sachets",
+    suppository: "suppositories",
+    puff: "puffs",
+    spray: "sprays",
+    patch: "patches",
+    bottle: "bottles",
+    box: "boxes",
+    strip: "strips",
+    unit: "units",
+    kit: "kits",
+  };
+
+  let plural = irregular[lower];
+  if (!plural) {
+    if (lower.endsWith("s") || lower.endsWith("x")) return u;
+    plural = `${lower}s`;
+  }
+
+  if (u === u.toUpperCase()) return plural.toUpperCase();
+  if (u.length > 0 && u[0] === u[0].toUpperCase() && u.slice(1) === u.slice(1).toLowerCase()) {
+    return plural.charAt(0).toUpperCase() + plural.slice(1);
+  }
+  return plural;
 }
 
 /**
@@ -69,7 +138,7 @@ function prescriptionLayout(pageWidth: number, pageHeight: number) {
     sigSpecialty: { fromTop: py(508), x: px(250), size: 7.5 },
     sigBandFromTop: py(470),
     licRow: { fromTop: py(545), x: leftX, size: 7, col2: px(210), col3: px(340) },
-    qr: { x: 60, fromTop: py(412), size: px(62) },
+    qr: { x: 40, fromTop: py(470), size: px(62) },
   } as const;
 }
 
@@ -327,15 +396,27 @@ export async function openPrescriptionPrintWindow(args: {
     if (yRx < sigYMin) break;
     const q = m.quantity.trim();
     const u = m.unit.trim();
-    const qtyPart = [q && `Qty: ${q}`, u].filter(Boolean).join(" ");
-    const freqPart = (m.frequency ?? "").trim();
-    const notesPart = (m.notes ?? "").trim();
-    const tailParts = [qtyPart, freqPart && `Freq: ${freqPart}`, notesPart && `Notes: ${notesPart}`]
-      .filter(Boolean)
-      .join("   ");
-    const line = `${n}. ${m.drugLine}${tailParts ? `  ${tailParts}` : ""}`;
-    yRx = drawWrapped(page, line, L.rxStart.x, yRx, maxRxW, font, L.rxStart.size, L.rxStart.lineHeight);
-    yRx -= Math.round(L.rxStart.lineHeight * 0.35);
+    const unitPrinted = pluralizeRxUnit(u, q);
+    const qtyPart = [q && `#: ${q}`, unitPrinted].filter(Boolean).join(" ");
+    const sigPart = (m.notes ?? "").trim();
+    const mainLine = `${n}. ${m.drugLine}${qtyPart ? `  ${qtyPart}` : ""}`;
+    yRx = drawWrapped(page, mainLine, L.rxStart.x, yRx, maxRxW, font, L.rxStart.size, L.rxStart.lineHeight);
+    if (sigPart) {
+      const sigIndent = Math.round(L.rxStart.size * 1.25);
+      const sigLine = `Sig: ${sigPart}`;
+      yRx = drawWrapped(
+        page,
+        sigLine,
+        L.rxStart.x + sigIndent,
+        yRx,
+        maxRxW - sigIndent,
+        font,
+        L.rxStart.size,
+        L.rxStart.lineHeight,
+      );
+    }
+    // Extra gap before the next medication so each entry reads as its own block.
+    yRx -= Math.round(L.rxStart.lineHeight * 1.35);
     n += 1;
   }
 

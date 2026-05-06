@@ -11,6 +11,7 @@ import {
   Card,
   CardContent,
   CircularProgress,
+  Divider,
   Table,
   TableBody,
   TableCell,
@@ -344,6 +345,7 @@ export default function CashierEncounterDetail() {
     return rows;
   }, [feeSales, feeItemsBySale, openLabRequests, labItemsByRequestId, labUnitPriceByTestId]);
 
+  /** Sum of listed line totals only (no header fallback). */
   const feeLineItemsSum = useMemo(() => {
     let s = 0;
     for (const sale of feeSales) {
@@ -355,9 +357,27 @@ export default function CashierEncounterDetail() {
     return s;
   }, [feeSales, feeItemsBySale]);
 
-  const feeTotalDue = useMemo(() => {
+  /** Sum of stored sale headers — can drift from line items if `physician_fee_sales.total_amount` was not updated. */
+  const feeHeaderTotalSum = useMemo(() => {
     return feeSales.reduce((s, row) => s + moneyNum(row.total_amount), 0);
   }, [feeSales]);
+
+  /**
+   * Amount due for physician fees: always follow itemized lines when present (cashier table source of truth).
+   * If a sale has no rows loaded, fall back to the bill header total.
+   */
+  const feeTotalDue = useMemo(() => {
+    let sum = 0;
+    for (const sale of feeSales) {
+      const lines = feeItemsBySale.get(sale.id) ?? [];
+      if (lines.length > 0) {
+        sum += lines.reduce((acc, it) => acc + moneyNum(it.total_fee), 0);
+      } else {
+        sum += moneyNum(sale.total_amount);
+      }
+    }
+    return sum;
+  }, [feeSales, feeItemsBySale]);
 
   const totalDue = useMemo(() => {
     return feeTotalDue + labTotalDue;
@@ -384,7 +404,14 @@ export default function CashierEncounterDetail() {
     setPaySuccess("");
     setPayBusy(true);
     try {
-      const feeSaleSubtotals = feeSales.map((s) => ({ id: s.id, subtotal: moneyNum(s.subtotal) }));
+      const feeSaleSubtotals = feeSales.map((s) => {
+        const lines = feeItemsBySale.get(s.id) ?? [];
+        const lineSum = lines.reduce((acc, it) => acc + moneyNum(it.total_fee), 0);
+        return {
+          id: s.id,
+          subtotal: lines.length > 0 ? lineSum : moneyNum(s.subtotal),
+        };
+      });
 
       // Create lab sales (one per lab request) + items
       const allLabTestIds = [...new Set(labItemRows.map((r) => r.lab_test_id).filter(Boolean))];
@@ -834,41 +861,75 @@ export default function CashierEncounterDetail() {
 
                 <Box
                   sx={{
-                    display: "flex",
-                    flexDirection: { xs: "column", sm: "row" },
-                    justifyContent: "flex-end",
-                    alignItems: { xs: "stretch", sm: "baseline" },
-                    gap: { xs: 1, sm: 3 },
                     mt: 2,
+                    display: "flex",
+                    justifyContent: { xs: "stretch", sm: "flex-end" },
+                    width: "100%",
                   }}
                 >
-                  {feeSales.length > 0 ? (
-                    <Typography variant="body2" sx={consultBodyTypoSx}>
-                      Consultation bill totals:{" "}
-                      <Box component="span" sx={{ fontWeight: 700 }}>
-                        {formatMoney(feeTotalDue)}
-                      </Box>
-                      {feeLineItemsSum !== feeTotalDue ? (
-                        <Box component="span" sx={{ display: "block", color: "text.secondary", fontSize: "0.8rem", mt: 0.25 }}>
-                          (Sum of line items: {formatMoney(feeLineItemsSum)})
-                        </Box>
-                      ) : null}
+                  <Box sx={{ maxWidth: { xs: "100%", sm: 440 }, width: { xs: "100%", sm: "auto" } }}>
+                    <Typography variant="subtitle2" fontWeight={700} color="text.secondary" sx={{ mb: 1 }}>
+                      Visit totals
                     </Typography>
-                  ) : null}
-                  {openLabRequests.length > 0 ? (
-                    <Typography variant="body2" sx={consultBodyTypoSx}>
-                      Laboratory (listed lines):{" "}
-                      <Box component="span" sx={{ fontWeight: 700 }}>
-                        {labTotalLoading ? "…" : formatMoney(labTotalDue)}
-                      </Box>
-                    </Typography>
-                  ) : null}
-                  <Typography variant="body2" sx={{ ...consultBodyTypoSx, fontWeight: 800 }}>
-                    Visit total due:{" "}
-                    <Box component="span" sx={{ fontWeight: 800 }}>
-                      {labTotalLoading && openLabRequests.length > 0 ? "…" : formatMoney(totalDue)}
-                    </Box>
-                  </Typography>
+                    <TableContainer sx={{ width: "100%" }}>
+                      <Table size="small" sx={consultTableSx}>
+                        <TableHead>
+                          <TableRow sx={consultTableHeadRowSx}>
+                            <TableCell sx={consultTableHeadCellSx}>Description</TableCell>
+                            <TableCell align="right" sx={{ ...consultTableHeadCellSx, width: "9rem", whiteSpace: "nowrap" }}>
+                              Amount
+                            </TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {feeSales.length > 0 ? (
+                            <>
+                              <TableRow>
+                                <TableCell sx={consultTableBodyCellSx}>Consultation bill totals</TableCell>
+                                <TableCell align="right" sx={{ ...consultTableBodyCellSx, fontWeight: 700 }}>
+                                  {formatMoney(feeTotalDue)}
+                                </TableCell>
+                              </TableRow>
+                              {feeHeaderTotalSum !== feeTotalDue ? (
+                                <TableRow>
+                                  <TableCell
+                                    colSpan={2}
+                                    sx={{
+                                      ...consultTableBodyCellSx,
+                                      py: 0.75,
+                                      fontSize: "0.8rem",
+                                      color: "text.secondary",
+                                      borderBottomWidth: 1,
+                                    }}
+                                  >
+                                </TableCell>
+                                </TableRow>
+                              ) : null}
+                            </>
+                          ) : null}
+                          {openLabRequests.length > 0 ? (
+                            <TableRow>
+                              <TableCell sx={consultTableBodyCellSx}>Laboratory (listed lines)</TableCell>
+                              <TableCell align="right" sx={{ ...consultTableBodyCellSx, fontWeight: 700 }}>
+                                {labTotalLoading ? "…" : formatMoney(labTotalDue)}
+                              </TableCell>
+                            </TableRow>
+                          ) : null}
+                          <TableRow>
+                            <TableCell colSpan={2} sx={{ py: 1, borderBottom: "none" }}>
+                              <Divider />
+                            </TableCell>
+                          </TableRow>
+                          <TableRow>
+                            <TableCell sx={{ ...consultTableBodyCellSx, fontWeight: 800 }}>Visit total due</TableCell>
+                            <TableCell align="right" sx={{ ...consultTableBodyCellSx, fontWeight: 800, color: "error.main" }}>
+                              {labTotalLoading && openLabRequests.length > 0 ? "…" : formatMoney(totalDue)}
+                            </TableCell>
+                          </TableRow>
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  </Box>
                 </Box>
               </>
             )}

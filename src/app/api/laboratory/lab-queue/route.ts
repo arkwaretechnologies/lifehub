@@ -1,12 +1,9 @@
 import { NextResponse } from "next/server";
+import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
 import { queueAdminClient } from "@/lib/receptionQueueServer";
 import type { QueueTicketStatus } from "@/lib/queueReception";
 
 const ACTIVE_STATUSES: QueueTicketStatus[] = ["Waiting", "Called", "Serving"];
-
-function todayIsoDate(): string {
-  return new Date().toISOString().slice(0, 10);
-}
 
 function labQueueCode(): string {
   return (process.env.NEXT_PUBLIC_RECEPTION_LAB_QUEUE_CODE ?? "LAB").trim().toUpperCase();
@@ -93,10 +90,10 @@ export async function GET(req: Request) {
   if (scope === "all") {
     base = base.gte("ticket_date", isoDateDaysAgo(days));
   } else if (scope === "today_all") {
-    base = base.eq("ticket_date", todayIsoDate());
+    base = base.eq("ticket_date", queueTicketTodayIsoDate());
   } else {
     // active_today (default)
-    base = base.eq("ticket_date", todayIsoDate()).in("status", ACTIVE_STATUSES);
+    base = base.eq("ticket_date", queueTicketTodayIsoDate()).in("status", ACTIVE_STATUSES);
   }
 
   const q = qRaw.replace(/\s+/g, " ").trim();

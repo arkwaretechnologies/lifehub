@@ -21,6 +21,7 @@ import {
   InputAdornment,
   MenuItem,
   Select,
+  Snackbar,
   TextField,
   TablePagination,
   Tooltip,
@@ -57,6 +58,9 @@ export default function LabResultsPage() {
   const [reqError, setReqError] = useState("");
   const [reqItems, setReqItems] = useState<LabRequestItemView[]>([]);
   const [itemSavingId, setItemSavingId] = useState<string | null>(null);
+  const [toastOpen, setToastOpen] = useState(false);
+  const [toastMessage, setToastMessage] = useState("");
+  const [toastSeverity, setToastSeverity] = useState<"success" | "error">("success");
 
   const statusColor: Record<QueueTicketStatus, "default" | "warning" | "info" | "success"> = {
     Waiting: "warning",
@@ -265,14 +269,55 @@ export default function LabResultsPage() {
           status: it.result_status ?? "Pending",
         }),
       });
-      const json = (await res.json().catch(() => ({}))) as { error?: string; row?: any };
+      const json = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        row?: {
+          lab_request_item_id?: string;
+          result_value?: string | null;
+          result_unit?: string | null;
+          reference_range?: string | null;
+          flag?: string | null;
+          remarks?: string | null;
+          status?: string | null;
+        };
+      };
       if (!res.ok) {
-        setReqError(json.error ?? `Request failed (${res.status})`);
+        const msg = json.error ?? `Request failed (${res.status})`;
+        setReqError(msg);
+        setToastSeverity("error");
+        setToastMessage(msg);
+        setToastOpen(true);
         return;
       }
-      await loadRequest(selectedRequestId);
+      const rid = json.row?.lab_request_item_id?.trim();
+      if (rid) {
+        setReqItems((prev) =>
+          prev.map((x) =>
+            x.id === rid
+              ? {
+                  ...x,
+                  result_value: json.row!.result_value ?? null,
+                  result_unit: json.row!.result_unit ?? null,
+                  reference_range: json.row!.reference_range ?? null,
+                  flag: json.row!.flag ?? null,
+                  remarks: json.row!.remarks ?? null,
+                  result_status: json.row!.status ?? x.result_status,
+                }
+              : x,
+          ),
+        );
+      }
+      void loadQueue();
+      setReqError("");
+      setToastSeverity("success");
+      setToastMessage("Result saved.");
+      setToastOpen(true);
     } catch {
-      setReqError("Failed to save result.");
+      const msg = "Failed to save result.";
+      setReqError(msg);
+      setToastSeverity("error");
+      setToastMessage(msg);
+      setToastOpen(true);
     } finally {
       setItemSavingId(null);
     }
@@ -325,6 +370,17 @@ export default function LabResultsPage() {
 
   return (
     <>
+      <Snackbar
+        open={toastOpen}
+        autoHideDuration={3500}
+        onClose={() => setToastOpen(false)}
+        anchorOrigin={{ vertical: "top", horizontal: "center" }}
+      >
+        <Alert severity={toastSeverity} variant="filled" onClose={() => setToastOpen(false)} sx={{ width: "100%" }}>
+          {toastMessage}
+        </Alert>
+      </Snackbar>
+
       <Typography variant="h5" sx={{ mb: 3 }}>
         Lab Results
       </Typography>

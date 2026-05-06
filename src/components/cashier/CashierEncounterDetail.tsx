@@ -255,6 +255,106 @@ export default function CashierEncounterDetail() {
     return m;
   }, [labItemRows]);
 
+  /** Unit prices for lab tests on this visit (same source as Pay / lab sale creation). */
+  const [labUnitPriceByTestId, setLabUnitPriceByTestId] = useState<Map<string, number>>(() => new Map());
+
+  useEffect(() => {
+    const ids = [...new Set(labItemRows.map((r) => r.lab_test_id).filter(Boolean))];
+    if (ids.length === 0) {
+      setLabUnitPriceByTestId(new Map());
+      setLabTotalDue(0);
+      setLabTotalLoading(false);
+      return;
+    }
+    setLabTotalLoading(true);
+    let cancelled = false;
+    void fetchLabTestUnitPricesByIds(ids).then((res) => {
+      if (cancelled) return;
+      setLabTotalLoading(false);
+      if (res.error) {
+        setLabUnitPriceByTestId(new Map());
+        setLabTotalDue(0);
+        return;
+      }
+      setLabUnitPriceByTestId(res.unitPriceById);
+      let sum = 0;
+      for (const row of labItemRows) {
+        sum += res.unitPriceById.get(row.lab_test_id) ?? 0;
+      }
+      setLabTotalDue(sum);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [labItemRows]);
+
+  type UnifiedVisitChargeRow =
+    | {
+        kind: "fee";
+        key: string;
+        rowNum: number;
+        billTitle: string;
+        billId: string;
+        line: PhysicianFeeSaleItemDetail;
+      }
+    | {
+        kind: "lab";
+        key: string;
+        rowNum: number;
+        billTitle: string;
+        billId: string;
+        item: LabRequestItemDetailRow;
+        unitPrice: number;
+      };
+
+  const unifiedVisitChargeRows = useMemo((): UnifiedVisitChargeRow[] => {
+    const rows: UnifiedVisitChargeRow[] = [];
+    let n = 0;
+    for (const sale of feeSales) {
+      const billTitle = `Sale · ${formatDateMMDDYYYY(sale.created_at)} · ${(sale.status ?? "—").toString()}`;
+      const lines = feeItemsBySale.get(sale.id) ?? [];
+      for (const line of lines) {
+        n += 1;
+        rows.push({
+          kind: "fee",
+          key: `fee-${line.id}`,
+          rowNum: n,
+          billTitle,
+          billId: sale.id,
+          line,
+        });
+      }
+    }
+    for (const req of openLabRequests) {
+      const billTitle = `Lab order · ${formatDateMMDDYYYY(req.request_date)} ${formatLabTime(req.request_time)} · ${req.priority ?? "—"}`;
+      const items = labItemsByRequestId.get(req.id) ?? [];
+      for (const item of items) {
+        n += 1;
+        rows.push({
+          kind: "lab",
+          key: `lab-${item.id}`,
+          rowNum: n,
+          billTitle,
+          billId: req.id,
+          item,
+          unitPrice: labUnitPriceByTestId.get(item.lab_test_id) ?? 0,
+        });
+      }
+    }
+    return rows;
+  }, [feeSales, feeItemsBySale, openLabRequests, labItemsByRequestId, labUnitPriceByTestId]);
+
+  const feeLineItemsSum = useMemo(() => {
+    let s = 0;
+    for (const sale of feeSales) {
+      const lines = feeItemsBySale.get(sale.id) ?? [];
+      for (const it of lines) {
+        s += moneyNum(it.total_fee);
+      }
+    }
+    return s;
+  }, [feeSales, feeItemsBySale]);
+
   const feeTotalDue = useMemo(() => {
     return feeSales.reduce((s, row) => s + moneyNum(row.total_amount), 0);
   }, [feeSales]);
@@ -485,26 +585,6 @@ export default function CashierEncounterDetail() {
             if (openLabRequests.length > 0 && queuePriorities.length > 0) {
               setLabQueuePrioritySel(queuePriorities[0]!.id);
             }
-            // Pre-compute lab totals (if any) so the modal can show a real total due.
-            if (openLabRequests.length === 0) {
-              setLabTotalDue(0);
-              return;
-            }
-            setLabTotalLoading(true);
-            const allLabTestIds = [...new Set(labItemRows.map((r) => r.lab_test_id).filter(Boolean))];
-            void fetchLabTestUnitPricesByIds(allLabTestIds).then((res) => {
-              setLabTotalLoading(false);
-              if (res.error) {
-                setPayError(res.error);
-                setLabTotalDue(0);
-                return;
-              }
-              let sum = 0;
-              for (const row of labItemRows) {
-                sum += res.unitPriceById.get(row.lab_test_id) ?? 0;
-              }
-              setLabTotalDue(sum);
-            });
           }}
           sx={{ textTransform: "none" }}
         >
@@ -635,180 +715,165 @@ export default function CashierEncounterDetail() {
       />
 
       {!loading && !loadError ? (
-        <>
-          <Card sx={{ mb: 2 }}>
-            <CardContent>
-              <ConsultationSectionTitle>Consultation charges — unpaid</ConsultationSectionTitle>
-              <Typography variant="body2" color="text.primary" sx={{ ...consultBodyTypoSx, mb: 2, display: "block" }}>
-                Services and fees on each bill for this visit.
-              </Typography>
+        <Card sx={{ mb: 2 }}>
+          <CardContent>
+            <ConsultationSectionTitle>Visit charges — unpaid</ConsultationSectionTitle>
+            <Typography variant="body2" color="text.primary" sx={{ ...consultBodyTypoSx, mb: 2, display: "block" }}>
+              Consultation bill lines and laboratory test lines for this visit. Each row is one chargeable line with its
+              own reference id.
+            </Typography>
 
-              {feeSales.length === 0 ? (
-                <Typography variant="body2" sx={consultBodyTypoSx}>
-                  No unpaid consultation charges for this visit.
-                </Typography>
-              ) : (
-                feeSales.map((sale) => {
-                  const lines = feeItemsBySale.get(sale.id) ?? [];
-                  const lineSum = lines.reduce((s, it) => s + moneyNum(it.total_fee), 0);
-                  return (
-                    <Box key={sale.id} sx={{ mb: 3, "&:last-child": { mb: 0 } }}>
-                      <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 700 }}>
-                        Sale · {formatDateMMDDYYYY(sale.created_at)}{" "}
-                        <Box component="span" sx={{ fontWeight: 400, color: "text.secondary", ml: 1 }}>
-                          status {(sale.status ?? "—").toString()}
-                        </Box>
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontFamily: "monospace", fontSize: "0.75rem" }}>
-                        {sale.id}
-                      </Typography>
-                      <TableContainer>
-                        <Table size="small" sx={consultTableSx}>
-                          <TableHead>
-                            <TableRow sx={consultTableHeadRowSx}>
-                              <TableCell sx={consultTableHeadCellSx}>#</TableCell>
-                              <TableCell sx={consultTableHeadCellSx}>Service</TableCell>
-                              <TableCell align="right" sx={consultTableHeadCellSx}>
-                                Qty
-                              </TableCell>
-                              <TableCell align="right" sx={consultTableHeadCellSx}>
-                                Unit fee
-                              </TableCell>
-                              <TableCell align="right" sx={consultTableHeadCellSx}>
-                                Discount
-                              </TableCell>
-                              <TableCell align="right" sx={consultTableHeadCellSx}>
-                                Line total
-                              </TableCell>
-                              <TableCell sx={consultTableHeadCellSx}>Notes</TableCell>
-                            </TableRow>
-                          </TableHead>
-                          <TableBody>
-                            {lines.length === 0 ? (
-                              <TableRow>
-                                <TableCell colSpan={7} sx={consultTableBodyCellSx}>
-                                  No line items.
-                                </TableCell>
-                              </TableRow>
+            {unifiedVisitChargeRows.length === 0 ? (
+              <Typography variant="body2" sx={consultBodyTypoSx}>
+                No unpaid consultation charges or laboratory orders for this visit.
+              </Typography>
+            ) : (
+              <>
+                <TableContainer>
+                  <Table size="small" sx={consultTableSx}>
+                    <TableHead>
+                      <TableRow sx={consultTableHeadRowSx}>
+                        <TableCell sx={consultTableHeadCellSx}>#</TableCell>
+                        <TableCell sx={consultTableHeadCellSx}>Bill / order</TableCell>
+                        <TableCell sx={consultTableHeadCellSx}>Category</TableCell>
+                        <TableCell sx={consultTableHeadCellSx}>Item</TableCell>
+                        <TableCell sx={consultTableHeadCellSx}>Line reference</TableCell>
+                        <TableCell align="right" sx={consultTableHeadCellSx}>
+                          Qty
+                        </TableCell>
+                        <TableCell align="right" sx={consultTableHeadCellSx}>
+                          Unit fee
+                        </TableCell>
+                        <TableCell align="right" sx={consultTableHeadCellSx}>
+                          Discount
+                        </TableCell>
+                        <TableCell align="right" sx={consultTableHeadCellSx}>
+                          Line total
+                        </TableCell>
+                        <TableCell sx={consultTableHeadCellSx}>Notes</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {unifiedVisitChargeRows.map((row) => (
+                        <TableRow key={row.key}>
+                          <TableCell sx={consultTableBodyCellSx}>{row.rowNum}</TableCell>
+                          <TableCell sx={consultTableBodyCellSx}>
+                            <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                              {row.billTitle}
+                            </Typography>
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              sx={{ display: "block", fontFamily: "monospace", wordBreak: "break-all", mt: 0.25 }}
+                            >
+                              {row.billId}
+                            </Typography>
+                          </TableCell>
+                          <TableCell sx={consultTableBodyCellSx}>
+                            {row.kind === "fee" ? "Consultation" : "Laboratory"}
+                          </TableCell>
+                          <TableCell sx={consultTableBodyCellSx}>
+                            {row.kind === "fee" ? (
+                              (row.line.service_name ?? "").trim() || `Service #${row.line.physician_service_id}`
                             ) : (
-                              lines.map((it) => (
-                                <TableRow key={`${it.id}-${it.linenum}`}>
-                                  <TableCell sx={consultTableBodyCellSx}>{it.linenum}</TableCell>
-                                  <TableCell sx={consultTableBodyCellSx}>
-                                    {(it.service_name ?? "").trim() || `Service #${it.physician_service_id}`}
-                                  </TableCell>
-                                  <TableCell align="right" sx={consultTableBodyCellSx}>
-                                    {it.quantity}
-                                  </TableCell>
-                                  <TableCell align="right" sx={consultTableBodyCellSx}>
-                                    {formatMoney(it.unit_fee)}
-                                  </TableCell>
-                                  <TableCell align="right" sx={consultTableBodyCellSx}>
-                                    {formatMoney(it.discount)}
-                                  </TableCell>
-                                  <TableCell align="right" sx={consultTableBodyCellSx}>
-                                    {formatMoney(it.total_fee)}
-                                  </TableCell>
-                                  <TableCell sx={consultTableBodyCellSx}>{it.notes?.trim() || "—"}</TableCell>
-                                </TableRow>
-                              ))
+                              (row.item.test_name ?? "").trim() || `Test ${row.item.lab_test_id}`
                             )}
-                          </TableBody>
-                        </Table>
-                      </TableContainer>
-                      <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 3, mt: 1 }}>
-                        <Typography variant="body2" sx={consultBodyTypoSx}>
-                          Bill total: <Box component="span" sx={{ fontWeight: 700 }}>{formatMoney(sale.total_amount)}</Box>
-                        </Typography>
-                        <Typography variant="body2" sx={consultBodyTypoSx}>
-                          From line items: <Box component="span" sx={{ fontWeight: 700 }}>{formatMoney(lineSum)}</Box>
-                        </Typography>
+                          </TableCell>
+                          <TableCell
+                            sx={{
+                              ...consultTableBodyCellSx,
+                              fontFamily: "monospace",
+                              fontSize: "0.75rem",
+                              wordBreak: "break-all",
+                            }}
+                          >
+                            {row.kind === "fee" ? row.line.id : row.item.id}
+                          </TableCell>
+                          {row.kind === "fee" ? (
+                            <>
+                              <TableCell align="right" sx={consultTableBodyCellSx}>
+                                {row.line.quantity}
+                              </TableCell>
+                              <TableCell align="right" sx={consultTableBodyCellSx}>
+                                {formatMoney(row.line.unit_fee)}
+                              </TableCell>
+                              <TableCell align="right" sx={consultTableBodyCellSx}>
+                                {formatMoney(row.line.discount)}
+                              </TableCell>
+                              <TableCell align="right" sx={consultTableBodyCellSx}>
+                                {formatMoney(row.line.total_fee)}
+                              </TableCell>
+                              <TableCell sx={consultTableBodyCellSx}>{row.line.notes?.trim() || "—"}</TableCell>
+                            </>
+                          ) : (
+                            <>
+                              <TableCell align="right" sx={consultTableBodyCellSx}>
+                                1
+                              </TableCell>
+                              <TableCell align="right" sx={consultTableBodyCellSx}>
+                                {labTotalLoading ? "…" : formatMoney(row.unitPrice)}
+                              </TableCell>
+                              <TableCell align="right" sx={consultTableBodyCellSx}>
+                                {formatMoney(0)}
+                              </TableCell>
+                              <TableCell align="right" sx={consultTableBodyCellSx}>
+                                {labTotalLoading ? "…" : formatMoney(row.unitPrice)}
+                              </TableCell>
+                              <TableCell sx={consultTableBodyCellSx}>
+                                {[row.item.priority?.trim() ? `Priority: ${row.item.priority}` : null, row.item.notes?.trim()]
+                                  .filter(Boolean)
+                                  .join(" · ") || "—"}
+                              </TableCell>
+                            </>
+                          )}
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+
+                <Box
+                  sx={{
+                    display: "flex",
+                    flexDirection: { xs: "column", sm: "row" },
+                    justifyContent: "flex-end",
+                    alignItems: { xs: "stretch", sm: "baseline" },
+                    gap: { xs: 1, sm: 3 },
+                    mt: 2,
+                  }}
+                >
+                  {feeSales.length > 0 ? (
+                    <Typography variant="body2" sx={consultBodyTypoSx}>
+                      Consultation bill totals:{" "}
+                      <Box component="span" sx={{ fontWeight: 700 }}>
+                        {formatMoney(feeTotalDue)}
                       </Box>
-                    </Box>
-                  );
-                })
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent>
-              <ConsultationSectionTitle>Laboratory orders — unpaid</ConsultationSectionTitle>
-              <Typography variant="body2" color="text.primary" sx={{ ...consultBodyTypoSx, mb: 2, display: "block" }}>
-                Each order lists the tests still waiting to be paid at the register.
-              </Typography>
-
-              {openLabRequests.length === 0 ? (
-                <Typography variant="body2" sx={consultBodyTypoSx}>
-                  No laboratory orders waiting for payment on this visit.
-                </Typography>
-              ) : (
-                openLabRequests.map((req) => {
-                  const items = labItemsByRequestId.get(req.id) ?? [];
-                  return (
-                    <Box key={req.id} sx={{ mb: 3, "&:last-child": { mb: 0 } }}>
-                      <Typography variant="subtitle2" sx={{ mb: 0.5, fontWeight: 700 }}>
-                        Lab order · {formatDateMMDDYYYY(req.request_date)} {formatLabTime(req.request_time)} ·{" "}
-                        {req.priority ?? "—"}
-                      </Typography>
-                      <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontFamily: "monospace", fontSize: "0.75rem" }}>
-                        {req.id}
-                      </Typography>
-                      {req.remarks?.trim() ? (
-                        <Typography variant="body2" sx={{ ...consultBodyTypoSx, mb: 1 }}>
-                          {req.remarks}
-                        </Typography>
+                      {feeLineItemsSum !== feeTotalDue ? (
+                        <Box component="span" sx={{ display: "block", color: "text.secondary", fontSize: "0.8rem", mt: 0.25 }}>
+                          (Sum of line items: {formatMoney(feeLineItemsSum)})
+                        </Box>
                       ) : null}
-                      <TableContainer>
-                        <Table size="small" sx={consultTableSx}>
-                          <TableHead>
-                            <TableRow sx={consultTableHeadRowSx}>
-                              <TableCell sx={consultTableHeadCellSx}>Test</TableCell>
-                              <TableCell sx={consultTableHeadCellSx}>Priority</TableCell>
-                              <TableCell sx={consultTableHeadCellSx}>Notes</TableCell>
-                              <TableCell sx={consultTableHeadCellSx}>Line reference</TableCell>
-                            </TableRow>
-                          </TableHead>
-                          <TableBody>
-                            {items.length === 0 ? (
-                              <TableRow>
-                                <TableCell colSpan={4} sx={consultTableBodyCellSx}>
-                                  No line items.
-                                </TableCell>
-                              </TableRow>
-                            ) : (
-                              items.map((it) => (
-                                <TableRow key={it.id}>
-                                  <TableCell sx={consultTableBodyCellSx}>
-                                    {(it.test_name ?? "").trim() || `Test ${it.lab_test_id}`}
-                                  </TableCell>
-                                  <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
-                                    {it.priority ?? "—"}
-                                  </TableCell>
-                                  <TableCell sx={consultTableBodyCellSx}>{it.notes?.trim() || "—"}</TableCell>
-                                  <TableCell
-                                    sx={{
-                                      ...consultTableBodyCellSx,
-                                      fontFamily: "monospace",
-                                      fontSize: "0.75rem",
-                                      wordBreak: "break-all",
-                                    }}
-                                  >
-                                    {it.id}
-                                  </TableCell>
-                                </TableRow>
-                              ))
-                            )}
-                          </TableBody>
-                        </Table>
-                      </TableContainer>
+                    </Typography>
+                  ) : null}
+                  {openLabRequests.length > 0 ? (
+                    <Typography variant="body2" sx={consultBodyTypoSx}>
+                      Laboratory (listed lines):{" "}
+                      <Box component="span" sx={{ fontWeight: 700 }}>
+                        {labTotalLoading ? "…" : formatMoney(labTotalDue)}
+                      </Box>
+                    </Typography>
+                  ) : null}
+                  <Typography variant="body2" sx={{ ...consultBodyTypoSx, fontWeight: 800 }}>
+                    Visit total due:{" "}
+                    <Box component="span" sx={{ fontWeight: 800 }}>
+                      {labTotalLoading && openLabRequests.length > 0 ? "…" : formatMoney(totalDue)}
                     </Box>
-                  );
-                })
-              )}
-            </CardContent>
-          </Card>
-        </>
+                  </Typography>
+                </Box>
+              </>
+            )}
+          </CardContent>
+        </Card>
       ) : null}
     </Box>
   );

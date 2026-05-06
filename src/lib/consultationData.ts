@@ -7,6 +7,7 @@ import {
 import { fetchCashierUnpaidPhysicianFeeEncounterCounts } from "@/lib/cashierLabQueue";
 import { buildPatientSearchOrFilter, PATIENT_DIRECTORY_SELECT, sanitizePatientSearchQuery } from "@/lib/patientsCatalog";
 import { supabase } from "@/lib/supabaseClient";
+import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
 
 const ENCOUNTERS_TABLE = "encounters";
 const PATIENTS_TABLE = "patients";
@@ -426,20 +427,6 @@ function encounterOriginalIdsOrdered(encounterTransIds: string[]): string[] {
   return originalsOrdered;
 }
 
-function todayIsoDateManila(): string {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Manila",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date());
-  const y = parts.find((p) => p.type === "year")?.value ?? "";
-  const m = parts.find((p) => p.type === "month")?.value ?? "";
-  const d = parts.find((p) => p.type === "day")?.value ?? "";
-  if (y && m && d) return `${y}-${m}-${d}`;
-  // Fallback (UTC) if Intl parts are unavailable for some reason.
-  return new Date().toISOString().slice(0, 10);
-}
 
 async function resolveCounterNamesForTickets(
   ticketRows: Iterable<{ counter_id?: string | number | null }>,
@@ -474,7 +461,7 @@ async function fetchWaitingQueueTicketsTodayByEncounterIds(
   if (originalsOrdered.length === 0) {
     return { map: new Map(), error: null };
   }
-  const ticketDate = todayIsoDateManila();
+  const ticketDate = queueTicketTodayIsoDate();
   const CHUNK = 100;
   type Raw = {
     id: string;
@@ -531,7 +518,7 @@ async function fetchCalledOrServingQueueTicketsTodayByEncounterIds(
   if (originalsOrdered.length === 0) {
     return { map: new Map(), error: null };
   }
-  const ticketDate = todayIsoDateManila();
+  const ticketDate = queueTicketTodayIsoDate();
   const CHUNK = 100;
   type Raw = {
     id: string;

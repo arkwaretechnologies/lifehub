@@ -30,6 +30,9 @@ import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
 import LogoutIcon from "@mui/icons-material/Logout";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import CloseIcon from "@mui/icons-material/Close";
+import SearchIcon from "@mui/icons-material/Search";
+import MailOutlineIcon from "@mui/icons-material/MailOutline";
+import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
 import { useAuth } from "@/components/AuthProvider";
 import { DRAWER_WIDTH } from "@/components/Sidebar";
 import { supabase } from "@/lib/supabaseClient";
@@ -184,6 +187,30 @@ export default function TopBar({ onMenuToggle }: TopBarProps) {
 
           {/* Right section */}
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+            <IconButton sx={{ color: "text.secondary", display: { xs: "none", md: "inline-flex" } }}>
+              <MailOutlineIcon fontSize="small" />
+            </IconButton>
+
+            <Box
+              sx={{
+                display: { xs: "none", md: "flex" },
+                alignItems: "center",
+                gap: 1,
+                px: 1.25,
+                py: 0.5,
+                borderRadius: 2,
+                bgcolor: alpha("#1F4E79", 0.05),
+                minWidth: 210,
+                ml: 0.5,
+                mr: 0.25,
+              }}
+            >
+              <SearchIcon sx={{ color: "text.secondary", fontSize: 18 }} />
+              <Typography variant="caption" color="text.secondary">
+                Search
+              </Typography>
+            </Box>
+
             <IconButton sx={{ color: "text.secondary" }}>
               <Badge
                 badgeContent={3}
@@ -198,6 +225,10 @@ export default function TopBar({ onMenuToggle }: TopBarProps) {
               >
                 <NotificationsNoneIcon />
               </Badge>
+            </IconButton>
+
+            <IconButton sx={{ color: "text.secondary", display: { xs: "none", md: "inline-flex" } }}>
+              <MoreHorizIcon fontSize="small" />
             </IconButton>
 
             <IconButton

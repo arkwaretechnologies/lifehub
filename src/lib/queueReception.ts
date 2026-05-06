@@ -1,5 +1,6 @@
 import { supabase } from "@/lib/supabaseClient";
 import { sanitizePatientSearchQuery } from "@/lib/patientsCatalog";
+import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
 
 /** Aligns with lifehub-queuing `src/queue/types.ts` */
 export type QueueTicketStatus =
@@ -56,10 +57,6 @@ export const QUEUE_TICKET_RECEPTION_SELECT =
   "id, counter_id, priority_id, patient_id, queue_number, queue_display, ticket_date, status, registration_type, patient_name, contact_no, reason, notes, issued_at, called_at, serving_at, encounter_id" as const;
 
 const ACTIVE_STATUSES: QueueTicketStatus[] = ["Waiting", "Called", "Serving"];
-
-function todayIsoDate(): string {
-  return new Date().toISOString().slice(0, 10);
-}
 
 function parseCounterCodesEnv(): string[] | null {
   const raw = process.env.NEXT_PUBLIC_RECEPTION_QUEUE_COUNTER_CODES?.trim();
@@ -138,7 +135,7 @@ export async function fetchTodayTicketsForCounters(
     .from("queue_tickets")
     .select(QUEUE_TICKET_RECEPTION_SELECT)
     .in("counter_id", counterIds)
-    .eq("ticket_date", todayIsoDate())
+    .eq("ticket_date", queueTicketTodayIsoDate())
     .in("status", ACTIVE_STATUSES)
     .order("issued_at", { ascending: true });
 
@@ -165,7 +162,7 @@ export async function updateTicketStatus(
   return { error: error?.message ?? null };
 }
 
-export function announceQueueNumber(
+function announceQueueNumberSpeechSynthesis(
   display: string,
   counterName: string | null,
   patientName?: string | null,
@@ -181,6 +178,50 @@ export function announceQueueNumber(
   u.rate = 0.92;
   u.lang = "en-PH";
   window.speechSynthesis.speak(u);
+}
+
+/**
+ * Announces the queue call. If `ELEVENLABS_API_KEY` is set on the server, plays ElevenLabs TTS via `/api/tts/elevenlabs`;
+ * otherwise uses the browser speech synthesis API.
+ */
+export async function announceQueueNumber(
+  display: string,
+  counterName: string | null,
+  patientName?: string | null,
+): Promise<void> {
+  const num = display.replace(/-/g, " ");
+  const name = patientName?.trim();
+  const text = name
+    ? `Now serving queue number ${num}, ${name}`
+    : `Now serving queue number ${num}${counterName ? `, ${counterName}` : ""}`;
+
+  if (typeof window !== "undefined") {
+    try {
+      const res = await fetch("/api/tts/elevenlabs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        audio.onended = () => URL.revokeObjectURL(url);
+        audio.onerror = () => URL.revokeObjectURL(url);
+        try {
+          await audio.play();
+          return;
+        } catch {
+          URL.revokeObjectURL(url);
+          /* fall through to speechSynthesis */
+        }
+      }
+    } catch {
+      /* fall through to speechSynthesis */
+    }
+  }
+
+  announceQueueNumberSpeechSynthesis(display, counterName, patientName);
 }
 
 export function subscribeQueueTickets(

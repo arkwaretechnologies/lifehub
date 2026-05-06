@@ -384,6 +384,8 @@ export default function PlansTreatmentPanel({
   const [labEncounterError, setLabEncounterError] = useState("");
   const [labPriceByTestId, setLabPriceByTestId] = useState<Map<string, number>>(() => new Map());
   const [paidLabRequestIds, setPaidLabRequestIds] = useState<Set<string>>(() => new Set());
+  /** Lab requests that have at least one saved `lab_results` row (payment not required). */
+  const [labRequestIdsWithResults, setLabRequestIdsWithResults] = useState<Set<string>>(() => new Set());
 
   const [labResultsModalOpen, setLabResultsModalOpen] = useState(false);
   const [labResultsRequestId, setLabResultsRequestId] = useState("");
@@ -673,6 +675,46 @@ export default function PlansTreatmentPanel({
     setLabDialogSuccess("");
   }, [labsModalOpen]);
 
+  /** Paid (`lab_sales`) and requests that already have result rows — drives View result vs View catalog. */
+  const syncPaidAndResultsFromRequestIds = useCallback(async (reqIds: string[]) => {
+    if (reqIds.length === 0) {
+      setPaidLabRequestIds(new Set());
+      setLabRequestIdsWithResults(new Set());
+      return;
+    }
+    const { data: salesRows } = await supabase.from("lab_sales").select("lab_request_id").in("lab_request_id", reqIds);
+    const paid = new Set<string>();
+    for (const row of (salesRows ?? []) as Array<{ lab_request_id: string | null }>) {
+      const id = String(row.lab_request_id ?? "").trim();
+      if (id) paid.add(id);
+    }
+    setPaidLabRequestIds(paid);
+
+    const { data: itemRows } = await supabase
+      .from("lab_request_items")
+      .select("id, lab_request_id")
+      .in("lab_request_id", reqIds);
+    const itemToReq = new Map<string, string>();
+    for (const r of itemRows ?? []) {
+      const row = r as { id?: string; lab_request_id?: string };
+      if (row.id && row.lab_request_id) itemToReq.set(row.id, row.lab_request_id);
+    }
+    const itemIds = [...itemToReq.keys()];
+    const withResults = new Set<string>();
+    if (itemIds.length > 0) {
+      const { data: resRows } = await supabase
+        .from("lab_results")
+        .select("lab_request_item_id")
+        .in("lab_request_item_id", itemIds);
+      for (const rr of (resRows ?? []) as Array<{ lab_request_item_id?: string | null }>) {
+        const iid = String(rr.lab_request_item_id ?? "").trim();
+        const rid = itemToReq.get(iid);
+        if (rid) withResults.add(rid);
+      }
+    }
+    setLabRequestIdsWithResults(withResults);
+  }, []);
+
   useEffect(() => {
     if (!labsModalOpen) return;
     let cancelled = false;
@@ -707,6 +749,7 @@ export default function PlansTreatmentPanel({
         setEncounterLabRequests([]);
         setRequestedTestIdSet(new Set());
         setPaidLabRequestIds(new Set());
+        setLabRequestIdsWithResults(new Set());
       } else {
         setEncounterLabRequests(enc.requests);
         setRequestedTestIdSet(new Set(enc.requestedTestIds));
@@ -716,32 +759,16 @@ export default function PlansTreatmentPanel({
         }
         // Keep labPriceByTestId from the catalog fetch above.
 
-        // Paid lab requests (lab_sales exists) determine whether we show View Result vs View Catalog.
         const reqIds = enc.requests.map((r) => r.id).filter(Boolean);
-        if (reqIds.length === 0) {
-          setPaidLabRequestIds(new Set());
-        } else {
-          const { data: salesRows } = await supabase
-            .from("lab_sales")
-            .select("lab_request_id")
-            .in("lab_request_id", reqIds);
-          if (!cancelled) {
-            const paid = new Set<string>();
-            for (const row of (salesRows ?? []) as Array<{ lab_request_id: string | null }>) {
-              const id = String(row.lab_request_id ?? "").trim();
-              if (id) paid.add(id);
-            }
-            setPaidLabRequestIds(paid);
-          }
-        }
+        if (!cancelled) await syncPaidAndResultsFromRequestIds(reqIds);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [labsModalOpen, transId, isNew]);
+  }, [labsModalOpen, transId, isNew, syncPaidAndResultsFromRequestIds]);
 
-  // Keep paid/unpaid LAB state fresh even when the catalog modal is closed.
+  // Keep paid / results LAB state fresh even when the catalog modal is closed.
   // This drives the "View catalog" vs "View result" action next to LABS.
   useEffect(() => {
     if (!hydrated || loading) return;
@@ -754,28 +781,36 @@ export default function PlansTreatmentPanel({
         setEncounterLabRequests([]);
         setRequestedTestIdSet(new Set());
         setPaidLabRequestIds(new Set());
+        setLabRequestIdsWithResults(new Set());
         return;
       }
+      setLabEncounterError("");
       setEncounterLabRequests(enc.requests);
       setRequestedTestIdSet(new Set(enc.requestedTestIds));
       const reqIds = enc.requests.map((r) => r.id).filter(Boolean);
-      if (reqIds.length === 0) {
-        setPaidLabRequestIds(new Set());
-        return;
-      }
-      const { data: salesRows } = await supabase.from("lab_sales").select("lab_request_id").in("lab_request_id", reqIds);
       if (cancelled) return;
-      const paid = new Set<string>();
-      for (const row of (salesRows ?? []) as Array<{ lab_request_id: string | null }>) {
-        const id = String(row.lab_request_id ?? "").trim();
-        if (id) paid.add(id);
-      }
-      setPaidLabRequestIds(paid);
+      await syncPaidAndResultsFromRequestIds(reqIds);
     })();
     return () => {
       cancelled = true;
     };
-  }, [transId, hydrated, loading]);
+  }, [transId, hydrated, loading, syncPaidAndResultsFromRequestIds]);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{ transId?: string }>;
+      if (!ce.detail?.transId || ce.detail.transId !== transId) return;
+      void (async () => {
+        const enc = await fetchLabRequestsForEncounter(transId);
+        if (enc.error) return;
+        setEncounterLabRequests(enc.requests);
+        setRequestedTestIdSet(new Set(enc.requestedTestIds));
+        await syncPaidAndResultsFromRequestIds(enc.requests.map((r) => r.id).filter(Boolean));
+      })();
+    };
+    window.addEventListener("lifehub:lab-requests-updated", handler);
+    return () => window.removeEventListener("lifehub:lab-requests-updated", handler);
+  }, [transId, syncPaidAndResultsFromRequestIds]);
 
   const toggleLabTestSelection = useCallback((testId: string) => {
     setSelectedLabTestIds((prev) => {
@@ -883,22 +918,25 @@ export default function PlansTreatmentPanel({
     return sum;
   }, [selectedLabTestIds, labPriceByTestId]);
 
-  const anyLabsPaid = useMemo(() => {
+  /** Paid at cashier OR lab already has saved result rows (results may exist without `lab_sales`). */
+  const canViewLabResults = useMemo(() => {
     if (encounterLabRequests.length === 0) return false;
-    // Consider "Paid" if at least one request has a lab_sales row.
     for (const r of encounterLabRequests) {
       if (paidLabRequestIds.has(r.id)) return true;
+      if (labRequestIdsWithResults.has(r.id)) return true;
     }
     return false;
-  }, [encounterLabRequests, paidLabRequestIds]);
+  }, [encounterLabRequests, paidLabRequestIds, labRequestIdsWithResults]);
 
   const viewResultsLabRequestId = useMemo(() => {
-    // Prefer most recent paid request; fall back to most recent request.
     for (const r of encounterLabRequests) {
       if (paidLabRequestIds.has(r.id)) return r.id;
     }
+    for (const r of encounterLabRequests) {
+      if (labRequestIdsWithResults.has(r.id)) return r.id;
+    }
     return encounterLabRequests[0]?.id ?? "";
-  }, [encounterLabRequests, paidLabRequestIds]);
+  }, [encounterLabRequests, paidLabRequestIds, labRequestIdsWithResults]);
 
   const openLabResultsModal = useCallback((labRequestId: string) => {
     const id = String(labRequestId ?? "").trim();
@@ -988,6 +1026,7 @@ export default function PlansTreatmentPanel({
       setEncounterLabRequests(encRefresh.requests);
       setRequestedTestIdSet(new Set(encRefresh.requestedTestIds));
       setLabEncounterError("");
+      await syncPaidAndResultsFromRequestIds(encRefresh.requests.map((r) => r.id).filter(Boolean));
       window.dispatchEvent(new CustomEvent("lifehub:lab-requests-updated", { detail: { transId } }));
     }
   }, [
@@ -997,6 +1036,7 @@ export default function PlansTreatmentPanel({
     profile,
     selectedLabTestIds,
     isNew,
+    syncPaidAndResultsFromRequestIds,
   ]);
 
   const closeLabsModal = useCallback(() => {
@@ -1205,13 +1245,13 @@ export default function PlansTreatmentPanel({
                   label="LABS"
                   sx={consultFormControlLabelSx}
                 />
-                {form.plan_labs && !loading ? (
+                {(form.plan_labs || encounterLabRequests.length > 0) && !loading ? (
                   <Button
                     type="button"
                     variant="text"
                     size="small"
                     onClick={() => {
-                      if (anyLabsPaid && viewResultsLabRequestId) {
+                      if (canViewLabResults && viewResultsLabRequestId) {
                         openLabResultsModal(viewResultsLabRequestId);
                         return;
                       }
@@ -1219,7 +1259,7 @@ export default function PlansTreatmentPanel({
                     }}
                     sx={{ textTransform: "uppercase", minWidth: "auto", py: 0.25, px: 0.75 }}
                   >
-                    {anyLabsPaid ? "View result" : "View catalog"}
+                    {canViewLabResults ? "View result" : "View catalog"}
                   </Button>
                 ) : null}
               </Box>

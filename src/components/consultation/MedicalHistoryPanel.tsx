@@ -18,6 +18,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import { BpSplitInput } from "@/components/BpSplitInput";
 import { FormFieldLabel } from "@/components/FormFieldLabel";
 import { useConsultationDebouncedSave } from "@/components/consultation/useConsultationDebouncedSave";
 import {
@@ -160,7 +161,6 @@ function slugId(s: string) {
 }
 
 const VITAL_FIELD_CONFIG = [
-  { key: "bp", label: "BP", placeholder: "120/80" },
   { key: "hr", label: "HR", placeholder: "____" },
   { key: "rr", label: "RR", placeholder: "____" },
   { key: "temp", label: "Temp", placeholder: "____" },
@@ -168,7 +168,7 @@ const VITAL_FIELD_CONFIG = [
   { key: "pain", label: "Pain scale (0–10)", placeholder: "____" },
 ] as const;
 
-type VitalFieldKey = (typeof VITAL_FIELD_CONFIG)[number]["key"];
+type VitalFieldKey = (typeof VITAL_FIELD_CONFIG)[number]["key"] | "bp";
 
 function VitalSignsSection({ transId, idPrefix }: { transId: string; idPrefix: string }) {
   const [input, setInput] = useState<VitalSignsInputState>(() => emptyVitalSignsInput());
@@ -250,6 +250,19 @@ function VitalSignsSection({ transId, idPrefix }: { transId: string; idPrefix: s
         ) : null}
       </Box>
       <Grid container spacing={2}>
+        <Grid size={{ xs: 6, sm: 4 }}>
+          <FormFieldLabel htmlFor={`${idPrefix}-vital-bp-sys`} variant="consultation">
+            BP
+          </FormFieldLabel>
+          <BpSplitInput
+            variant="consultation"
+            value={input.bp}
+            onChange={(v) => setField("bp", v)}
+            disabled={loading}
+            systolicId={`${idPrefix}-vital-bp-sys`}
+            diastolicId={`${idPrefix}-vital-bp-dia`}
+          />
+        </Grid>
         {VITAL_FIELD_CONFIG.map(({ key, label, placeholder }) => {
           const fid = `${idPrefix}-vital-${key}`;
           return (

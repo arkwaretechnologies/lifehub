@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import Image from "next/image";
+import { LIFEHUB_LOGO_SRC } from "@/lib/lifehubLogo";
 import {
   Box,
   Card,
@@ -767,7 +768,7 @@ export default function PatientPage() {
             }}
           >
             <Image
-              src="/lifehub-logo.png"
+              src={LIFEHUB_LOGO_SRC}
               alt="LifeHub logo"
               width={40}
               height={40}

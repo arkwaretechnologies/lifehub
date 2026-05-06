@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -20,6 +20,10 @@ import {
   FormLabel,
   Grid,
   IconButton,
+  InputBase,
+  ListItemButton,
+  Paper,
+  Popper,
   Radio,
   RadioGroup,
   Stack,
@@ -35,9 +39,9 @@ import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import MeetingRoomOutlinedIcon from "@mui/icons-material/MeetingRoomOutlined";
 import PlayCircleOutlineIcon from "@mui/icons-material/PlayCircleOutline";
 import RefreshIcon from "@mui/icons-material/Refresh";
-import VolumeUpOutlinedIcon from "@mui/icons-material/VolumeUpOutlined";
+import SearchIcon from "@mui/icons-material/Search";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import {
-  announceQueueNumber,
   createPatientFromApi,
   fetchReceptionQueueStateFromApi,
   finalizeReceptionLabCheckinFromApi,
@@ -62,6 +66,7 @@ import { fetchActivePaymentMethods, type PaymentMethodRow } from "@/lib/paymentM
 import { fetchActiveDiscountTypes, type DiscountTypeRow } from "@/lib/discountTypes";
 import { openReceptionQueueReceiptPrint } from "@/lib/receptionQueueReceiptPrint";
 import { sanitizePatientSearchQuery } from "@/lib/patientsCatalog";
+import { BpSplitInput } from "@/components/BpSplitInput";
 
 /** `NEXT_PUBLIC_RECEPTION_DOCTOR_QUEUES`: segments `CODE|Label` separated by `;` (e.g. `CLINIC 1|Dr. Mark;CLINIC 2|Dr. Ralph`). */
 function parseReceptionDoctorQueueOptions(): { code: string; label: string }[] {
@@ -187,7 +192,6 @@ function CounterQueueCard({
   onCall,
   onOpenTriage,
   onComplete,
-  onAnnounceOnly,
   busyId,
   entranceHighlight,
 }: {
@@ -197,7 +201,6 @@ function CounterQueueCard({
   onCall: (t: QueueTicketRow) => void;
   onOpenTriage: (t: QueueTicketRow) => void;
   onComplete: (t: QueueTicketRow) => void;
-  onAnnounceOnly: (t: QueueTicketRow) => void;
   busyId: string | null;
   /** Entrance kiosk queue: larger “available to call” list for reception. */
   entranceHighlight?: boolean;
@@ -238,13 +241,8 @@ function CounterQueueCard({
             <Chip size="small" label={`Counter ${counter.code}`} sx={{ fontWeight: 600 }} />
           ) : null}
         </Stack>
-        {entranceHighlight ? (
+        {!entranceHighlight && counter.description ? (
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
-            Kiosk numbers for today. Click a <strong>Waiting</strong> row to call them forward; when they are at the desk,
-            use <strong>Check in &amp; triage</strong> for mini triage and doctor vs lab routing.
-          </Typography>
-        ) : counter.description ? (
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
             {counter.description}
           </Typography>
         ) : null}
@@ -303,18 +301,6 @@ function CounterQueueCard({
                     <Chip size="small" variant="outlined" label={priorityLabel(t.priority_id)} />
                     <Box sx={{ flex: 1, minWidth: 120 }} />
                     <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-                      <Tooltip title="Announce again">
-                        <span>
-                          <IconButton
-                            size="small"
-                            onClick={() => onAnnounceOnly(t)}
-                            disabled={busyId !== null}
-                            color="default"
-                          >
-                            <VolumeUpOutlinedIcon fontSize="small" />
-                          </IconButton>
-                        </span>
-                      </Tooltip>
                       {t.status === "Called" ? (
                         <Button
                           size="small"
@@ -352,11 +338,13 @@ function CounterQueueCard({
 
         <Box sx={{ flex: 1, minHeight: 120 }}>
           <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ textTransform: "uppercase" }}>
-            {entranceHighlight ? `Waiting at entrance (${waiting.length})` : `Waiting (${waiting.length})`}
+            {entranceHighlight ? `Waiting at lobby (${waiting.length})` : `Waiting (${waiting.length})`}
           </Typography>
           {waiting.length === 0 ? (
             <Typography variant="body2" color="text.secondary" sx={{ mt: 2, textAlign: "center" }}>
-              {entranceHighlight ? "No entrance tickets waiting — new numbers appear when issued at the kiosk." : "Queue is clear"}
+              {entranceHighlight
+                ? "No lobby tickets waiting — new numbers appear when issued at the kiosk."
+                : "Queue is clear"}
             </Typography>
           ) : (
             <Stack spacing={entranceHighlight ? 1.25 : 1} sx={{ mt: 1 }}>
@@ -428,6 +416,7 @@ function CounterQueueCard({
 }
 
 export default function ReceptionDesk() {
+  const theme = useTheme();
   const [counters, setCounters] = useState<QueueCounterRow[]>([]);
   const [entranceCounter, setEntranceCounter] = useState<QueueCounterRow | null>(null);
   const [priorities, setPriorities] = useState<QueuePriorityRow[]>([]);
@@ -471,6 +460,18 @@ export default function ReceptionDesk() {
   const [labPayError, setLabPayError] = useState("");
   const [labTotalDue, setLabTotalDue] = useState(0);
   const [labTotalLoading, setLabTotalLoading] = useState(false);
+  const patientSearchAnchorRef = useRef<HTMLDivElement | null>(null);
+  const [patientSearchDropdownWidth, setPatientSearchDropdownWidth] = useState(0);
+
+  useLayoutEffect(() => {
+    const el = patientSearchAnchorRef.current;
+    if (!el) return;
+    const measure = () => setPatientSearchDropdownWidth(el.offsetWidth);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [triageTicket]);
 
   const priorityLabel = useCallback(
     (id: number) => {
@@ -561,22 +562,17 @@ export default function ReceptionDesk() {
     }
   };
 
-  const handleCall = (counter: QueueCounterRow, t: QueueTicketRow) => {
+  const handleCall = (t: QueueTicketRow) => {
     void (async () => {
       setBusyId(t.id);
       try {
         const { error } = await patchReceptionQueueTicket(t.id, "call");
         if (error) setLoadError(error);
-        else announceQueueNumber(t.queue_display, counter.name, t.patient_name);
         await refresh();
       } finally {
         setBusyId(null);
       }
     })();
-  };
-
-  const handleAnnounceOnly = (_counter: QueueCounterRow, t: QueueTicketRow) => {
-    announceQueueNumber(t.queue_display, _counter.name, t.patient_name);
   };
 
   const openTriage = (t: QueueTicketRow) => {
@@ -895,14 +891,7 @@ export default function ReceptionDesk() {
               <Typography variant="h4" fontWeight={800}>
                 Reception desk
               </Typography>
-              <Typography sx={{ opacity: 0.88, mt: 0.5, maxWidth: 800, lineHeight: 1.65 }}>
-                <strong>Where to call numbers:</strong> use the sidebar <strong>Operations → Reception</strong> (this
-                page). In <strong>Entrance — available to call</strong>, click any <strong>Waiting</strong> row to call
-                that queue number to the desk. When the patient arrives, click <strong>Check in &amp; triage</strong> to
-                record mini triage and send them to <strong>Consultation</strong> or <strong>Laboratory</strong>. Click{" "}
-                <strong>Done</strong> when they leave reception.
-              </Typography>
-              <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mt: 1.5 }} useFlexGap>
+              <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mt: 1 }} useFlexGap>
                 <Chip
                   size="small"
                   icon={<CampaignOutlinedIcon sx={{ color: "#fff !important" }} />}
@@ -1056,61 +1045,161 @@ export default function ReceptionDesk() {
                   </Stack>
                 ) : (
                   <Stack spacing={1}>
-                    <TextField
-                      label="Search patient (name or contact no)"
-                      value={patientQuery}
-                      onChange={(e) => {
-                        setPatientQuery(e.target.value);
-                        setPatientError(null);
-                      }}
-                      fullWidth
-                      placeholder="e.g. JUAN DELA CRUZ or 09xxxxxxxxx"
-                      slotProps={{
-                        input: {
-                          sx: {
-                            "& .MuiInputBase-input": {
-                              paddingTop: "16px",
-                              paddingBottom: "16px",
-                            },
+                    <Box ref={patientSearchAnchorRef} sx={{ width: "100%" }}>
+                      <Box
+                        sx={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 1.25,
+                          px: 2,
+                          py: 1.15,
+                          borderRadius: 999,
+                          border: "1px solid",
+                          borderColor: alpha(theme.palette.info.main, 0.4),
+                          bgcolor: "background.paper",
+                          transition: "box-shadow 0.2s ease, border-color 0.2s ease",
+                          "&:focus-within": {
+                            borderColor: "info.main",
+                            boxShadow: `0 0 0 3px ${alpha(theme.palette.info.main, 0.18)}`,
                           },
-                        },
-                      }}
-                    />
-                    {patientLoading ? (
-                      <Typography variant="caption" color="text.secondary">
-                        Searching…
-                      </Typography>
-                    ) : (
-                      <Typography variant="caption" color="text.secondary">
-                        Type at least <strong>2 characters</strong> to search by name, contact, or id (up to 80 matches).
-                        Results appear only after you search.
-                      </Typography>
-                    )}
-                    {patientError ? <Alert severity="warning">{patientError}</Alert> : null}
-                    {patientResults.length > 0 ? (
-                      <Stack spacing={0.75}>
+                        }}
+                      >
+                        <SearchIcon sx={{ color: "text.secondary", fontSize: 22, flexShrink: 0 }} />
+                        <InputBase
+                          fullWidth
+                          value={patientQuery}
+                          onChange={(e) => {
+                            setPatientQuery(e.target.value);
+                            setPatientError(null);
+                          }}
+                          placeholder="Search patient…"
+                          inputProps={{
+                            "aria-label": "Search patient by name, contact number, or id",
+                          }}
+                          sx={{
+                            fontSize: "0.875rem",
+                            "& .MuiInputBase-input": { py: 0.5 },
+                            "& .MuiInputBase-input::placeholder": { opacity: 0.55 },
+                          }}
+                        />
+                      </Box>
+                    </Box>
+
+                    <Popper
+                      open={patientResults.length > 0 && !patientLoading}
+                      anchorEl={patientSearchAnchorRef.current}
+                      placement="bottom-start"
+                      sx={{ zIndex: (t) => t.zIndex.modal + 10 }}
+                      modifiers={[{ name: "offset", options: { offset: [0, 10] } }]}
+                    >
+                      <Paper
+                        elevation={8}
+                        sx={{
+                          width: patientSearchDropdownWidth || undefined,
+                          minWidth: 260,
+                          borderRadius: 2,
+                          border: "1px solid",
+                          borderColor: "divider",
+                          overflow: "hidden",
+                          maxHeight: 280,
+                          overflowY: "auto",
+                          boxShadow: "0 10px 28px rgba(31, 78, 121, 0.12)",
+                          position: "relative",
+                          mt: 0.5,
+                          "&::before": {
+                            content: '""',
+                            position: "absolute",
+                            top: -7,
+                            left: "50%",
+                            transform: "translateX(-50%)",
+                            width: 0,
+                            height: 0,
+                            borderLeft: "7px solid transparent",
+                            borderRight: "7px solid transparent",
+                            borderBottom: `7px solid ${theme.palette.divider}`,
+                          },
+                          "&::after": {
+                            content: '""',
+                            position: "absolute",
+                            top: -6,
+                            left: "50%",
+                            transform: "translateX(-50%)",
+                            width: 0,
+                            height: 0,
+                            borderLeft: "6px solid transparent",
+                            borderRight: "6px solid transparent",
+                            borderBottom: `6px solid ${theme.palette.background.paper}`,
+                          },
+                        }}
+                      >
                         {patientResults.map((p) => (
-                          <Button
+                          <ListItemButton
                             key={p.id}
-                            variant="outlined"
                             onClick={() => {
                               setSelectedPatient(p);
                               setPatientResults([]);
                               setPatientQuery("");
                               setPatientError(null);
                             }}
-                            sx={{ justifyContent: "space-between" }}
+                            sx={{
+                              alignItems: "center",
+                              gap: 1.25,
+                              py: 1.35,
+                              px: 2,
+                              borderRadius: 0,
+                              "&:hover": {
+                                bgcolor: "info.main",
+                                color: "common.white",
+                              },
+                              "&:hover .patient-search-title": { color: "common.white" },
+                              "&:hover .patient-search-meta": {
+                                color: alpha("#fff", 0.85),
+                              },
+                              "&:hover .patient-search-chevron": {
+                                color: "common.white",
+                              },
+                            }}
                           >
-                            <span style={{ fontWeight: 700, textAlign: "left" }}>
-                              {(p.name ?? "Unnamed").toUpperCase()}
-                            </span>
-                            <span style={{ opacity: 0.72 }}>
-                              #{p.id}{p.contact_no ? ` · ${p.contact_no}` : ""}
-                            </span>
-                          </Button>
+                            <Box sx={{ flex: 1, minWidth: 0, textAlign: "left" }}>
+                              <Typography
+                                className="patient-search-title"
+                                fontWeight={800}
+                                color="primary.main"
+                                sx={{
+                                  fontSize: "0.8125rem",
+                                  letterSpacing: "0.02em",
+                                  lineHeight: 1.35,
+                                }}
+                                noWrap
+                              >
+                                {(p.name ?? "Unnamed").toUpperCase()}
+                              </Typography>
+                              <Typography
+                                className="patient-search-meta"
+                                variant="caption"
+                                color="text.secondary"
+                                sx={{ display: "block", mt: 0.25 }}
+                                noWrap
+                              >
+                                Patient #{p.id}
+                                {p.contact_no ? ` · ${p.contact_no}` : ""}
+                              </Typography>
+                            </Box>
+                            <ChevronRightIcon
+                              className="patient-search-chevron"
+                              sx={{ fontSize: 20, color: alpha(theme.palette.text.primary, 0.35), flexShrink: 0 }}
+                            />
+                          </ListItemButton>
                         ))}
-                      </Stack>
+                      </Paper>
+                    </Popper>
+
+                    {patientLoading ? (
+                      <Typography variant="caption" color="text.secondary">
+                        Searching…
+                      </Typography>
                     ) : null}
+                    {patientError ? <Alert severity="warning">{patientError}</Alert> : null}
                   </Stack>
                 )}
               </Box>
@@ -1174,6 +1263,7 @@ export default function ReceptionDesk() {
                   value={triageComplaint}
                   onChange={(e) => setTriageComplaint(e.target.value)}
                   fullWidth
+                  InputLabelProps={{ shrink: true }}
                   multiline
                   minRows={2}
                   placeholder="e.g. cough 3 days, request CBC"
@@ -1187,22 +1277,10 @@ export default function ReceptionDesk() {
                   </Typography>
                   <Grid container spacing={2}>
                     <Grid size={{ xs: 6, md: 4 }}>
-                      <TextField
-                        label="BP"
+                      <BpSplitInput
+                        variant="reception"
                         value={vitals.bp}
-                        onChange={(e) => setVitals((v) => ({ ...v, bp: e.target.value }))}
-                        fullWidth
-                        placeholder="120/80"
-                        slotProps={{
-                          input: {
-                            sx: {
-                              "& .MuiInputBase-input": {
-                                paddingTop: "16px",
-                                paddingBottom: "16px",
-                              },
-                            },
-                          },
-                        }}
+                        onChange={(bp) => setVitals((v) => ({ ...v, bp }))}
                       />
                     </Grid>
                     <Grid size={{ xs: 6, md: 4 }}>
@@ -1211,17 +1289,8 @@ export default function ReceptionDesk() {
                         value={vitals.hr}
                         onChange={(e) => setVitals((v) => ({ ...v, hr: e.target.value }))}
                         fullWidth
+                        InputLabelProps={{ shrink: true }}
                         placeholder="bpm"
-                        slotProps={{
-                          input: {
-                            sx: {
-                              "& .MuiInputBase-input": {
-                                paddingTop: "16px",
-                                paddingBottom: "16px",
-                              },
-                            },
-                          },
-                        }}
                       />
                     </Grid>
                     <Grid size={{ xs: 6, md: 4 }}>
@@ -1230,17 +1299,8 @@ export default function ReceptionDesk() {
                         value={vitals.rr}
                         onChange={(e) => setVitals((v) => ({ ...v, rr: e.target.value }))}
                         fullWidth
+                        InputLabelProps={{ shrink: true }}
                         placeholder="breaths/min"
-                        slotProps={{
-                          input: {
-                            sx: {
-                              "& .MuiInputBase-input": {
-                                paddingTop: "16px",
-                                paddingBottom: "16px",
-                              },
-                            },
-                          },
-                        }}
                       />
                     </Grid>
                     <Grid size={{ xs: 6, md: 4 }}>
@@ -1249,17 +1309,8 @@ export default function ReceptionDesk() {
                         value={vitals.temp}
                         onChange={(e) => setVitals((v) => ({ ...v, temp: e.target.value }))}
                         fullWidth
+                        InputLabelProps={{ shrink: true }}
                         placeholder="°C"
-                        slotProps={{
-                          input: {
-                            sx: {
-                              "& .MuiInputBase-input": {
-                                paddingTop: "16px",
-                                paddingBottom: "16px",
-                              },
-                            },
-                          },
-                        }}
                       />
                     </Grid>
                     <Grid size={{ xs: 6, md: 4 }}>
@@ -1268,17 +1319,8 @@ export default function ReceptionDesk() {
                         value={vitals.o2}
                         onChange={(e) => setVitals((v) => ({ ...v, o2: e.target.value }))}
                         fullWidth
+                        InputLabelProps={{ shrink: true }}
                         placeholder="%"
-                        slotProps={{
-                          input: {
-                            sx: {
-                              "& .MuiInputBase-input": {
-                                paddingTop: "16px",
-                                paddingBottom: "16px",
-                              },
-                            },
-                          },
-                        }}
                       />
                     </Grid>
                     <Grid size={{ xs: 6, md: 4 }} />
@@ -1289,17 +1331,8 @@ export default function ReceptionDesk() {
                         value={vitals.weight_kg}
                         onChange={(e) => setVitals((v) => ({ ...v, weight_kg: e.target.value }))}
                         fullWidth
+                        InputLabelProps={{ shrink: true }}
                         placeholder="kg"
-                        slotProps={{
-                          input: {
-                            sx: {
-                              "& .MuiInputBase-input": {
-                                paddingTop: "16px",
-                                paddingBottom: "16px",
-                              },
-                            },
-                          },
-                        }}
                       />
                     </Grid>
                     <Grid size={{ xs: 6, md: 4 }}>
@@ -1308,17 +1341,8 @@ export default function ReceptionDesk() {
                         value={vitals.height_cm}
                         onChange={(e) => setVitals((v) => ({ ...v, height_cm: e.target.value }))}
                         fullWidth
+                        InputLabelProps={{ shrink: true }}
                         placeholder="cm"
-                        slotProps={{
-                          input: {
-                            sx: {
-                              "& .MuiInputBase-input": {
-                                paddingTop: "16px",
-                                paddingBottom: "16px",
-                              },
-                            },
-                          },
-                        }}
                       />
                     </Grid>
                     <Grid size={{ xs: 6, md: 4 }}>
@@ -1326,17 +1350,8 @@ export default function ReceptionDesk() {
                         label="BMI"
                         value={vitals.bmi}
                         fullWidth
+                        InputLabelProps={{ shrink: true }}
                         InputProps={{ readOnly: true }}
-                        slotProps={{
-                          input: {
-                            sx: {
-                              "& .MuiInputBase-input": {
-                                paddingTop: "16px",
-                                paddingBottom: "16px",
-                              },
-                            },
-                          },
-                        }}
                       />
                     </Grid>
                   </Grid>
@@ -1420,21 +1435,18 @@ export default function ReceptionDesk() {
             counter={entranceCounter}
             tickets={ticketsByCounter.get(String(entranceCounter.id)) ?? []}
             priorityLabel={priorityLabel}
-            onCall={(t) => handleCall(entranceCounter, t)}
+            onCall={handleCall}
             onOpenTriage={openTriage}
             onComplete={handleComplete}
-            onAnnounceOnly={(t) => handleAnnounceOnly(entranceCounter, t)}
             busyId={busyId}
             entranceHighlight
           />
         </Box>
       ) : !loadError ? (
         <Alert severity="info">
-          Reception is focused on a single queue list + mini triage. We couldn&apos;t identify which{" "}
-          <code>queue_counters</code> row is used for kiosk tickets. If your counter code isn&apos;t{" "}
-          <code>{getEntranceCounterCode()}</code>, set <code>NEXT_PUBLIC_RECEPTION_ENTRANCE_COUNTER_CODE</code> in{" "}
-          <code>.env.local</code> to the correct code (commonly <code>RECEPTION</code>), then restart{" "}
-          <code>npm run dev</code>.
+          No entrance counter matched <code>{getEntranceCounterCode()}</code>. Set{" "}
+          <code>NEXT_PUBLIC_RECEPTION_ENTRANCE_COUNTER_CODE</code> in <code>.env.local</code> if needed, then restart the
+          dev server.
         </Alert>
       ) : null}
     </Box>

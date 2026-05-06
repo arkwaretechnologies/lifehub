@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
+import { LIFEHUB_LOGO_SRC } from "@/lib/lifehubLogo";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -335,7 +336,7 @@ export default function ConsultationHome() {
             }}
           >
             <Image
-              src="/lifehub-logo.png"
+              src={LIFEHUB_LOGO_SRC}
               alt="LifeHub logo"
               width={40}
               height={40}

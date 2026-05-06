@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabaseClient";
+import { parseBp } from "@/lib/bpInput";
 
 export const VITAL_SIGNS_TABLE = "vital_signs" as const;
 
@@ -30,17 +31,6 @@ export type VitalSignsInputState = {
 
 export function emptyVitalSignsInput(): VitalSignsInputState {
   return { bp: "", hr: "", rr: "", temp: "", o2: "", pain: "" };
-}
-
-export function parseBp(raw: string): { systolic: number | null; diastolic: number | null } {
-  const t = raw.trim().toUpperCase();
-  if (!t) return { systolic: null, diastolic: null };
-  const m = t.match(/^(\d{1,3})\s*\/\s*(\d{1,3})$/);
-  if (!m) return { systolic: null, diastolic: null };
-  const sys = Number.parseInt(m[1]!, 10);
-  const dia = Number.parseInt(m[2]!, 10);
-  if (!Number.isFinite(sys) || !Number.isFinite(dia)) return { systolic: null, diastolic: null };
-  return { systolic: sys, diastolic: dia };
 }
 
 function parseNonNegativeInt(raw: string): number | null {

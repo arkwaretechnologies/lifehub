@@ -12,6 +12,8 @@ import {
   type QueueTicketStatus,
 } from "@/lib/queueReception";
 import { numericIdFromUnknown } from "@/lib/sessionUserId";
+import { parseBp } from "@/lib/bpInput";
+import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
 
 const ACTIVE_STATUSES: QueueTicketStatus[] = ["Waiting", "Called", "Serving"];
 
@@ -20,10 +22,6 @@ export function queueAdminClient(): SupabaseClient | null {
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url?.startsWith("http") || !key) return null;
   return createClient(url, key, { auth: { persistSession: false } });
-}
-
-function todayIsoDate(): string {
-  return new Date().toISOString().slice(0, 10);
 }
 
 function parseCounterCodesEnv(): string[] | null {
@@ -153,7 +151,7 @@ export async function loadReceptionQueueState(): Promise<
         "counter_id",
         allCounters.map((c) => c.id),
       )
-      .eq("ticket_date", todayIsoDate())
+      .eq("ticket_date", queueTicketTodayIsoDate())
       .in("status", ACTIVE_STATUSES)
       .order("issued_at", { ascending: true });
 
@@ -276,7 +274,7 @@ export async function adminCallQueueTicketForPhysicianEncounter(
     return { error: "This encounter is not assigned to your user account." };
   }
 
-  const today = todayIsoDate();
+  const today = queueTicketTodayIsoDate();
 
   const { data: counterRows, error: cErr } = await admin.from("queue_counters").select("id, user_id").eq("is_active", true);
   if (cErr) {
@@ -376,7 +374,7 @@ export async function adminCompleteQueueTicketsForEncounter(
     return { error: "Missing encounter id." };
   }
 
-  const today = todayIsoDate();
+  const today = queueTicketTodayIsoDate();
   const now = new Date().toISOString();
 
   const { data: tickets, error: tErr } = await admin
@@ -418,17 +416,6 @@ type ReceptionVitalsInput = {
   height_cm: string;
   bmi: string;
 };
-
-function parseBp(raw: string): { bp_systolic: number | null; bp_diastolic: number | null } {
-  const t = raw.trim().toUpperCase();
-  if (!t) return { bp_systolic: null, bp_diastolic: null };
-  const m = t.match(/^(\d{1,3})\s*\/\s*(\d{1,3})$/);
-  if (!m) return { bp_systolic: null, bp_diastolic: null };
-  const sys = Number.parseInt(m[1]!, 10);
-  const dia = Number.parseInt(m[2]!, 10);
-  if (!Number.isFinite(sys) || !Number.isFinite(dia)) return { bp_systolic: null, bp_diastolic: null };
-  return { bp_systolic: sys, bp_diastolic: dia };
-}
 
 function parseNonNegativeInt(raw: string): number | null {
   const digits = raw.replace(/\D/g, "");
@@ -765,7 +752,7 @@ async function adminPickEntranceCounterRow(admin: SupabaseClient): Promise<Queue
       "counter_id",
       allCounters.map((c) => c.id),
     )
-    .eq("ticket_date", todayIsoDate())
+    .eq("ticket_date", queueTicketTodayIsoDate())
     .in("status", ACTIVE_STATUSES)
     .order("issued_at", { ascending: true });
   if (tAllErr) return null;
@@ -880,7 +867,7 @@ export async function adminIssueCashierLaboratoryQueueTicket(input: {
     return { error: "encounterTransId and at least one labRequestId are required." };
   }
 
-  const ticketDate = todayIsoDate();
+  const ticketDate = queueTicketTodayIsoDate();
   const { row: labCounterRow, numericId: labCounterId, error: labCntErr } = await adminResolveCounterByCode(
     admin,
     labQueueCode(),
@@ -1061,10 +1048,11 @@ async function adminUpsertVitalSigns(transId: string, vitals: ReceptionVitalsInp
   const admin = queueAdminClient();
   if (!admin) return { error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." };
   const now = new Date().toISOString();
-  const bp = parseBp(vitals.bp);
+  const { systolic, diastolic } = parseBp(vitals.bp);
   const payload = {
     trans_id: transId,
-    ...bp,
+    bp_systolic: systolic,
+    bp_diastolic: diastolic,
     heart_rate: parseNonNegativeInt(vitals.hr),
     respiratory_rate: parseNonNegativeInt(vitals.rr),
     temperature: parseDecimal(vitals.temp),
@@ -1133,7 +1121,7 @@ export async function adminCompleteConsultationCheckin(
   if (!docCode) return { error: "Select a doctor counter (doctorCounterCode)." };
 
   const now = new Date().toISOString();
-  const ticketDate = todayIsoDate();
+  const ticketDate = queueTicketTodayIsoDate();
   const triageBlock = buildTriageNotesBlock("consultation", input.triageNotes);
   const prior = input.priorNotes?.trim();
   const notes = prior ? `${prior}\n\n${triageBlock}` : triageBlock;
@@ -1280,7 +1268,7 @@ export async function adminFinalizeLaboratoryCheckin(input: {
   if (!sale) return { error: "No payment recorded for this lab order. Complete payment first." };
 
   const now = new Date().toISOString();
-  const ticketDate = todayIsoDate();
+  const ticketDate = queueTicketTodayIsoDate();
 
   const { id: priorityId, code: priorityCode, name: priorityName, error: pErr } = await adminPriorityForEntranceTicket(
     admin,

@@ -32,6 +32,7 @@ import AdminPanelSettingsOutlinedIcon from "@mui/icons-material/AdminPanelSettin
 import PeopleOutlinedIcon from "@mui/icons-material/PeopleOutlined";
 import RuleOutlinedIcon from "@mui/icons-material/RuleOutlined";
 import Image from "next/image";
+import { LIFEHUB_LOGO_SRC } from "@/lib/lifehubLogo";
 import { useAuth } from "@/components/AuthProvider";
 import type { MenuAccessState } from "@/lib/menuAccess";
 
@@ -517,7 +518,7 @@ function SidebarContent() {
     >
       <Box sx={{ px: 2.5, pt: 2, pb: 1.25, display: "flex", justifyContent: "center" }}>
         <Image
-          src="/lifehub logo/lifehub_logo_transparent.png"
+          src={LIFEHUB_LOGO_SRC}
           alt="LifeHub logo"
           width={160}
           height={160}

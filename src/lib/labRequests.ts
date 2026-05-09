@@ -233,6 +233,12 @@ export type LabRequestItemDetailRow = {
   notes: string | null;
   priority: string | null;
   test_name: string | null;
+  result_value: string | null;
+  result_unit: string | null;
+  reference_range: string | null;
+  flag: string | null;
+  result_remarks: string | null;
+  result_status: string | null;
 };
 
 /** All `lab_request_items` rows for the given requests, with `lab_tests.name`. */
@@ -262,14 +268,61 @@ export async function fetchLabRequestItemDetailsForRequestIds(requestIds: string
   const { testsById, error: testErr } = await fetchLabTestsByIds(testIds);
   if (testErr) return { items: [], error: testErr };
 
-  const items: LabRequestItemDetailRow[] = raw.map((r) => ({
-    id: r.id,
-    lab_request_id: r.lab_request_id,
-    lab_test_id: r.lab_test_id,
-    notes: r.notes,
-    priority: r.priority,
-    test_name: testsById.get(r.lab_test_id)?.name ?? null,
-  }));
+  const itemIds = raw.map((r) => r.id).filter(Boolean);
+  const resultsByItemId = new Map<
+    string,
+    {
+      result_value: string | null;
+      result_unit: string | null;
+      reference_range: string | null;
+      flag: string | null;
+      remarks: string | null;
+      status: string | null;
+    }
+  >();
+  if (itemIds.length > 0) {
+    const { data: resultRows, error: resultErr } = await supabase
+      .from("lab_results")
+      .select("lab_request_item_id, result_value, result_unit, reference_range, flag, remarks, status")
+      .in("lab_request_item_id", itemIds);
+    if (resultErr) return { items: [], error: resultErr.message };
+    for (const rr of (resultRows ?? []) as Array<{
+      lab_request_item_id: string;
+      result_value: string | null;
+      result_unit: string | null;
+      reference_range: string | null;
+      flag: string | null;
+      remarks: string | null;
+      status: string | null;
+    }>) {
+      resultsByItemId.set(rr.lab_request_item_id, {
+        result_value: rr.result_value,
+        result_unit: rr.result_unit,
+        reference_range: rr.reference_range,
+        flag: rr.flag,
+        remarks: rr.remarks,
+        status: rr.status,
+      });
+    }
+  }
+
+  const items: LabRequestItemDetailRow[] = raw.map((r) => {
+    const result = resultsByItemId.get(r.id);
+    return {
+      id: r.id,
+      lab_request_id: r.lab_request_id,
+      lab_test_id: r.lab_test_id,
+      notes: r.notes,
+      priority: r.priority,
+      test_name: testsById.get(r.lab_test_id)?.name ?? null,
+      result_value: result?.result_value ?? null,
+      result_unit: result?.result_unit ?? null,
+      reference_range: result?.reference_range ?? null,
+      flag: result?.flag ?? null,
+      result_remarks: result?.remarks ?? null,
+      result_status: result?.status ?? null,
+    };
+  });
 
   items.sort((a, b) => {
     const cr = a.lab_request_id.localeCompare(b.lab_request_id);

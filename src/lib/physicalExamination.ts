@@ -452,3 +452,149 @@ export function formFromPhysicalExaminationRowOrDefault(row: PhysicalExamination
   if (!row) return { ...emptyPhysicalExaminationForm };
   return rowToForm(row);
 }
+
+function joinChecked(parts: (string | false | null | undefined)[], notes: string): string | null {
+  const checked = parts.filter((x): x is string => typeof x === "string" && x.length > 0);
+  const n = notes.trim();
+  if (checked.length === 0 && !n) return null;
+  const head = checked.length > 0 ? checked.join(", ") : "";
+  if (head && n) return `${head}. ${n}`;
+  return head || n;
+}
+
+/** Plain text for consultation PDF — Physical Examination column (Physician's Record). */
+export function formatPhysicalExaminationForPrint(form: PhysicalExaminationForm): string {
+  const blocks: string[] = [];
+
+  const g = joinChecked(
+    [
+      form.pe_general_alert && "ALERT",
+      form.pe_general_distress && "DISTRESS",
+      form.pe_general_drowsy && "DROWSY",
+      form.pe_general_coma && "COMA",
+    ],
+    form.pe_general_notes,
+  );
+  if (g) blocks.push(`GENERAL — ${g}`);
+
+  const heent = joinChecked(
+    [
+      form.pe_heent_lids_conj_nil && "LIDS/ CONJ NIL",
+      form.pe_heent_perrla && "PERRLA",
+      form.pe_heent_tym_canal && "TYM CANAL",
+      form.pe_heent_nasal_nl && "NASAL NL",
+      form.pe_heent_lips_teeth_gums && "LIPS, TEETH, GUMS",
+    ],
+    form.pe_heent_notes,
+  );
+  if (heent) blocks.push(`HEENT — ${heent}`);
+
+  const chest = joinChecked(
+    [
+      form.pe_chest_nl_resp_effort && "NL RESP EFFORT",
+      form.pe_chest_cbs && "CBS",
+      form.pe_chest_nl_palpation && "NL PALPATION",
+      form.pe_chest_nl_symmetry && "NL SYMMETRY & EXPANSION",
+    ],
+    form.pe_chest_notes,
+  );
+  if (chest) blocks.push(`CHEST/LUNGS — ${chest}`);
+
+  const cvs = joinChecked(
+    [
+      form.pe_cvs_rrr && "RRR",
+      form.pe_cvs_no_murmur_gallop && "NO MURMUR/ GALLOP",
+      form.pe_cvs_nl_s1s2 && "NL S1S2",
+      form.pe_cvs_pulses && "PULSES",
+    ],
+    form.pe_cvs_notes,
+  );
+  if (cvs) blocks.push(`CVS — ${cvs}`);
+
+  const abd = joinChecked(
+    [
+      form.pe_abdomen_no_tenderness && "NO TENDERNESS/MASS",
+      form.pe_abdomen_liver_spleen && "LIVER SPLEEN",
+      form.pe_abdomen_no_hernia && "NO HERNIA",
+      form.pe_abdomen_bs_present && "+BS",
+      form.pe_abdomen_no_guarding && "NO GUARDING",
+    ],
+    form.pe_abdomen_notes,
+  );
+  if (abd) blocks.push(`ABDOMEN/ GI — ${abd}`);
+
+  const gu = joinChecked(
+    [
+      form.pe_gu_male && "MALE",
+      form.pe_gu_female && "FEMALE",
+      form.pe_gu_no_cva_tenderness && "NO CVA TENDERNESS",
+      form.pe_gu_scrotal_wnl && "SCROTAL CONTENT WNL",
+      form.pe_gu_pelvic_nl && "PELVIC EXAM NL",
+    ],
+    form.pe_gu_notes,
+  );
+  if (gu) blocks.push(`GU — ${gu}`);
+
+  const extChk = joinChecked(
+    [
+      form.pe_ext_nl_gait && "NL GAIT",
+      form.pe_ext_nl_strength && "NL STRENGTH",
+      form.pe_ext_nl_digits_nails && "NL DIGITS/NAILS",
+      form.pe_ext_nl_clubbing_tone && "NL CLUBBING NL TONE",
+      form.pe_ext_edema && "EDEMA",
+      form.pe_ext_ulcers && "ULCERS",
+    ],
+    form.pe_ext_notes,
+  );
+  if (extChk) blocks.push(`EXTREMITIES / MSK — ${extChk}`);
+
+  return blocks.join("\n");
+}
+
+/** Plain text for consultation PDF — Neurologic Examination column. */
+export function formatNeurologicExaminationForPrint(form: PhysicalExaminationForm): string {
+  const blocks: string[] = [];
+
+  const mms = joinChecked(
+    [
+      form.pe_neuro_alert && "ALERT",
+      form.pe_neuro_oriented && "ORIENTED",
+      form.pe_neuro_judgment_insight && "JUDGMENT/INSIGHT",
+      form.pe_neuro_memory && "MEMORY",
+      form.pe_neuro_mood && "MOOD",
+      form.pe_neuro_no_delusions && "NO DELUSIONS",
+    ],
+    "",
+  );
+  if (mms) blocks.push(`MMS — ${mms}`);
+
+  if (form.pe_neuro_cerebral.trim()) {
+    blocks.push(`CEREBRAL — ${form.pe_neuro_cerebral.trim()}`);
+  }
+
+  const cnsParts: string[] = [];
+  const cnsLine = (label: string, v: string) => {
+    const t = v.trim();
+    if (t) cnsParts.push(`${label} ${t}`);
+  };
+  cnsLine("I:", form.pe_neuro_cn_i);
+  cnsLine("II, III:", form.pe_neuro_cn_ii_iii);
+  cnsLine("IV, VI:", form.pe_neuro_cn_iv_vi);
+  cnsLine("V, VII:", form.pe_neuro_cn_v_vii);
+  cnsLine("VIII:", form.pe_neuro_cn_viii);
+  cnsLine("IX, X:", form.pe_neuro_cn_ix_x);
+  cnsLine("XI, XII:", form.pe_neuro_cn_xi_xii);
+  if (cnsParts.length > 0) blocks.push(`CNS — ${cnsParts.join("; ")}`);
+
+  if (form.pe_neuro_cerebellar.trim()) {
+    blocks.push(`CEREBELLAR — ${form.pe_neuro_cerebellar.trim()}`);
+  }
+  if (form.pe_neuro_motor_strength.trim()) {
+    blocks.push(`MOTOR STRENGTH — ${form.pe_neuro_motor_strength.trim()}`);
+  }
+  if (form.pe_neuro_sensory_reflex.trim()) {
+    blocks.push(`SENSORY/REFLEXES — ${form.pe_neuro_sensory_reflex.trim()}`);
+  }
+
+  return blocks.join("\n");
+}

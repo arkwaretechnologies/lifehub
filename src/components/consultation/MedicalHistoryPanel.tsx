@@ -141,7 +141,14 @@ const allergiesInlineUnderlineFieldSx = {
   "& .MuiInputBase-input": {
     py: 0.5,
     fontSize: "0.875rem",
-    textTransform: "uppercase",
+    textTransform: "none",
+  },
+} as const;
+
+/** Reaction type should display exactly what user typed (case-preserving). */
+const allergiesReactionFieldSx = {
+  "& .MuiInputBase-input": {
+    textTransform: "none",
   },
 } as const;
 
@@ -1283,7 +1290,7 @@ function AllergiesSection({ transId, idPrefix }: { transId: string; idPrefix: st
         }
         disabled={loading || nka}
         {...commonFieldProps}
-        sx={fieldMultilineInputSx}
+        sx={[fieldMultilineInputSx, allergiesReactionFieldSx]}
       />
     </>
   );

@@ -6,6 +6,7 @@ import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, Tab, Ta
 import CloseIcon from "@mui/icons-material/Close";
 import CloseOutlinedIcon from "@mui/icons-material/CloseOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import PrintOutlinedIcon from "@mui/icons-material/PrintOutlined";
 import SaveOutlinedIcon from "@mui/icons-material/SaveOutlined";
 import type { ConsultationPatient } from "./consultationTypes";
 import { ConsultationActiveTabContext } from "./consultationTabContext";
@@ -18,6 +19,43 @@ import PhysiciansRecordPanel from "./PhysiciansRecordPanel";
 import PlansTreatmentPanel from "./PlansTreatmentPanel";
 import ReviewOfSystemsPanel from "./ReviewOfSystemsPanel";
 import ChargesServicesPanel from "./ChargesServicesPanel";
+import { useAuth } from "@/components/AuthProvider";
+import { fetchEncounterClinicalDiagnosis, fetchEncounterPhysicianRecord, fetchEncounterPlansTreatment } from "@/lib/consultationData";
+import {
+  emptyPhysicalExaminationForm,
+  fetchFocusedExamNotes,
+  fetchPhysicalExamination,
+  formFromPhysicalExaminationRowOrDefault,
+  type PhysicalExaminationForm,
+} from "@/lib/physicalExamination";
+import { openConsultationPrintWindow } from "@/lib/consultationPrint";
+import type { UserProfile } from "@/lib/types";
+import { formFromAllergiesRowOrDefault, fetchAllergies } from "@/lib/allergies";
+import { fetchCurrentMedicationsForEncounter } from "@/lib/currentMedications";
+import {
+  fetchLabRequestItemDetailsForRequestIds,
+  fetchLabRequestsForEncounter,
+} from "@/lib/labRequests";
+import { fetchFamilyHistory, formFromFamilyRowOrDefault } from "@/lib/familyHistory";
+import { formFromRowOrDefault, fetchPastMedicalHistory } from "@/lib/pastMedicalHistory";
+import {
+  fetchObstetricHistory,
+  formFromObstetricHistoryRowOrDefault,
+} from "@/lib/obstetricHistory";
+import {
+  fetchPreviousHospitalization,
+  formFromPreviousHospitalizationRowOrDefault,
+} from "@/lib/previousHospitalizations";
+import {
+  fetchReviewOfSystems,
+  formFromRowOrDefault as rosFormFromRowOrDefault,
+  emptyReviewOfSystemsForm,
+  type ReviewOfSystemsBooleanKey,
+  type ReviewOfSystemsForm,
+} from "@/lib/reviewOfSystems";
+import { fetchSocialHistory, formFromSocialHistoryRowOrDefault } from "@/lib/socialHistory";
+import { fetchSurgicalHistory, formFromSurgicalRowOrDefault } from "@/lib/surgicalHistory";
+import { fetchVitalSigns } from "@/lib/vitalSigns";
 
 /** Same UI as `ReviewOfSystemsPanel` — kept so older references to this name still resolve. */
 function PhysicalAssessmentPanel({ transId }: { transId: string }) {
@@ -56,14 +94,532 @@ export default function ConsultationWorkspace({
 
 function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: ConsultationPatient; transId: string; isNew: boolean }) {
   const router = useRouter();
+  const { profile } = useAuth();
   const [tab, setTab] = useState(0);
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [printing, setPrinting] = useState(false);
   const { dirty, runSaveAll, saving } = useConsultationSave();
+
+  function extractTitledSectionFromNotes(text: string, title: string): { section: string; rest: string } {
+    const lines = text.split(/\r?\n/);
+    const titleLc = `${title.trim().toLowerCase()}:`;
+    const kept: string[] = [];
+    const section: string[] = [];
+    let inSection = false;
+    for (const raw of lines) {
+      const line = raw.trimEnd();
+      const lineLc = line.trim().toLowerCase();
+      const isHeading = /^[a-z0-9/\s]+:$/i.test(line.trim());
+      if (lineLc === titleLc) {
+        inSection = true;
+        continue;
+      }
+      if (inSection && isHeading) inSection = false;
+      if (inSection) section.push(line);
+      else kept.push(line);
+    }
+    return { section: section.join("\n").trim(), rest: kept.join("\n").trim() };
+  }
+
+  function extractImagingSectionFromNotes(text: string): { section: string; rest: string } {
+    const startTag = "[IMAGING_REQUEST]";
+    const endTag = "[/IMAGING_REQUEST]";
+    const start = text.indexOf(startTag);
+    const end = text.indexOf(endTag);
+    if (start === -1 || end === -1 || end < start) {
+      const fromHeading = extractTitledSectionFromNotes(text, "IMAGING");
+      return { section: fromHeading.section, rest: fromHeading.rest };
+    }
+    const block = text.slice(start + startTag.length, end);
+    const cleaned = block
+      .split(/\r?\n/)
+      .map((x) => x.trim())
+      .filter((x) => x.length > 0 && x !== "IMAGING REQUEST:")
+      .join("\n");
+    const rest = `${text.slice(0, start)} ${text.slice(end + endTag.length)}`.trim();
+    return { section: cleaned, rest };
+  }
+
+  function buildPlansSupplement(
+    baseNotes: string,
+    labsText: string,
+    imagingText: string,
+    medsText: string,
+    referralText: string,
+  ): string {
+    const normalized = (baseNotes ?? "").trim();
+    const extractedImaging = extractImagingSectionFromNotes(normalized);
+    const extractedLabs = extractTitledSectionFromNotes(extractedImaging.rest, "LABS/RESULTS");
+    const extractedMeds = extractTitledSectionFromNotes(extractedLabs.rest, "MEDICATIONS");
+    const extractedReferral = extractTitledSectionFromNotes(extractedMeds.rest, "REFERRAL");
+    const base = extractedReferral.rest.trim();
+
+    const labs = (labsText || extractedLabs.section).trim();
+    const imaging = (imagingText || extractedImaging.section).trim();
+    const meds = (medsText || extractedMeds.section).trim();
+    const referral = (referralText || extractedReferral.section).trim();
+
+    const sections: string[] = [];
+    if (labs) sections.push(`LABS/RESULTS:\n${labs}`);
+    if (imaging) sections.push(`IMAGING:\n${imaging}`);
+    if (meds) sections.push(`MEDICATIONS:\n${meds}`);
+    if (referral) sections.push(`REFERRAL:\n${referral}`);
+    return [base, ...sections].filter((x) => x.length > 0).join("\n\n");
+  }
+
+  function buildLabsPrintTextFromItems(
+    items: Array<{
+      test_name: string | null;
+      notes: string | null;
+      priority: string | null;
+      result_value: string | null;
+      result_unit: string | null;
+      reference_range: string | null;
+      flag: string | null;
+      result_remarks: string | null;
+    }>,
+  ): string {
+    const lines = items
+      .map((it) => {
+        const name = (it.test_name ?? "").trim();
+        const notes = (it.notes ?? "").trim();
+        const pri = (it.priority ?? "").trim();
+        const resultValue = (it.result_value ?? "").trim();
+        const resultUnit = (it.result_unit ?? "").trim();
+        const referenceRange = (it.reference_range ?? "").trim();
+        const flag = (it.flag ?? "").trim();
+        const resultRemarks = (it.result_remarks ?? "").trim();
+        const hasResult = resultValue.length > 0;
+        const resultText = hasResult
+          ? `${resultValue}${resultUnit ? ` ${resultUnit}` : ""}`
+          : "";
+        const bits = [
+          name || "Lab test",
+          pri ? `Priority: ${pri}` : "",
+          resultText ? `Result: ${resultText}` : "",
+          referenceRange ? `Ref: ${referenceRange}` : "",
+          flag ? `Flag: ${flag}` : "",
+          resultRemarks ? `Remarks: ${resultRemarks}` : "",
+          !hasResult && notes ? `Notes: ${notes}` : "",
+        ].filter((x) => x.length > 0);
+        return bits.join(" | ");
+      })
+      .filter((x) => x.length > 0);
+    return lines.join("\n");
+  }
+
+  function buildMedicationsPrintText(
+    meds: Array<{ medication_name: string; dosage: string | null; frequency: string | null; notes: string | null }>,
+  ): string {
+    const lines = meds
+      .map((m) => {
+        const name = (m.medication_name ?? "").trim();
+        const dosage = (m.dosage ?? "").trim();
+        const frequency = (m.frequency ?? "").trim();
+        const notes = (m.notes ?? "").trim();
+        const bits = [name, dosage, frequency, notes ? `Notes: ${notes}` : ""].filter((x) => x.length > 0);
+        return bits.join(" | ");
+      })
+      .filter((x) => x.length > 0);
+    return lines.join("\n");
+  }
+
+  function getPhysiciansRecordChiefComplaintFromDom(): string | null {
+    if (typeof document === "undefined") return null;
+    const el = document.querySelector(
+      'textarea[id$="-chief-complaint"]',
+    ) as HTMLTextAreaElement | null;
+    return el !== null ? el.value : null;
+  }
+
+  function getPhysiciansRecordHpiFromDom(): string | null {
+    if (typeof document === "undefined") return null;
+    const el = document.querySelector('textarea[id$="-hpi"]') as HTMLTextAreaElement | null;
+    return el !== null ? el.value : null;
+  }
+
+  function getMedicalHistoryCurrentMedicationInputs(): string[] {
+    if (typeof document === "undefined") return [];
+    const m1 =
+      (
+        document.querySelector('textarea[id$="-meds-1"], input[id$="-meds-1"]') as
+          | HTMLTextAreaElement
+          | HTMLInputElement
+          | null
+      )?.value ?? "";
+    const m2 =
+      (
+        document.querySelector('textarea[id$="-meds-2"], input[id$="-meds-2"]') as
+          | HTMLTextAreaElement
+          | HTMLInputElement
+          | null
+      )?.value ?? "";
+    return [m1.trim(), m2.trim()].filter((v) => v.length > 0);
+  }
+
+  function getReviewOfSystemsFromPanel(): ReviewOfSystemsForm | null {
+    if (typeof document === "undefined") return null;
+    const panel = document.querySelector("#consultation-tabpanel-1");
+    if (!panel) return null;
+
+    const form = emptyReviewOfSystemsForm();
+    const mapLabelToKeys: Record<string, readonly ReviewOfSystemsBooleanKey[]> = {
+      Fever: ["ros_fever"],
+      "Weight loss": ["ros_weight_loss"],
+      Fatigue: ["ros_fatigue"],
+      "Vision changes": ["ros_vision_changes"],
+      Redness: ["ros_eye_redness"],
+      Discharge: ["ros_eye_discharge"],
+      "Hearing changes": ["ros_hearing_changes"],
+      "Nasal congestion": ["ros_nasal_congestion"],
+      "Sore throat": ["ros_sore_throat"],
+      "Chest pain": ["ros_chest_pain"],
+      Palpitations: ["ros_palpitations"],
+      Edema: ["ros_edema"],
+      "Shortness of breath": ["ros_sob"],
+      Wheezing: ["ros_wheezing"],
+      Cough: ["ros_cough"],
+      Nausea: ["ros_nausea"],
+      Vomiting: ["ros_vomiting"],
+      Diarrhea: ["ros_diarrhea"],
+      "Abdominal pain": ["ros_abdominal_pain"],
+      "Urinary frequency": ["ros_urinary_frequency"],
+      Urgency: ["ros_urinary_urgency"],
+      Incontinence: ["ros_incontinence"],
+      "Joint pain": ["ros_joint_pain"],
+      "Muscle weakness": ["ros_muscle_weakness"],
+      Rashes: ["ros_rashes"],
+      Lesions: ["ros_lesions"],
+      Lumps: ["ros_lumps"],
+      Headaches: ["ros_headaches"],
+      Dizziness: ["ros_dizziness"],
+      Numbness: ["ros_numbness"],
+      Depression: ["ros_depression"],
+      Anxiety: ["ros_anxiety"],
+      "Sleep disturbances": ["ros_sleep_disturbances"],
+      "Hot flashes": ["ros_hot_flashes"],
+      "Intolerance to heat/cold": ["ros_heat_cold_intolerance"],
+      "Excessive thirst": ["ros_excessive_thirst"],
+      "Easy bruising": ["ros_easy_bruising"],
+      Bleeding: ["ros_bleeding"],
+      "Swollen glands": ["ros_swollen_glands"],
+      "Seasonal allergies": ["ros_seasonal_allergies"],
+      "Frequent infections": ["ros_frequent_infections"],
+      "Hives/rashes": ["ros_hives_rashes"],
+    };
+
+    let matched = 0;
+    const rows = panel.querySelectorAll(".MuiFormControlLabel-root");
+    for (const row of rows) {
+      const label = (row.querySelector(".MuiFormControlLabel-label")?.textContent ?? "").trim();
+      const keys = mapLabelToKeys[label];
+      if (!keys || keys.length === 0) continue;
+      const checked = (row.querySelector('input[type="checkbox"]') as HTMLInputElement | null)?.checked ?? false;
+      for (const key of keys) {
+        form[key] = checked;
+      }
+      matched++;
+    }
+    return matched > 0 ? form : null;
+  }
+
+  function getPhysicalExaminationFromPanel(): PhysicalExaminationForm | null {
+    if (typeof document === "undefined") return null;
+    const panel = document.querySelector("#consultation-tabpanel-2");
+    if (!panel) return null;
+
+    const form = { ...emptyPhysicalExaminationForm };
+    let matched = 0;
+    const checkboxInputs = Array.from(
+      panel.querySelectorAll('input[type="checkbox"]'),
+    ) as HTMLInputElement[];
+    const checkboxKeyOrder: (keyof PhysicalExaminationForm)[] = [
+      "pe_general_alert",
+      "pe_general_distress",
+      "pe_general_drowsy",
+      "pe_general_coma",
+      "pe_heent_lids_conj_nil",
+      "pe_heent_perrla",
+      "pe_heent_tym_canal",
+      "pe_heent_nasal_nl",
+      "pe_heent_lips_teeth_gums",
+      "pe_chest_nl_resp_effort",
+      "pe_chest_cbs",
+      "pe_chest_nl_palpation",
+      "pe_chest_nl_symmetry",
+      "pe_cvs_rrr",
+      "pe_cvs_no_murmur_gallop",
+      "pe_cvs_nl_s1s2",
+      "pe_cvs_pulses",
+      "pe_abdomen_no_tenderness",
+      "pe_abdomen_liver_spleen",
+      "pe_abdomen_no_hernia",
+      "pe_abdomen_bs_present",
+      "pe_abdomen_no_guarding",
+      "pe_gu_male",
+      "pe_gu_female",
+      "pe_gu_no_cva_tenderness",
+      "pe_gu_scrotal_wnl",
+      "pe_gu_pelvic_nl",
+      "pe_ext_nl_gait",
+      "pe_ext_nl_strength",
+      "pe_ext_nl_digits_nails",
+      "pe_ext_nl_clubbing_tone",
+      "pe_ext_edema",
+      "pe_ext_ulcers",
+      "pe_neuro_alert",
+      "pe_neuro_oriented",
+      "pe_neuro_judgment_insight",
+      "pe_neuro_memory",
+      "pe_neuro_mood",
+      "pe_neuro_no_delusions",
+    ];
+    for (let i = 0; i < checkboxKeyOrder.length; i++) {
+      const input = checkboxInputs[i];
+      if (!input) continue;
+      (form as Record<string, unknown>)[checkboxKeyOrder[i]] = input.checked;
+      matched++;
+    }
+
+    const standardInputs = Array.from(
+      panel.querySelectorAll("input.MuiInputBase-input"),
+    ) as HTMLInputElement[];
+    const textKeyOrder: (keyof PhysicalExaminationForm)[] = [
+      "pe_general_notes",
+      "pe_heent_notes",
+      "pe_chest_notes",
+      "pe_cvs_notes",
+      "pe_abdomen_notes",
+      "pe_gu_notes",
+      "pe_ext_notes",
+      "pe_neuro_cerebral",
+      "pe_neuro_cn_i",
+      "pe_neuro_cn_ii_iii",
+      "pe_neuro_cn_iv_vi",
+      "pe_neuro_cn_v_vii",
+      "pe_neuro_cn_viii",
+      "pe_neuro_cn_ix_x",
+      "pe_neuro_cn_xi_xii",
+      "pe_neuro_cerebellar",
+      "pe_neuro_motor_strength",
+      "pe_neuro_sensory_reflex",
+    ];
+    for (let i = 0; i < textKeyOrder.length; i++) {
+      const val = standardInputs[i]?.value;
+      if (typeof val !== "string") continue;
+      (form as Record<string, unknown>)[textKeyOrder[i]] = val;
+      if (val.trim().length > 0) matched++;
+    }
+
+    return matched > 0 ? { ...form } : null;
+  }
+
+  function getFocusedExamNotesFromPanel(): string | null {
+    if (typeof document === "undefined") return null;
+    const panel = document.querySelector("#consultation-tabpanel-3");
+    if (!panel) return null;
+    const el = panel.querySelector("textarea") as HTMLTextAreaElement | null;
+    return el !== null ? el.value : null;
+  }
+
+  function getClinicalDiagnosisFromPanel(): string | null {
+    if (typeof document === "undefined") return null;
+    const panel = document.querySelector("#consultation-tabpanel-4");
+    if (!panel) return null;
+    const el = panel.querySelector("textarea") as HTMLTextAreaElement | null;
+    return el !== null ? el.value : null;
+  }
+
+  function getPlansTreatmentFromPanel(): {
+    planNotes: string;
+    disposition: string;
+    planLabs: boolean;
+    planImaging: boolean;
+    planMedications: boolean;
+    planReferral: boolean;
+  } | null {
+    if (typeof document === "undefined") return null;
+    const panel = document.querySelector("#consultation-tabpanel-5");
+    if (!panel) return null;
+
+    const notesEl = panel.querySelector("textarea") as HTMLTextAreaElement | null;
+    const dispositionEl = panel.querySelector(
+      'input[type="radio"]:checked',
+    ) as HTMLInputElement | null;
+    if (!notesEl && !dispositionEl) return null;
+
+    const planRows = panel.querySelectorAll(".MuiFormControlLabel-root");
+    const checkboxByLabel = (labelText: string): boolean => {
+      for (const row of planRows) {
+        const label = (row.querySelector(".MuiFormControlLabel-label")?.textContent ?? "").trim();
+        if (label !== labelText) continue;
+        const input = row.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+        return input?.checked ?? false;
+      }
+      return false;
+    };
+
+    return {
+      planNotes: notesEl?.value ?? "",
+      disposition: dispositionEl?.value ?? "",
+      planLabs: checkboxByLabel("LABS"),
+      planImaging: checkboxByLabel("IMAGING"),
+      planMedications: checkboxByLabel("MEDICATIONS"),
+      planReferral: checkboxByLabel("REFERRAL"),
+    };
+  }
 
   return (
     <Box sx={{ maxWidth: 1200, mx: "auto" }}>
       <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 1.5, mb: 2, flexWrap: "wrap" }}>
+        <Button
+          type="button"
+          variant="outlined"
+          color="secondary"
+          startIcon={<PrintOutlinedIcon />}
+          disabled={printing}
+          onClick={() => {
+            void (async () => {
+              setPrinting(true);
+              try {
+                const [
+                  physRec,
+                  diagnosis,
+                  plans,
+                  focused,
+                  vitals,
+                  pmh,
+                  allergies,
+                  currentMeds,
+                  familyHistory,
+                  socialHistory,
+                  surgicalHistory,
+                  previousHospitalization,
+                  obstetricHistory,
+                  reviewOfSystems,
+                  peExam,
+                  labRequests,
+                ] = await Promise.all([
+                  fetchEncounterPhysicianRecord(transId),
+                  fetchEncounterClinicalDiagnosis(transId),
+                  fetchEncounterPlansTreatment(transId),
+                  fetchFocusedExamNotes(transId),
+                  fetchVitalSigns(transId),
+                  fetchPastMedicalHistory(transId),
+                  fetchAllergies(transId),
+                  fetchCurrentMedicationsForEncounter(transId),
+                  fetchFamilyHistory(transId),
+                  fetchSocialHistory(transId),
+                  fetchSurgicalHistory(transId),
+                  fetchPreviousHospitalization(transId),
+                  fetchObstetricHistory(transId),
+                  fetchReviewOfSystems(transId),
+                  fetchPhysicalExamination(transId),
+                  fetchLabRequestsForEncounter(transId),
+                ]);
+
+                const v = vitals?.row ?? null;
+                const bp =
+                  v?.bp_systolic != null && v?.bp_diastolic != null
+                    ? `${v.bp_systolic}/${v.bp_diastolic}`
+                    : "";
+
+                const u = profile as UserProfile | null;
+                const currentMedsFromFields = getMedicalHistoryCurrentMedicationInputs();
+                const reviewOfSystemsFromPanel = getReviewOfSystemsFromPanel();
+                const plansFromPanel = getPlansTreatmentFromPanel();
+                const peFormFromDb = formFromPhysicalExaminationRowOrDefault(
+                  peExam.error ? null : peExam.row,
+                );
+                const peForm = getPhysicalExaminationFromPanel() ?? peFormFromDb;
+                const labItemDetails = await fetchLabRequestItemDetailsForRequestIds(
+                  labRequests.requests.map((r) => r.id),
+                );
+                const labsFromRequests = labItemDetails.error
+                  ? ""
+                  : buildLabsPrintTextFromItems(labItemDetails.items);
+                const medsFromRows = buildMedicationsPrintText(currentMeds.medications);
+                const basePlanNotes = plansFromPanel?.planNotes ?? plans.form.plan_notes;
+                const extractedImaging = extractImagingSectionFromNotes(basePlanNotes);
+                const extractedReferral = extractTitledSectionFromNotes(basePlanNotes, "REFERRAL");
+                const mergedPlanNotes = buildPlansSupplement(
+                  basePlanNotes,
+                  labsFromRequests,
+                  extractedImaging.section,
+                  medsFromRows,
+                  extractedReferral.section,
+                );
+                const ok = await openConsultationPrintWindow({
+                  patient,
+                  physician: {
+                    fullname: u?.fullname?.trim() ?? "",
+                    licenseNo: u?.license_no?.trim() ?? "",
+                  },
+                  details: {
+                    chiefComplaint:
+                      getPhysiciansRecordChiefComplaintFromDom() ?? physRec.form.chief_complaint,
+                    historyOfPresentIllness:
+                      getPhysiciansRecordHpiFromDom() ?? physRec.form.history_of_present_illness,
+                    physicalExaminationForm: peForm,
+                    focusedExamNotes: getFocusedExamNotesFromPanel() ?? focused.notes,
+                    clinicalDiagnosis:
+                      getClinicalDiagnosisFromPanel() ?? diagnosis.form.clinical_diagnosis,
+                    planLabs: plansFromPanel?.planLabs ?? (plans.form.plan_labs ?? false),
+                    planImaging: plansFromPanel?.planImaging ?? (plans.form.plan_imaging ?? false),
+                    planMedications:
+                      plansFromPanel?.planMedications ?? (plans.form.plan_medications ?? false),
+                    planReferral: plansFromPanel?.planReferral ?? (plans.form.plan_referral ?? false),
+                    planNotes: mergedPlanNotes,
+                    disposition: plansFromPanel?.disposition ?? (plans.form.disposition ?? ""),
+                    vitalBp: bp,
+                    vitalHr: v?.heart_rate != null ? String(v.heart_rate) : "",
+                    vitalRr: v?.respiratory_rate != null ? String(v.respiratory_rate) : "",
+                    vitalTemp: v?.temperature != null ? String(v.temperature) : "",
+                    vitalO2: v?.o2_saturation != null ? String(v.o2_saturation) : "",
+                    vitalPain: v?.pain_scale != null ? String(v.pain_scale) : "",
+                    anthropometricWeight: v?.weight_kg != null ? String(v.weight_kg) : "",
+                    anthropometricHeight: v?.height_cm != null ? String(v.height_cm) : "",
+                    anthropometricBmi: v?.bmi != null ? String(v.bmi) : "",
+                    pastMedicalHistory: formFromRowOrDefault(pmh.row),
+                    familyHistory: formFromFamilyRowOrDefault(familyHistory.row),
+                    socialHistory: formFromSocialHistoryRowOrDefault(socialHistory.row),
+                    surgicalHistory: formFromSurgicalRowOrDefault(surgicalHistory.row),
+                    previousHospitalization: formFromPreviousHospitalizationRowOrDefault(
+                      previousHospitalization.row,
+                    ),
+                    obstetricHistory: formFromObstetricHistoryRowOrDefault(
+                      obstetricHistory.row,
+                    ),
+                    reviewOfSystems:
+                      reviewOfSystemsFromPanel ?? rosFormFromRowOrDefault(reviewOfSystems.row),
+                    allergies: formFromAllergiesRowOrDefault(allergies.row),
+                    currentMedications:
+                      currentMedsFromFields.length > 0
+                        ? currentMedsFromFields
+                        : currentMeds.medications.map((m) => {
+                            const name = (m.medication_name ?? "").trim();
+                            const dosage = (m.dosage ?? "").trim();
+                            const frequency = (m.frequency ?? "").trim();
+                            const parts = [name, dosage, frequency].filter((x) => x.length > 0);
+                            return parts.join(" | ");
+                          }),
+                  },
+                });
+                if (!ok) {
+                  window.alert(
+                    "Could not load the consultation PDF template. Ensure templates/Consultation Template.pdf is present on the server.",
+                  );
+                }
+              } finally {
+                setPrinting(false);
+              }
+            })();
+          }}
+          sx={{ textTransform: "capitalize", borderRadius: 999, px: 2.5 }}
+        >
+          {printing ? "Preparing…" : "Print consultation"}
+        </Button>
         <Button
           variant="contained"
           color="primary"

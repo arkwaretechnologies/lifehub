@@ -106,10 +106,8 @@ const ROS_SECTION_A: RosLineConfig[] = [
   {
     category: "Genitourinary",
     items: [
-      {
-        label: "Urinary frequency or urgency",
-        keys: ["ros_urinary_frequency", "ros_urinary_urgency"],
-      },
+      { label: "Urinary frequency", keys: ["ros_urinary_frequency"] },
+      { label: "Urgency", keys: ["ros_urinary_urgency"] },
       { label: "Incontinence", keys: ["ros_incontinence"] },
     ],
   },

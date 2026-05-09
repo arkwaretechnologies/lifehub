@@ -32,10 +32,6 @@ import { openConsultationPrintWindow } from "@/lib/consultationPrint";
 import type { UserProfile } from "@/lib/types";
 import { formFromAllergiesRowOrDefault, fetchAllergies } from "@/lib/allergies";
 import { fetchCurrentMedicationsForEncounter } from "@/lib/currentMedications";
-import {
-  fetchLabRequestItemDetailsForRequestIds,
-  fetchLabRequestsForEncounter,
-} from "@/lib/labRequests";
 import { fetchFamilyHistory, formFromFamilyRowOrDefault } from "@/lib/familyHistory";
 import { formFromRowOrDefault, fetchPastMedicalHistory } from "@/lib/pastMedicalHistory";
 import {
@@ -100,130 +96,6 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [printing, setPrinting] = useState(false);
   const { dirty, runSaveAll, saving } = useConsultationSave();
-
-  function extractTitledSectionFromNotes(text: string, title: string): { section: string; rest: string } {
-    const lines = text.split(/\r?\n/);
-    const titleLc = `${title.trim().toLowerCase()}:`;
-    const kept: string[] = [];
-    const section: string[] = [];
-    let inSection = false;
-    for (const raw of lines) {
-      const line = raw.trimEnd();
-      const lineLc = line.trim().toLowerCase();
-      const isHeading = /^[a-z0-9/\s]+:$/i.test(line.trim());
-      if (lineLc === titleLc) {
-        inSection = true;
-        continue;
-      }
-      if (inSection && isHeading) inSection = false;
-      if (inSection) section.push(line);
-      else kept.push(line);
-    }
-    return { section: section.join("\n").trim(), rest: kept.join("\n").trim() };
-  }
-
-  function extractImagingSectionFromNotes(text: string): { section: string; rest: string } {
-    const startTag = "[IMAGING_REQUEST]";
-    const endTag = "[/IMAGING_REQUEST]";
-    const start = text.indexOf(startTag);
-    const end = text.indexOf(endTag);
-    if (start === -1 || end === -1 || end < start) {
-      const fromHeading = extractTitledSectionFromNotes(text, "IMAGING");
-      return { section: fromHeading.section, rest: fromHeading.rest };
-    }
-    const block = text.slice(start + startTag.length, end);
-    const cleaned = block
-      .split(/\r?\n/)
-      .map((x) => x.trim())
-      .filter((x) => x.length > 0 && x !== "IMAGING REQUEST:")
-      .join("\n");
-    const rest = `${text.slice(0, start)} ${text.slice(end + endTag.length)}`.trim();
-    return { section: cleaned, rest };
-  }
-
-  function buildPlansSupplement(
-    baseNotes: string,
-    labsText: string,
-    imagingText: string,
-    medsText: string,
-    referralText: string,
-  ): string {
-    const normalized = (baseNotes ?? "").trim();
-    const extractedImaging = extractImagingSectionFromNotes(normalized);
-    const extractedLabs = extractTitledSectionFromNotes(extractedImaging.rest, "LABS/RESULTS");
-    const extractedMeds = extractTitledSectionFromNotes(extractedLabs.rest, "MEDICATIONS");
-    const extractedReferral = extractTitledSectionFromNotes(extractedMeds.rest, "REFERRAL");
-    const base = extractedReferral.rest.trim();
-
-    const labs = (labsText || extractedLabs.section).trim();
-    const imaging = (imagingText || extractedImaging.section).trim();
-    const meds = (medsText || extractedMeds.section).trim();
-    const referral = (referralText || extractedReferral.section).trim();
-
-    const sections: string[] = [];
-    if (labs) sections.push(`LABS/RESULTS:\n${labs}`);
-    if (imaging) sections.push(`IMAGING:\n${imaging}`);
-    if (meds) sections.push(`MEDICATIONS:\n${meds}`);
-    if (referral) sections.push(`REFERRAL:\n${referral}`);
-    return [base, ...sections].filter((x) => x.length > 0).join("\n\n");
-  }
-
-  function buildLabsPrintTextFromItems(
-    items: Array<{
-      test_name: string | null;
-      notes: string | null;
-      priority: string | null;
-      result_value: string | null;
-      result_unit: string | null;
-      reference_range: string | null;
-      flag: string | null;
-      result_remarks: string | null;
-    }>,
-  ): string {
-    const lines = items
-      .map((it) => {
-        const name = (it.test_name ?? "").trim();
-        const notes = (it.notes ?? "").trim();
-        const pri = (it.priority ?? "").trim();
-        const resultValue = (it.result_value ?? "").trim();
-        const resultUnit = (it.result_unit ?? "").trim();
-        const referenceRange = (it.reference_range ?? "").trim();
-        const flag = (it.flag ?? "").trim();
-        const resultRemarks = (it.result_remarks ?? "").trim();
-        const hasResult = resultValue.length > 0;
-        const resultText = hasResult
-          ? `${resultValue}${resultUnit ? ` ${resultUnit}` : ""}`
-          : "";
-        const bits = [
-          name || "Lab test",
-          pri ? `Priority: ${pri}` : "",
-          resultText ? `Result: ${resultText}` : "",
-          referenceRange ? `Ref: ${referenceRange}` : "",
-          flag ? `Flag: ${flag}` : "",
-          resultRemarks ? `Remarks: ${resultRemarks}` : "",
-          !hasResult && notes ? `Notes: ${notes}` : "",
-        ].filter((x) => x.length > 0);
-        return bits.join(" | ");
-      })
-      .filter((x) => x.length > 0);
-    return lines.join("\n");
-  }
-
-  function buildMedicationsPrintText(
-    meds: Array<{ medication_name: string; dosage: string | null; frequency: string | null; notes: string | null }>,
-  ): string {
-    const lines = meds
-      .map((m) => {
-        const name = (m.medication_name ?? "").trim();
-        const dosage = (m.dosage ?? "").trim();
-        const frequency = (m.frequency ?? "").trim();
-        const notes = (m.notes ?? "").trim();
-        const bits = [name, dosage, frequency, notes ? `Notes: ${notes}` : ""].filter((x) => x.length > 0);
-        return bits.join(" | ");
-      })
-      .filter((x) => x.length > 0);
-    return lines.join("\n");
-  }
 
   function getPhysiciansRecordChiefComplaintFromDom(): string | null {
     if (typeof document === "undefined") return null;
@@ -431,45 +303,6 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
     return el !== null ? el.value : null;
   }
 
-  function getPlansTreatmentFromPanel(): {
-    planNotes: string;
-    disposition: string;
-    planLabs: boolean;
-    planImaging: boolean;
-    planMedications: boolean;
-    planReferral: boolean;
-  } | null {
-    if (typeof document === "undefined") return null;
-    const panel = document.querySelector("#consultation-tabpanel-5");
-    if (!panel) return null;
-
-    const notesEl = panel.querySelector("textarea") as HTMLTextAreaElement | null;
-    const dispositionEl = panel.querySelector(
-      'input[type="radio"]:checked',
-    ) as HTMLInputElement | null;
-    if (!notesEl && !dispositionEl) return null;
-
-    const planRows = panel.querySelectorAll(".MuiFormControlLabel-root");
-    const checkboxByLabel = (labelText: string): boolean => {
-      for (const row of planRows) {
-        const label = (row.querySelector(".MuiFormControlLabel-label")?.textContent ?? "").trim();
-        if (label !== labelText) continue;
-        const input = row.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
-        return input?.checked ?? false;
-      }
-      return false;
-    };
-
-    return {
-      planNotes: notesEl?.value ?? "",
-      disposition: dispositionEl?.value ?? "",
-      planLabs: checkboxByLabel("LABS"),
-      planImaging: checkboxByLabel("IMAGING"),
-      planMedications: checkboxByLabel("MEDICATIONS"),
-      planReferral: checkboxByLabel("REFERRAL"),
-    };
-  }
-
   return (
     <Box sx={{ maxWidth: 1200, mx: "auto" }}>
       <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 1.5, mb: 2, flexWrap: "wrap" }}>
@@ -499,7 +332,6 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
                   obstetricHistory,
                   reviewOfSystems,
                   peExam,
-                  labRequests,
                 ] = await Promise.all([
                   fetchEncounterPhysicianRecord(transId),
                   fetchEncounterClinicalDiagnosis(transId),
@@ -516,7 +348,6 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
                   fetchObstetricHistory(transId),
                   fetchReviewOfSystems(transId),
                   fetchPhysicalExamination(transId),
-                  fetchLabRequestsForEncounter(transId),
                 ]);
 
                 const v = vitals?.row ?? null;
@@ -528,28 +359,10 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
                 const u = profile as UserProfile | null;
                 const currentMedsFromFields = getMedicalHistoryCurrentMedicationInputs();
                 const reviewOfSystemsFromPanel = getReviewOfSystemsFromPanel();
-                const plansFromPanel = getPlansTreatmentFromPanel();
                 const peFormFromDb = formFromPhysicalExaminationRowOrDefault(
                   peExam.error ? null : peExam.row,
                 );
                 const peForm = getPhysicalExaminationFromPanel() ?? peFormFromDb;
-                const labItemDetails = await fetchLabRequestItemDetailsForRequestIds(
-                  labRequests.requests.map((r) => r.id),
-                );
-                const labsFromRequests = labItemDetails.error
-                  ? ""
-                  : buildLabsPrintTextFromItems(labItemDetails.items);
-                const medsFromRows = buildMedicationsPrintText(currentMeds.medications);
-                const basePlanNotes = plansFromPanel?.planNotes ?? plans.form.plan_notes;
-                const extractedImaging = extractImagingSectionFromNotes(basePlanNotes);
-                const extractedReferral = extractTitledSectionFromNotes(basePlanNotes, "REFERRAL");
-                const mergedPlanNotes = buildPlansSupplement(
-                  basePlanNotes,
-                  labsFromRequests,
-                  extractedImaging.section,
-                  medsFromRows,
-                  extractedReferral.section,
-                );
                 const ok = await openConsultationPrintWindow({
                   patient,
                   physician: {
@@ -565,13 +378,8 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
                     focusedExamNotes: getFocusedExamNotesFromPanel() ?? focused.notes,
                     clinicalDiagnosis:
                       getClinicalDiagnosisFromPanel() ?? diagnosis.form.clinical_diagnosis,
-                    planLabs: plansFromPanel?.planLabs ?? (plans.form.plan_labs ?? false),
-                    planImaging: plansFromPanel?.planImaging ?? (plans.form.plan_imaging ?? false),
-                    planMedications:
-                      plansFromPanel?.planMedications ?? (plans.form.plan_medications ?? false),
-                    planReferral: plansFromPanel?.planReferral ?? (plans.form.plan_referral ?? false),
-                    planNotes: mergedPlanNotes,
-                    disposition: plansFromPanel?.disposition ?? (plans.form.disposition ?? ""),
+                    planNotes: plans.form.plan_notes,
+                    disposition: plans.form.disposition ?? "",
                     vitalBp: bp,
                     vitalHr: v?.heart_rate != null ? String(v.heart_rate) : "",
                     vitalRr: v?.respiratory_rate != null ? String(v.respiratory_rate) : "",

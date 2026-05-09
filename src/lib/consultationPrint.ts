@@ -21,10 +21,6 @@ type ConsultationPrintDetails = {
   physicalExaminationForm: PhysicalExaminationForm;
   focusedExamNotes: string;
   clinicalDiagnosis: string;
-  planLabs: boolean;
-  planImaging: boolean;
-  planMedications: boolean;
-  planReferral: boolean;
   planNotes: string;
   disposition: string;
   vitalBp: string;
@@ -158,19 +154,6 @@ const NEUROLOGIC_EXAMINATION_P2 = {
   lineHeight: 11,
 } as const;
 
-// Page 2 — Neurologic text fields (aligned to printed labels/lines).
-const NEURO_CEREBRAL_P2 = { x: 466, fromTop: 523, size: 8 } as const;
-const NEURO_CNS_I_P2 = { x: 440, fromTop: 554, size: 8 } as const;
-const NEURO_CNS_II_III_P2 = { x: 452, fromTop: 566, size: 8 } as const;
-const NEURO_CNS_IV_VI_P2 = { x: 465, fromTop: 575, size: 8 } as const;
-const NEURO_CNS_V_VII_P2 = { x: 455, fromTop: 586, size: 8 } as const;
-const NEURO_CNS_VIII_P2 = { x: 450, fromTop: 597, size: 8 } as const;
-const NEURO_CNS_IX_X_P2 = { x: 452, fromTop: 607, size: 8 } as const;
-const NEURO_CNS_XI_XII_P2 = { x: 455, fromTop: 617, size: 8 } as const;
-const NEURO_CEREBELLAR_P2 = { x: 487, fromTop: 638, size: 8 } as const;
-const NEURO_MOTOR_STRENGTH_P2 = { x: 429, fromTop: 672, size: 8 } as const;
-const NEURO_SENSORY_REFLEX_P2 = { x: 429, fromTop: 700, size: 8 } as const;
-
 // Page 2 — Physical Exam checkboxes (template calibration values).
 const PHYSICAL_EXAM_CHECKBOXES_P2: PeCheckboxPlacement[] = [
   { x: 137, fromTop: 429, on: (f) => f.pe_general_alert },
@@ -208,56 +191,14 @@ const PHYSICAL_EXAM_CHECKBOXES_P2: PeCheckboxPlacement[] = [
   { x: 221, fromTop: 702, on: (f) => f.pe_ext_ulcers },
 ];
 
-// Page 2 — Neurologic checkbox row (MMS), separate coordinates per checkbox.
-const NEURO_MMS_ALERT_CHECKBOX_P2 = { x: 454, fromTop: 455 } as const;
-const NEURO_MMS_ORIENTED_CHECKBOX_P2 = { x: 492, fromTop: 455 } as const;
-const NEURO_MMS_JUDGMENT_INSIGHT_CHECKBOX_P2 = { x: 474, fromTop: 466 } as const;
-const NEURO_MMS_MEMORY_CHECKBOX_P2 = { x: 514, fromTop: 478 } as const;
-const NEURO_MMS_MOOD_CHECKBOX_P2 = { x: 469, fromTop: 491 } as const;
-const NEURO_MMS_NO_DELUSIONS_CHECKBOX_P2 = { x: 505, fromTop: 491 } as const;
-
-// Page 3 — Plans/Treatment checklist (separate coordinates per item).
-const PLAN_LABS_CHECKBOX_P3 = { x: 93, fromTop: 297 } as const;
-const PLAN_IMAGING_CHECKBOX_P3 = { x: 96, fromTop: 297 } as const;
-const PLAN_MEDICATIONS_CHECKBOX_P3 = { x: 191, fromTop: 297 } as const;
-const PLAN_REFERRAL_CHECKBOX_P3 = { x: 96, fromTop: 311 } as const;
-const PLAN_NOTES_MAIN_P3 = {
-  x: 94,
-  fromTop: 326,
-  maxWidthSubtract: 200,
-  lineHeight: 11,
-} as const;
-const PLAN_NOTES_LABS_P3 = {
-  x: 94,
-  fromTop: 327,
-  maxWidthSubtract: 200,
-  lineHeight: 11,
-} as const;
-const PLAN_NOTES_IMAGING_P3 = {
-  x: 94,
-  fromTop: PLAN_NOTES_LABS_P3.fromTop + 10,
-  maxWidthSubtract: 200,
-  lineHeight: 11,
-} as const;
-const PLAN_NOTES_MEDICATIONS_P3 = {
-  x: 94,
-  fromTop: PLAN_NOTES_LABS_P3.fromTop + 20,
-  maxWidthSubtract: 200,
-  lineHeight: 11,
-} as const;
-const PLAN_NOTES_REFERRAL_P3 = {
-  x: 94,
-  fromTop: PLAN_NOTES_LABS_P3.fromTop + 30,
-  maxWidthSubtract: 200,
-  lineHeight: 11,
-} as const;
-
-const DISPOSITION_CHECKBOXES_P3: { x: number; fromTop: number; on: (d: ConsultationPrintDetails) => boolean }[] = [
-  { x: 129, fromTop: 558, on: (d) => d.disposition.trim().toLowerCase() === "home" },
-  { x: 176, fromTop: 558, on: (d) => d.disposition.trim().toLowerCase() === "medico legal" },
-  { x: 267, fromTop: 558, on: (d) => d.disposition.trim().toLowerCase() === "advise admission" },
-  { x: 380, fromTop: 558, on: (d) => d.disposition.trim().toLowerCase() === "absconded" },
-  { x: 459, fromTop: 558, on: (d) => d.disposition.trim().toLowerCase() === "dama" },
+// Page 2 — Neurologic checkbox row (MMS).
+const NEUROLOGIC_EXAM_CHECKBOXES_P2: PeCheckboxPlacement[] = [
+  { x: 347, fromTop: 473, on: (f) => f.pe_neuro_alert },
+  { x: 398, fromTop: 473, on: (f) => f.pe_neuro_oriented },
+  { x: 464, fromTop: 473, on: (f) => f.pe_neuro_judgment_insight },
+  { x: 347, fromTop: 487, on: (f) => f.pe_neuro_memory },
+  { x: 409, fromTop: 487, on: (f) => f.pe_neuro_mood },
+  { x: 464, fromTop: 487, on: (f) => f.pe_neuro_no_delusions },
 ];
 
 function drawReviewOfSystemsCheckboxes(
@@ -305,67 +246,28 @@ function drawWrappedFields<T>(
   }
 }
 
-function extractTitledSection(text: string, title: string): { section: string; rest: string } {
-  const lines = text.split(/\r?\n/);
-  const titleLc = `${title.trim().toLowerCase()}:`;
-  const kept: string[] = [];
-  const section: string[] = [];
-  let inSection = false;
-  for (const raw of lines) {
-    const line = raw.trimEnd();
-    const lineLc = line.trim().toLowerCase();
-    const isHeading = /^[a-z0-9/\s]+:$/i.test(line.trim());
-    if (lineLc === titleLc) {
-      inSection = true;
-      continue;
-    }
-    if (inSection && isHeading) inSection = false;
-    if (inSection) section.push(line);
-    else kept.push(line);
-  }
-  return { section: section.join("\n").trim(), rest: kept.join("\n").trim() };
-}
+function getNeurologicNotesForPrint(form: PhysicalExaminationForm): string {
+  const cnsLines = [
+    ["I:", form.pe_neuro_cn_i],
+    ["II, III:", form.pe_neuro_cn_ii_iii],
+    ["IV, VI:", form.pe_neuro_cn_iv_vi],
+    ["V, VII:", form.pe_neuro_cn_v_vii],
+    ["VIII:", form.pe_neuro_cn_viii],
+    ["IX, X:", form.pe_neuro_cn_ix_x],
+    ["XI, XII:", form.pe_neuro_cn_xi_xii],
+  ]
+    .map(([label, value]) => `${label} ${value.trim()}`.trim())
+    .filter((x) => !x.endsWith(":"));
 
-function extractImagingBlock(text: string): { section: string; rest: string } {
-  const startTag = "[IMAGING_REQUEST]";
-  const endTag = "[/IMAGING_REQUEST]";
-  const start = text.indexOf(startTag);
-  const end = text.indexOf(endTag);
-  if (start === -1 || end === -1 || end < start) return { section: "", rest: text.trim() };
-  const block = text.slice(start + startTag.length, end);
-  const cleaned = block
-    .split(/\r?\n/)
-    .map((x) => x.trim())
-    .filter((x) => x.length > 0 && x !== "IMAGING REQUEST:")
-    .join("\n");
-  const rest = `${text.slice(0, start)} ${text.slice(end + endTag.length)}`.trim();
-  return { section: cleaned, rest };
-}
-
-function splitPlanNotesForPrint(text: string): {
-  main: string;
-  labs: string;
-  imaging: string;
-  medications: string;
-  referral: string;
-} {
-  const normalized = (text ?? "").trim();
-  const { section: imagingFromTag, rest: afterImagingTag } = extractImagingBlock(normalized);
-  const { section: imagingFromTitle, rest: afterImaging } = extractTitledSection(
-    afterImagingTag,
-    "IMAGING",
-  );
-  const imaging = imagingFromTag || imagingFromTitle;
-  const { section: labs, rest: afterLabs } = extractTitledSection(afterImaging, "LABS/RESULTS");
-  const { section: medications, rest: afterMeds } = extractTitledSection(afterLabs, "MEDICATIONS");
-  const { section: referral, rest: main } = extractTitledSection(afterMeds, "REFERRAL");
-  return {
-    main: main.trim(),
-    labs: labs.trim(),
-    imaging: imaging.trim(),
-    medications: medications.trim(),
-    referral: referral.trim(),
-  };
+  return [
+    form.pe_neuro_cerebral.trim(),
+    cnsLines.join("; "),
+    form.pe_neuro_cerebellar.trim(),
+    form.pe_neuro_motor_strength.trim(),
+    form.pe_neuro_sensory_reflex.trim(),
+  ]
+    .filter((x) => x.length > 0)
+    .join(" • ");
 }
 
 function printPdfBlob(blob: Blob): void {
@@ -424,27 +326,6 @@ function drawWrapped(
     }
   }
   flush();
-  return y;
-}
-
-function drawWrappedPreserveNewlines(
-  page: PDFPage,
-  text: string,
-  x: number,
-  yStart: number,
-  maxWidth: number,
-  font: PDFFont,
-  size: number,
-  lineHeight: number,
-): number {
-  const blocks = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  let y = yStart;
-  for (const line of blocks) {
-    y = drawWrapped(page, line, x, y, maxWidth, font, size, lineHeight);
-  }
   return y;
 }
 
@@ -686,102 +567,22 @@ export async function openConsultationPrintWindow(args: {
       font,
       PHYSICAL_EXAM_CHECKBOXES_P2,
     );
-    drawCheckboxMark(
+    drawPhysicalExamCheckboxes(
       p2,
-      NEURO_MMS_ALERT_CHECKBOX_P2.x,
-      NEURO_MMS_ALERT_CHECKBOX_P2.fromTop,
-      details.physicalExaminationForm.pe_neuro_alert,
+      details.physicalExaminationForm,
       font,
-    );
-    drawCheckboxMark(
-      p2,
-      NEURO_MMS_ORIENTED_CHECKBOX_P2.x,
-      NEURO_MMS_ORIENTED_CHECKBOX_P2.fromTop,
-      details.physicalExaminationForm.pe_neuro_oriented,
-      font,
-    );
-    drawCheckboxMark(
-      p2,
-      NEURO_MMS_JUDGMENT_INSIGHT_CHECKBOX_P2.x,
-      NEURO_MMS_JUDGMENT_INSIGHT_CHECKBOX_P2.fromTop,
-      details.physicalExaminationForm.pe_neuro_judgment_insight,
-      font,
-    );
-    drawCheckboxMark(
-      p2,
-      NEURO_MMS_MEMORY_CHECKBOX_P2.x,
-      NEURO_MMS_MEMORY_CHECKBOX_P2.fromTop,
-      details.physicalExaminationForm.pe_neuro_memory,
-      font,
-    );
-    drawCheckboxMark(
-      p2,
-      NEURO_MMS_MOOD_CHECKBOX_P2.x,
-      NEURO_MMS_MOOD_CHECKBOX_P2.fromTop,
-      details.physicalExaminationForm.pe_neuro_mood,
-      font,
-    );
-    drawCheckboxMark(
-      p2,
-      NEURO_MMS_NO_DELUSIONS_CHECKBOX_P2.x,
-      NEURO_MMS_NO_DELUSIONS_CHECKBOX_P2.fromTop,
-      details.physicalExaminationForm.pe_neuro_no_delusions,
-      font,
+      NEUROLOGIC_EXAM_CHECKBOXES_P2,
     );
     drawWrappedFields(p2, details.physicalExaminationForm, font, PHYSICAL_EXAM_OTHERS_P2);
-    const nf = details.physicalExaminationForm;
-    drawAtTop(p2, nf.pe_neuro_cerebral, NEURO_CEREBRAL_P2.x, NEURO_CEREBRAL_P2.fromTop, NEURO_CEREBRAL_P2.size, font);
-    drawAtTop(p2, nf.pe_neuro_cn_i, NEURO_CNS_I_P2.x, NEURO_CNS_I_P2.fromTop, NEURO_CNS_I_P2.size, font);
-    drawAtTop(
+    drawWrapped(
       p2,
-      nf.pe_neuro_cn_ii_iii,
-      NEURO_CNS_II_III_P2.x,
-      NEURO_CNS_II_III_P2.fromTop,
-      NEURO_CNS_II_III_P2.size,
+      getNeurologicNotesForPrint(details.physicalExaminationForm),
+      NEUROLOGIC_EXAMINATION_P2.x,
+      yTop(NEUROLOGIC_EXAMINATION_P2.fromTop),
+      width - NEUROLOGIC_EXAMINATION_P2.maxWidthSubtract,
       font,
-    );
-    drawAtTop(p2, nf.pe_neuro_cn_iv_vi, NEURO_CNS_IV_VI_P2.x, NEURO_CNS_IV_VI_P2.fromTop, NEURO_CNS_IV_VI_P2.size, font);
-    drawAtTop(
-      p2,
-      nf.pe_neuro_cn_v_vii,
-      NEURO_CNS_V_VII_P2.x,
-      NEURO_CNS_V_VII_P2.fromTop,
-      NEURO_CNS_V_VII_P2.size,
-      font,
-    );
-    drawAtTop(p2, nf.pe_neuro_cn_viii, NEURO_CNS_VIII_P2.x, NEURO_CNS_VIII_P2.fromTop, NEURO_CNS_VIII_P2.size, font);
-    drawAtTop(p2, nf.pe_neuro_cn_ix_x, NEURO_CNS_IX_X_P2.x, NEURO_CNS_IX_X_P2.fromTop, NEURO_CNS_IX_X_P2.size, font);
-    drawAtTop(
-      p2,
-      nf.pe_neuro_cn_xi_xii,
-      NEURO_CNS_XI_XII_P2.x,
-      NEURO_CNS_XI_XII_P2.fromTop,
-      NEURO_CNS_XI_XII_P2.size,
-      font,
-    );
-    drawAtTop(
-      p2,
-      nf.pe_neuro_cerebellar,
-      NEURO_CEREBELLAR_P2.x,
-      NEURO_CEREBELLAR_P2.fromTop,
-      NEURO_CEREBELLAR_P2.size,
-      font,
-    );
-    drawAtTop(
-      p2,
-      nf.pe_neuro_motor_strength,
-      NEURO_MOTOR_STRENGTH_P2.x,
-      NEURO_MOTOR_STRENGTH_P2.fromTop,
-      NEURO_MOTOR_STRENGTH_P2.size,
-      font,
-    );
-    drawAtTop(
-      p2,
-      nf.pe_neuro_sensory_reflex,
-      NEURO_SENSORY_REFLEX_P2.x,
-      NEURO_SENSORY_REFLEX_P2.fromTop,
-      NEURO_SENSORY_REFLEX_P2.size,
-      font,
+      NEUROLOGIC_EXAMINATION_P2.fontSize,
+      NEUROLOGIC_EXAMINATION_P2.lineHeight,
     );
   }
 
@@ -810,83 +611,18 @@ export async function openConsultationPrintWindow(args: {
       size,
       11,
     );
-    const planSplit = splitPlanNotesForPrint(details.planNotes);
     drawWrapped(
       p3,
-      planSplit.main,
-      PLAN_NOTES_MAIN_P3.x,
-      yTop(PLAN_NOTES_MAIN_P3.fromTop),
-      width - PLAN_NOTES_MAIN_P3.maxWidthSubtract,
+      details.planNotes,
+      36,
+      yTop(224),
+      width - 72,
       font,
       size,
-      PLAN_NOTES_MAIN_P3.lineHeight,
-    );
-    drawWrappedPreserveNewlines(
-      p3,
-      planSplit.labs,
-      PLAN_NOTES_LABS_P3.x,
-      yTop(PLAN_NOTES_LABS_P3.fromTop),
-      width - PLAN_NOTES_LABS_P3.maxWidthSubtract,
-      font,
-      size,
-      PLAN_NOTES_LABS_P3.lineHeight,
-    );
-    drawWrappedPreserveNewlines(
-      p3,
-      planSplit.imaging,
-      PLAN_NOTES_IMAGING_P3.x,
-      yTop(PLAN_NOTES_IMAGING_P3.fromTop),
-      width - PLAN_NOTES_IMAGING_P3.maxWidthSubtract,
-      font,
-      size,
-      PLAN_NOTES_IMAGING_P3.lineHeight,
-    );
-    drawWrappedPreserveNewlines(
-      p3,
-      planSplit.medications,
-      PLAN_NOTES_MEDICATIONS_P3.x,
-      yTop(PLAN_NOTES_MEDICATIONS_P3.fromTop),
-      width - PLAN_NOTES_MEDICATIONS_P3.maxWidthSubtract,
-      font,
-      size,
-      PLAN_NOTES_MEDICATIONS_P3.lineHeight,
-    );
-    drawWrappedPreserveNewlines(
-      p3,
-      planSplit.referral,
-      PLAN_NOTES_REFERRAL_P3.x,
-      yTop(PLAN_NOTES_REFERRAL_P3.fromTop),
-      width - PLAN_NOTES_REFERRAL_P3.maxWidthSubtract,
-      font,
-      size,
-      PLAN_NOTES_REFERRAL_P3.lineHeight,
+      11,
     );
 
-    drawCheckboxMark(p3, PLAN_LABS_CHECKBOX_P3.x, PLAN_LABS_CHECKBOX_P3.fromTop, details.planLabs, font);
-    drawCheckboxMark(
-      p3,
-      PLAN_IMAGING_CHECKBOX_P3.x,
-      PLAN_IMAGING_CHECKBOX_P3.fromTop,
-      details.planImaging,
-      font,
-    );
-    drawCheckboxMark(
-      p3,
-      PLAN_MEDICATIONS_CHECKBOX_P3.x,
-      PLAN_MEDICATIONS_CHECKBOX_P3.fromTop,
-      details.planMedications,
-      font,
-    );
-    drawCheckboxMark(
-      p3,
-      PLAN_REFERRAL_CHECKBOX_P3.x,
-      PLAN_REFERRAL_CHECKBOX_P3.fromTop,
-      details.planReferral,
-      font,
-    );
-    for (const item of DISPOSITION_CHECKBOXES_P3) {
-      drawCheckboxMark(p3, item.x, item.fromTop, item.on(details), font);
-    }
+    drawAtTop(p3, details.disposition, 37, 288, 8.7, font);
     drawAtTop(p3, physician.fullname, 123, 623, 9, font);
     drawAtTop(p3, physician.licenseNo, 112, 366, 9, font);
   }

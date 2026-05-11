@@ -22,6 +22,11 @@ export type LabTestCatalogItem = {
   specimen_type: string | null;
   unit: string | null;
   reference_range: string | null;
+  /**
+   * Blank results PDF stem: `templates/Lab Results/LIFEHUB-MEDICAL-Results-<CODE>.pdf`
+   * (e.g. BLOODCHEM3, HEMA, URINALYSIS, ART).
+   */
+  results_template_code: string | null;
   turnaround_hours: number | null;
   price: string | number | null;
   requires_fasting: boolean | null;
@@ -184,7 +189,7 @@ export async function fetchLabCatalogGrouped(): Promise<{
     supabase
       .from(LAB_TESTS_TABLE)
       .select(
-        "id, category_id, code, name, description, specimen_type, unit, reference_range, turnaround_hours, price, requires_fasting, sort_order, is_active",
+        "id, category_id, code, name, description, specimen_type, unit, reference_range, results_template_code, turnaround_hours, price, requires_fasting, sort_order, is_active",
       )
       .order("sort_order", { ascending: true })
       .order("name", { ascending: true }),
@@ -211,6 +216,7 @@ export async function fetchLabCatalogGrouped(): Promise<{
     specimen_type: (raw.specimen_type as string | null) ?? null,
     unit: (raw.unit as string | null) ?? null,
     reference_range: (raw.reference_range as string | null) ?? null,
+    results_template_code: (raw.results_template_code as string | null) ?? null,
     turnaround_hours: (() => {
       if (raw.turnaround_hours == null || raw.turnaround_hours === "") return null;
       const n = Number(raw.turnaround_hours);
@@ -273,4 +279,95 @@ export function labTestRowLabel(row: Pick<LabTestCatalogItem, "id" | "name" | "c
   const c = row.code?.trim();
   if (c) return c;
   return row.id ? `Test #${row.id}` : "—";
+}
+
+/**
+ * Repo-relative directory for blank laboratory result PDFs (project root = Next.js `process.cwd()` on server).
+ * @see {@link labResultsTemplatePdfFileName}
+ */
+export const LAB_RESULTS_TEMPLATES_RELATIVE_DIR = "templates/Lab Results" as const;
+
+/** e.g. `LIFEHUB-MEDICAL-Results-BLOODCHEM3.pdf` */
+export function labResultsTemplatePdfFileName(resultsTemplateCode: string): string {
+  const c = String(resultsTemplateCode ?? "").trim();
+  if (!c) return "";
+  return `LIFEHUB-MEDICAL-Results-${c.toUpperCase()}.pdf`;
+}
+
+/** Path from repo root using forward slashes, for server `path.join(process.cwd(), ...)`. */
+export function labResultsTemplatePdfRelativePath(resultsTemplateCode: string): string {
+  const name = labResultsTemplatePdfFileName(resultsTemplateCode);
+  if (!name) return "";
+  return `${LAB_RESULTS_TEMPLATES_RELATIVE_DIR}/${name}`;
+}
+
+/** Order of blood chemistry result forms (LIFEHUB-MEDICAL-Results-BLOODCHEM*.pdf). */
+export const LAB_RESULTS_BLOODCHEM_TEMPLATE_ORDER = [
+  "BLOODCHEM1",
+  "BLOODCHEM2",
+  "BLOODCHEM3",
+  "BLOODCHEM4",
+  "BLOODCHEM5",
+  "BLOODCHEM6",
+  "BLOODCHEM7",
+  "BLOODCHEM8",
+  "BLOODCHEM9",
+  "BLOODCHEM10",
+  "BLOODCHEM11",
+] as const;
+
+export const LAB_RESULTS_BLOODCHEM_HEADINGS: Record<string, string> = {
+  BLOODCHEM1: "Panel 1 — Glucose & diabetes",
+  BLOODCHEM2: "Panel 2 — Renal function",
+  BLOODCHEM3: "Panel 3 — Lipid profile",
+  BLOODCHEM4: "Panel 4 — Liver / enzymes",
+  BLOODCHEM5: "Panel 5 — Cardiac markers",
+  BLOODCHEM6: "Panel 6 — Electrolytes",
+  BLOODCHEM7: "Panel 7 — Iron studies",
+  BLOODCHEM8: "Panel 8 — Thyroid function",
+  BLOODCHEM9: "Panel 9 — Coagulation",
+  BLOODCHEM10: "Panel 10 — Hormones",
+  BLOODCHEM11: "Panel 11 — Tumor markers",
+};
+
+function sortTestsCatalog(a: LabTestCatalogItem, b: LabTestCatalogItem): number {
+  const sa = a.sort_order ?? 0;
+  const sb = b.sort_order ?? 0;
+  if (sa !== sb) return sa - sb;
+  return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+}
+
+/** Subsections for Clinical Chemistry (CHEM) modal — one block per BLOODCHEM results PDF. */
+export function groupLabTestsByBloodChemTemplate(tests: LabTestCatalogItem[]): {
+  heading: string;
+  tests: LabTestCatalogItem[];
+}[] {
+  const withTpl = tests.filter((t) => (t.results_template_code ?? "").trim() !== "");
+  const withoutTpl = tests
+    .filter((t) => !(t.results_template_code ?? "").trim())
+    .sort(sortTestsCatalog);
+
+  const byTpl = new Map<string, LabTestCatalogItem[]>();
+  for (const t of withTpl) {
+    const k = (t.results_template_code ?? "").trim();
+    const list = byTpl.get(k) ?? [];
+    list.push(t);
+    byTpl.set(k, list);
+  }
+  for (const [, list] of byTpl) list.sort(sortTestsCatalog);
+
+  const out: { heading: string; tests: LabTestCatalogItem[] }[] = [];
+  for (const code of LAB_RESULTS_BLOODCHEM_TEMPLATE_ORDER) {
+    const arr = byTpl.get(code);
+    if (arr?.length) {
+      out.push({ heading: LAB_RESULTS_BLOODCHEM_HEADINGS[code] ?? code, tests: arr });
+      byTpl.delete(code);
+    }
+  }
+  for (const k of [...byTpl.keys()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))) {
+    const arr = byTpl.get(k);
+    if (arr?.length) out.push({ heading: LAB_RESULTS_BLOODCHEM_HEADINGS[k] ?? k, tests: arr });
+  }
+  if (withoutTpl.length) out.push({ heading: "", tests: withoutTpl });
+  return out.length > 0 ? out : [{ heading: "", tests: [...tests].sort(sortTestsCatalog) }];
 }

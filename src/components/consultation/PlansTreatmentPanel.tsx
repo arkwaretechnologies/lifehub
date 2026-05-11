@@ -62,6 +62,7 @@ import {
 } from "@/lib/labRequests";
 import {
   fetchLabCatalogGrouped,
+  groupLabTestsByBloodChemTemplate,
   type LabCatalogSection,
   type LabTestCatalogItem,
 } from "@/lib/labTests";
@@ -85,10 +86,14 @@ import {
 import { fetchActivePhysicianServices, type PhysicianServiceRow } from "@/lib/physicianServices";
 import type { LabRequestItemView } from "@/app/api/laboratory/lab-request/route";
 
-/** Urinalysis & fecalysis catalog uses `lab_tests.description` as subsection headings in the lab modal. */
+/** Urinalysis catalog uses `lab_tests.description` as subsection headings in the lab modal. */
 function labCategoryUsesUaFecalSubgroups(category: { code?: string }): boolean {
   const c = String(category.code ?? "").toUpperCase();
-  return c === "UA_FECAL" || c === "MICRO2" || c === "MICRO";
+  return c === "UA_FECAL" || c === "URINALYSIS" || c === "MICRO2" || c === "MICRO";
+}
+
+function labCategoryUsesBloodChemTemplateSubgroups(category: { code?: string }): boolean {
+  return String(category.code ?? "").toUpperCase() === "CHEM";
 }
 
 function groupLabTestsByDescription(tests: LabTestCatalogItem[]): { heading: string; tests: LabTestCatalogItem[] }[] {
@@ -1051,15 +1056,7 @@ export default function PlansTreatmentPanel({
     }
   }, [transId, medicationLines, productCache, syncStructuredPrescription]);
 
-  const visibleLabSections = useMemo(
-    () =>
-      labSections.filter((s) => {
-        if (s.tests.length === 0) return false;
-        const code = String(s.category.code ?? "").toUpperCase();
-        return code !== "SERO" && code !== "MISC";
-      }),
-    [labSections]
-  );
+  const visibleLabSections = useMemo(() => labSections.filter((s) => s.tests.length > 0), [labSections]);
 
   const testsCoveredBySelectedPackages = useMemo(() => {
     const s = new Set<string>();
@@ -1822,9 +1819,11 @@ export default function PlansTreatmentPanel({
                     {section.category.name.toUpperCase()}
                   </Typography>
                   <Box sx={{ display: "flex", flexDirection: "column", gap: 1.25 }}>
-                    {(labCategoryUsesUaFecalSubgroups(section.category)
-                      ? groupLabTestsByDescription(section.tests)
-                      : [{ heading: "", tests: section.tests }]
+                    {(labCategoryUsesBloodChemTemplateSubgroups(section.category)
+                      ? groupLabTestsByBloodChemTemplate(section.tests)
+                      : labCategoryUsesUaFecalSubgroups(section.category)
+                        ? groupLabTestsByDescription(section.tests)
+                        : [{ heading: "", tests: section.tests }]
                     ).map(({ heading, tests: subTests }) => (
                       <Box key={`${String(section.category.id)}-${heading || "default"}`}>
                         {heading ? (

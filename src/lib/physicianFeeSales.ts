@@ -8,6 +8,13 @@ const USERS_TABLE = "users" as const;
 /** Cashier marks the sale paid with this `physician_fee_sales.status`. */
 export const PHYSICIAN_FEE_STATUS_PAID = "Paid" as const;
 
+/** Human label for `physician_fee_sales.status` on open / not-yet-Paid rows (null → Open). */
+export function formatPhysicianFeeSaleDisplayStatus(status: string | null | undefined): string {
+  const s = (status ?? "").trim();
+  if (!s) return "Open";
+  return s;
+}
+
 export type PhysicianFeeSaleItemRow = {
   physician_service_id: number;
   quantity: number;
@@ -159,6 +166,10 @@ export async function fetchPhysicianFeeSaleItemsWithServiceNames(saleIds: string
 
   for (const [, list] of itemsBySaleId) {
     list.sort((a, b) => a.linenum - b.linenum);
+  }
+
+  for (const id of ids) {
+    if (!itemsBySaleId.has(id)) itemsBySaleId.set(id, []);
   }
 
   return { itemsBySaleId, error: null };

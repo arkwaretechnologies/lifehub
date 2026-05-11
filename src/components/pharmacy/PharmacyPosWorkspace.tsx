@@ -1,0 +1,1987 @@
+"use client";
+
+import Image from "next/image";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Alert,
+  Box,
+  Button,
+  Chip,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Divider,
+  IconButton,
+  InputAdornment,
+  Paper,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  TextField,
+  Tooltip,
+  Typography,
+  MenuItem,
+} from "@mui/material";
+import AddIcon from "@mui/icons-material/Add";
+import RemoveIcon from "@mui/icons-material/Remove";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import PointOfSaleIcon from "@mui/icons-material/PointOfSale";
+import ManageSearchIcon from "@mui/icons-material/ManageSearch";
+import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
+import PriceChangeOutlinedIcon from "@mui/icons-material/PriceChangeOutlined";
+import LogoutIcon from "@mui/icons-material/Logout";
+import FullscreenIcon from "@mui/icons-material/Fullscreen";
+import FullscreenExitIcon from "@mui/icons-material/FullscreenExit";
+import CalculateOutlinedIcon from "@mui/icons-material/CalculateOutlined";
+import UndoOutlinedIcon from "@mui/icons-material/UndoOutlined";
+import PauseCircleOutlineIcon from "@mui/icons-material/PauseCircleOutline";
+import PlaylistPlayIcon from "@mui/icons-material/PlaylistPlay";
+import LocalOfferIcon from "@mui/icons-material/LocalOffer";
+import { useAuth } from "@/components/AuthProvider";
+import { LIFEHUB_LOGO_SRC } from "@/lib/lifehubLogo";
+import type { ProductPosRow } from "@/lib/pharmacyPosDb";
+import {
+  aggregateShiftSales,
+  closeShiftWithZ,
+  completePharmacySale,
+  fetchOpenShiftForUser,
+  fetchPrescriptionCartByEncounter,
+  fetchPosProductById,
+  fetchProductByBarcode,
+  fetchStockLotsForProduct,
+  fetchOnHandQtyByProductIds,
+  generateOrNumber,
+  getClosestStockExpiryYmd,
+  openPharmacyShift,
+  recordXReadingForShift,
+  searchPosProducts,
+  type ShiftReadingSnapshot,
+  listPharmacyCategories,
+  insertPharmacyCategory,
+  insertProductForPos,
+  formatProductOptionLabel,
+  type PharmacyCategoryRow,
+} from "@/lib/pharmacyPosDb";
+
+type CartLine = {
+  key: string;
+  product: ProductPosRow;
+  qty: number;
+  prescriptionItemId?: string | null;
+};
+
+/** Payment options shown in the pay modal (cash drawer vs e-wallet). */
+const PAY_MODAL_METHODS = ["Cash", "GCash"] as const;
+
+const HELD_SALES_STORAGE_KEY = "lifehub-pharmacy-pos-held-v1";
+
+/** Footer POS actions: compact colorful contained buttons (high contrast on white bar). */
+const POS_FOOTER_BTN_SX = {
+  minHeight: 48,
+  px: 2,
+  fontWeight: 700,
+  borderRadius: 2,
+  boxShadow: 1,
+  "&:hover": { boxShadow: 2 },
+} as const;
+
+/** Philippine peso denominations for drawer count (bills + peso coins only; no centavos). */
+const PHP_DRAWER_DENOMS: { value: number; label: string }[] = [
+  { value: 1000, label: "₱1,000" },
+  { value: 500, label: "₱500" },
+  { value: 200, label: "₱200" },
+  { value: 100, label: "₱100" },
+  { value: 50, label: "₱50" },
+  { value: 20, label: "₱20" },
+  { value: 10, label: "₱10" },
+  { value: 5, label: "₱5" },
+  { value: 1, label: "₱1" },
+];
+
+type HeldSaleSnapshot = {
+  id: string;
+  savedAt: number;
+  label: string;
+  lines: CartLine[];
+  prescriptionId: string | null;
+  patientId: number | null;
+  patientName: string | null;
+};
+
+function emptyDenomQty(): Record<string, string> {
+  return Object.fromEntries(PHP_DRAWER_DENOMS.map((d) => [String(d.value), ""]));
+}
+
+/** On-hand qty in POS search table (0 if none / not loaded). */
+function formatPosStockQty(qty: number | undefined): string {
+  if (qty == null || !Number.isFinite(qty) || qty <= 0) return "0";
+  return Number.isInteger(qty) ? String(qty) : qty.toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
+
+function parseDenomQty(raw: string): number {
+  const n = parseInt(raw.replace(/\D/g, ""), 10);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+/** Larger touch targets for cashier POS top bar (scanner-friendly). */
+const POS_BAR_FIELD_SX = {
+  "& .MuiOutlinedInput-root": {
+    minHeight: 52,
+    borderRadius: 2,
+    fontSize: "1.0625rem",
+  },
+  "& .MuiInputBase-input": {
+    py: 1.35,
+    fontSize: "1.0625rem",
+    lineHeight: 1.4,
+  },
+  "& .MuiInputBase-input::placeholder": {
+    opacity: 0.65,
+  },
+} as const;
+
+/** Cash count dialog: compact but readable quantity / amount fields. */
+const CASH_COUNT_FIELD_SX = {
+  "& .MuiOutlinedInput-root": {
+    minHeight: 44,
+    borderRadius: 1.5,
+    fontSize: "1rem",
+  },
+  "& .MuiInputBase-input": {
+    py: 1,
+    px: 1,
+    fontSize: "1rem",
+    lineHeight: 1.35,
+    fontVariantNumeric: "tabular-nums",
+    textAlign: "right" as const,
+  },
+  "& .MuiInputLabel-root": {
+    fontSize: "0.875rem",
+  },
+  "& .MuiInputLabel-shrink": {
+    fontSize: "0.8125rem",
+  },
+} as const;
+
+function defaultVatPct(row: ProductPosRow): number {
+  if (row.vat_exempt) return 0;
+  return row.vat_rate != null ? Number(row.vat_rate) : 12;
+}
+
+/** VAT-inclusive shelf price → VAT portion */
+function vatPortionFromInclusive(gross: number, vatPct: number): number {
+  if (vatPct <= 0 || gross <= 0) return 0;
+  return gross - gross / (1 + vatPct / 100);
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function parseMoneyAmount(raw: string): number {
+  const t = raw.trim().replace(/,/g, "");
+  if (t === "") return 0;
+  const n = Number(t);
+  return Number.isFinite(n) && n >= 0 ? round2(n) : 0;
+}
+
+/** Encounter `trans_id` from printed prescription QR (UUID v4 shape). */
+function isEncounterTransId(s: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s.trim());
+}
+
+function getFullscreenElement(): Element | null {
+  const d = document as Document & {
+    webkitFullscreenElement?: Element | null;
+    msFullscreenElement?: Element | null;
+  };
+  return document.fullscreenElement ?? d.webkitFullscreenElement ?? d.msFullscreenElement ?? null;
+}
+
+async function requestFullscreenEl(el: Element): Promise<void> {
+  const anyEl = el as Element & {
+    webkitRequestFullscreen?: () => Promise<void>;
+    msRequestFullscreen?: () => Promise<void>;
+  };
+  if (el.requestFullscreen) await el.requestFullscreen();
+  else if (anyEl.webkitRequestFullscreen) await anyEl.webkitRequestFullscreen();
+  else if (anyEl.msRequestFullscreen) anyEl.msRequestFullscreen();
+}
+
+async function exitFullscreenDoc(): Promise<void> {
+  const d = document as Document & {
+    webkitExitFullscreen?: () => Promise<void>;
+    msExitFullscreen?: () => Promise<void>;
+  };
+  if (document.exitFullscreen) await document.exitFullscreen();
+  else if (d.webkitExitFullscreen) await d.webkitExitFullscreen();
+  else if (d.msExitFullscreen) await d.msExitFullscreen();
+}
+
+export default function PharmacyPosWorkspace() {
+  const { profile } = useAuth();
+  const servedBy =
+    profile != null && typeof profile.user_id === "number" && Number.isFinite(profile.user_id)
+      ? profile.user_id
+      : null;
+
+  const [shiftId, setShiftId] = useState<string | null>(null);
+  const [shiftBeginningCash, setShiftBeginningCash] = useState<number>(0);
+  const [shiftOpenModal, setShiftOpenModal] = useState(false);
+  const [beginInput, setBeginInput] = useState("0");
+
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<ProductPosRow[]>([]);
+  /** Total on-hand qty from `stock` rows (key = product id). */
+  const [resultStockQty, setResultStockQty] = useState<Record<string, number>>({});
+  const [resultSel, setResultSel] = useState(0);
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [cart, setCart] = useState<CartLine[]>([]);
+  const [prescriptionId, setPrescriptionId] = useState<string | null>(null);
+  const [patientId, setPatientId] = useState<number | null>(null);
+  const [patientName, setPatientName] = useState<string | null>(null);
+
+  const [priceCheckOpen, setPriceCheckOpen] = useState(false);
+  const [priceCheckQuery, setPriceCheckQuery] = useState("");
+  const [priceCheckResults, setPriceCheckResults] = useState<ProductPosRow[]>([]);
+  const [priceCheckSel, setPriceCheckSel] = useState(0);
+  const [priceCheckHit, setPriceCheckHit] = useState<ProductPosRow | null>(null);
+  const [priceCheckHint, setPriceCheckHint] = useState<string | null>(null);
+  const priceCheckSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const priceCheckInputRef = useRef<HTMLInputElement>(null);
+  const [posInfo, setPosInfo] = useState<string | null>(null);
+
+  const [payOpen, setPayOpen] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState<string>("Cash");
+  const [amountTendered, setAmountTendered] = useState("");
+  const [discountAmount, setDiscountAmount] = useState("0");
+  const [discountDialogOpen, setDiscountDialogOpen] = useState(false);
+  const [discountDraft, setDiscountDraft] = useState("0");
+  const [checkoutErr, setCheckoutErr] = useState<string | null>(null);
+
+  const [shiftDialogOpen, setShiftDialogOpen] = useState(false);
+  const [zActualCash, setZActualCash] = useState("");
+
+  const [cashCountOpen, setCashCountOpen] = useState(false);
+  const [denomQty, setDenomQty] = useState<Record<string, string>>(emptyDenomQty);
+  const [countGcashPeso, setCountGcashPeso] = useState("");
+  const [countDebitPeso, setCountDebitPeso] = useState("");
+
+  const [cartSelectedKey, setCartSelectedKey] = useState<string | null>(null);
+  const [heldSales, setHeldSales] = useState<HeldSaleSnapshot[]>([]);
+  const [heldDialogOpen, setHeldDialogOpen] = useState(false);
+  const heldHydrated = useRef(false);
+
+  const searchRef = useRef<HTMLInputElement>(null);
+  const posRootRef = useRef<HTMLDivElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  /** Confirm quantity + show closest expiry before adding from search / barcode. */
+  const [addLineOpen, setAddLineOpen] = useState(false);
+  const [addLineProduct, setAddLineProduct] = useState<ProductPosRow | null>(null);
+  const [addLinePrescId, setAddLinePrescId] = useState<string | null>(null);
+  const [addLineQty, setAddLineQty] = useState("1");
+  const [addLineQtyErr, setAddLineQtyErr] = useState<string | null>(null);
+  const [addLineExpiryReady, setAddLineExpiryReady] = useState(false);
+  const [addLineExpiryInfo, setAddLineExpiryInfo] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onFsChange = () => {
+      const el = getFullscreenElement();
+      setIsFullscreen(el != null && posRootRef.current != null && el === posRootRef.current);
+    };
+    document.addEventListener("fullscreenchange", onFsChange);
+    document.addEventListener("webkitfullscreenchange", onFsChange as EventListener);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFsChange);
+      document.removeEventListener("webkitfullscreenchange", onFsChange as EventListener);
+    };
+  }, []);
+
+  const toggleFullscreen = useCallback(async () => {
+    const root = posRootRef.current;
+    if (!root) return;
+    try {
+      if (getFullscreenElement() === root) {
+        await exitFullscreenDoc();
+      } else {
+        await requestFullscreenEl(root);
+      }
+    } catch {
+      // User denied or API unsupported — ignore
+    }
+  }, []);
+
+  /** Categories / quick add product */
+  const [catalogOpen, setCatalogOpen] = useState(false);
+  const [categories, setCategories] = useState<PharmacyCategoryRow[]>([]);
+  const [catCode, setCatCode] = useState("");
+  const [catName, setCatName] = useState("");
+  const [prodCategoryId, setProdCategoryId] = useState<number | "">("");
+  const [prodGeneric, setProdGeneric] = useState("");
+  const [prodBrand, setProdBrand] = useState("");
+  const [prodStrength, setProdStrength] = useState("");
+  const [prodUom, setProdUom] = useState("tablet");
+  const [prodPrice, setProdPrice] = useState("");
+  const [prodBarcode, setProdBarcode] = useState("");
+  const [catalogMsg, setCatalogMsg] = useState<string | null>(null);
+
+  const refreshShift = useCallback(async () => {
+    const { shift } = await fetchOpenShiftForUser(servedBy);
+    setShiftId(shift?.id ?? null);
+    setShiftBeginningCash(shift?.beginning_cash ?? 0);
+    if (!shift) setShiftOpenModal(true);
+    else setShiftOpenModal(false);
+  }, [servedBy]);
+
+  useEffect(() => {
+    void refreshShift();
+  }, [refreshShift]);
+
+  useEffect(() => {
+    if (heldHydrated.current) return;
+    heldHydrated.current = true;
+    try {
+      const raw = sessionStorage.getItem(HELD_SALES_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as HeldSaleSnapshot[];
+      if (Array.isArray(parsed)) setHeldSales(parsed);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!heldHydrated.current) return;
+    try {
+      sessionStorage.setItem(HELD_SALES_STORAGE_KEY, JSON.stringify(heldSales));
+    } catch {
+      /* ignore */
+    }
+  }, [heldSales]);
+
+  useEffect(() => {
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    const q = query.trim();
+    if (q.length < 1) {
+      setResults([]);
+      setResultStockQty({});
+      return;
+    }
+    if (isEncounterTransId(q)) {
+      setResults([]);
+      setResultStockQty({});
+      return;
+    }
+    searchTimer.current = setTimeout(() => {
+      void (async () => {
+        const qAtStart = q;
+        const { products, error } = await searchPosProducts(qAtStart, 60);
+        if (error) return;
+        if (query.trim() !== qAtStart) return;
+        setResults(products);
+        setResultSel(0);
+        setResultStockQty({});
+        const ids = products.map((p) => p.id);
+        const { qtyByProductId, error: stockErr } = await fetchOnHandQtyByProductIds(ids);
+        if (query.trim() !== qAtStart) return;
+        if (!stockErr) setResultStockQty(qtyByProductId);
+        else setResultStockQty({});
+      })();
+    }, 220);
+    return () => {
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+    };
+  }, [query]);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => searchRef.current?.focus(), 150);
+    return () => window.clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    if (cartSelectedKey && !cart.some((l) => l.key === cartSelectedKey)) {
+      setCartSelectedKey(null);
+    }
+  }, [cart, cartSelectedKey]);
+
+  const openPriceCheckModal = useCallback(() => {
+    setPriceCheckQuery("");
+    setPriceCheckResults([]);
+    setPriceCheckSel(0);
+    setPriceCheckHit(null);
+    setPriceCheckHint(null);
+    setPriceCheckOpen(true);
+  }, []);
+
+  useEffect(() => {
+    if (!priceCheckOpen) return;
+    const id = window.requestAnimationFrame(() => priceCheckInputRef.current?.focus());
+    return () => window.cancelAnimationFrame(id);
+  }, [priceCheckOpen]);
+
+  useEffect(() => {
+    if (!priceCheckOpen) return;
+    if (priceCheckSearchTimer.current) clearTimeout(priceCheckSearchTimer.current);
+    const q = priceCheckQuery.trim();
+    if (q.length < 1) {
+      setPriceCheckResults([]);
+      return;
+    }
+    if (isEncounterTransId(q)) {
+      setPriceCheckResults([]);
+      return;
+    }
+    priceCheckSearchTimer.current = setTimeout(() => {
+      void (async () => {
+        const { products, error } = await searchPosProducts(q, 50);
+        if (error) return;
+        setPriceCheckResults(products);
+        setPriceCheckSel(0);
+      })();
+    }, 220);
+    return () => {
+      if (priceCheckSearchTimer.current) clearTimeout(priceCheckSearchTimer.current);
+    };
+  }, [priceCheckQuery, priceCheckOpen]);
+
+  const commitPriceCheck = useCallback(async () => {
+    const raw = priceCheckQuery.trim();
+    if (!raw) {
+      setPriceCheckHint("Type a barcode, search, select a row with ↑↓, then press Enter.");
+      setPriceCheckHit(null);
+      return;
+    }
+    if (isEncounterTransId(raw)) {
+      setPriceCheckHint("Encounter IDs are opened from the main register bar above.");
+      setPriceCheckHit(null);
+      return;
+    }
+    const { product: byBarcode } = await fetchProductByBarcode(raw);
+    if (byBarcode) {
+      setPriceCheckHit(byBarcode);
+      setPriceCheckHint(null);
+      setPriceCheckQuery("");
+      setPriceCheckResults([]);
+      setPriceCheckSel(0);
+      priceCheckInputRef.current?.focus();
+      return;
+    }
+    if (priceCheckResults.length > 0 && priceCheckResults[priceCheckSel]) {
+      const p = priceCheckResults[priceCheckSel];
+      setPriceCheckHit(p);
+      setPriceCheckHint(null);
+      setPriceCheckQuery("");
+      setPriceCheckResults([]);
+      setPriceCheckSel(0);
+      priceCheckInputRef.current?.focus();
+      return;
+    }
+    setPriceCheckHint("No match. Try another barcode or pick from the list.");
+    setPriceCheckHit(null);
+  }, [priceCheckQuery, priceCheckResults, priceCheckSel]);
+
+  const cashCountTotal = useMemo(() => {
+    let sum = 0;
+    for (const d of PHP_DRAWER_DENOMS) {
+      const q = parseDenomQty(denomQty[String(d.value)] ?? "");
+      sum += d.value * q;
+    }
+    sum += parseMoneyAmount(countGcashPeso);
+    sum += parseMoneyAmount(countDebitPeso);
+    return round2(sum);
+  }, [denomQty, countGcashPeso, countDebitPeso]);
+
+  const totals = useMemo(() => {
+    let gross = 0;
+    let vat = 0;
+    for (const line of cart) {
+      const lineGross = line.qty * line.product.unit_price;
+      gross += lineGross;
+      vat += vatPortionFromInclusive(lineGross, defaultVatPct(line.product));
+    }
+    const disc = Math.max(0, Number(discountAmount) || 0);
+    const subtotal = Math.max(0, gross - disc);
+    const vatAdjusted = gross > 0 ? (subtotal / gross) * vat : 0;
+    const total = subtotal;
+    return {
+      gross: round2(gross),
+      discountApplied: round2(disc),
+      vat: round2(vatAdjusted),
+      subtotal: round2(subtotal),
+      total: round2(total),
+    };
+  }, [cart, discountAmount]);
+
+  const addProductToCart = useCallback((p: ProductPosRow, qty = 1, prescId?: string | null) => {
+    setCart((prev) => {
+      const exist = prev.find((l) => l.product.id === p.id && (l.prescriptionItemId ?? null) === (prescId ?? null));
+      if (exist) {
+        return prev.map((l) =>
+          l.product.id === p.id && (l.prescriptionItemId ?? null) === (prescId ?? null)
+            ? { ...l, qty: l.qty + qty }
+            : l,
+        );
+      }
+      return [...prev, { key: crypto.randomUUID(), product: p, qty, prescriptionItemId: prescId ?? null }];
+    });
+  }, []);
+
+  const openAddLineModal = useCallback((p: ProductPosRow, prescItemId: string | null = null) => {
+    setAddLineQtyErr(null);
+    setAddLineProduct(p);
+    setAddLinePrescId(prescItemId);
+    setAddLineQty("1");
+    setAddLineExpiryReady(false);
+    setAddLineExpiryInfo(null);
+    setAddLineOpen(true);
+  }, []);
+
+  const closeAddLineModal = useCallback(() => {
+    setAddLineOpen(false);
+    setAddLineProduct(null);
+    setAddLinePrescId(null);
+    setAddLineQty("1");
+    setAddLineQtyErr(null);
+    setAddLineExpiryReady(false);
+    setAddLineExpiryInfo(null);
+  }, []);
+
+  useEffect(() => {
+    if (!addLineOpen || !addLineProduct) return;
+    let cancelled = false;
+    setAddLineExpiryReady(false);
+    setAddLineExpiryInfo(null);
+    void (async () => {
+      const { lots, error } = await fetchStockLotsForProduct(addLineProduct.id);
+      if (cancelled) return;
+      setAddLineExpiryReady(true);
+      if (error) {
+        setAddLineExpiryInfo(`Could not load stock: ${error}`);
+        return;
+      }
+      const ymd = getClosestStockExpiryYmd(lots);
+      if (ymd) {
+        setAddLineExpiryInfo(`Closest expiry: ${ymd}`);
+      } else if (lots.length === 0) {
+        setAddLineExpiryInfo("No stock lots on hand — add stock to track expiry.");
+      } else {
+        setAddLineExpiryInfo("No expiry date on active lots for this product.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [addLineOpen, addLineProduct?.id]);
+
+  const confirmAddLineFromModal = useCallback(() => {
+    setAddLineQtyErr(null);
+    if (!addLineProduct) return;
+    const n = Math.round(Number.parseInt(addLineQty.replace(/\D/g, ""), 10));
+    if (!Number.isFinite(n) || n < 1) {
+      setAddLineQtyErr("Enter a whole number of at least 1.");
+      return;
+    }
+    addProductToCart(addLineProduct, n, addLinePrescId);
+    closeAddLineModal();
+    setQuery("");
+    setResults([]);
+    setResultSel(0);
+    searchRef.current?.focus();
+  }, [addLineProduct, addLineQty, addLinePrescId, addProductToCart, closeAddLineModal]);
+
+  const loadPrescriptionFromEncounter = useCallback(
+    async (transId: string) => {
+      const tid = transId.trim();
+      if (!tid) return;
+      setPosInfo(null);
+      const res = await fetchPrescriptionCartByEncounter(tid);
+      if (res.error) {
+        setCheckoutErr(res.error);
+        return;
+      }
+      if (!res.prescriptionId || res.lines.length === 0) {
+        setCheckoutErr("No prescription on file for this encounter.");
+        setPrescriptionId(null);
+        setPatientId(null);
+        setPatientName(null);
+        return;
+      }
+      setCheckoutErr(null);
+      setPrescriptionId(res.prescriptionId);
+      setPatientId(res.patientId);
+      setPatientName(res.patientName);
+      setCart([]);
+      for (const ln of res.lines) {
+        const pid = ln.product_id;
+        if (!pid) continue;
+        const { product } = await fetchPosProductById(pid);
+        if (!product) continue;
+        const price = ln.unit_price ?? product.unit_price;
+        const merged: ProductPosRow = { ...product, unit_price: price };
+        addProductToCart(merged, Math.max(1, Math.round(Number(ln.quantity_prescribed))), ln.pharmacy_prescription_item_id);
+      }
+      setPosInfo(`Loaded prescription for ${res.patientName ?? "patient"}.`);
+    },
+    [addProductToCart],
+  );
+
+  /** One field: type to search, scan barcode, or scan/paste encounter UUID — Enter commits. */
+  const submitOmnibar = useCallback(async () => {
+    const raw = query.trim();
+    if (!raw) return;
+    if (addLineOpen) return;
+    setPosInfo(null);
+
+    if (isEncounterTransId(raw)) {
+      await loadPrescriptionFromEncounter(raw);
+      setQuery("");
+      setResults([]);
+      searchRef.current?.focus();
+      return;
+    }
+
+    const { product: byBarcode } = await fetchProductByBarcode(raw);
+    if (byBarcode) {
+      openAddLineModal(byBarcode, null);
+      return;
+    }
+
+    if (results.length > 0 && results[resultSel]) {
+      const p = results[resultSel];
+      openAddLineModal(p, null);
+      return;
+    }
+
+    setPosInfo("No barcode match and no row selected. Type to search, use ↑↓, then Enter — or scan an encounter ID.");
+  }, [query, results, resultSel, addLineOpen, openAddLineModal, loadPrescriptionFromEncounter]);
+
+  const startShift = useCallback(async () => {
+    const n = Number(beginInput);
+    if (!Number.isFinite(n) || n < 0) return;
+    const { shiftId: sid, error } = await openPharmacyShift({
+      openedBy: servedBy,
+      beginningCash: n,
+      branchCode: profile?.branch_code ?? null,
+    });
+    if (error) {
+      setCheckoutErr(error);
+      return;
+    }
+    setShiftId(sid);
+    setShiftBeginningCash(n);
+    setShiftOpenModal(false);
+  }, [beginInput, servedBy, profile?.branch_code]);
+
+  const openPaymentModal = useCallback(() => {
+    if (!shiftId || cart.length === 0) return;
+    setPaymentMethod((pm) => (pm === "GCash" || pm === "Cash" ? pm : "Cash"));
+    setAmountTendered((prev) => (prev.trim() === "" ? totals.total.toFixed(2) : prev));
+    setPayOpen(true);
+  }, [totals.total, shiftId, cart.length]);
+
+  const pay = useCallback(async () => {
+    setCheckoutErr(null);
+    if (!shiftId) {
+      setCheckoutErr("Start a shift with beginning cash before completing a sale.");
+      return;
+    }
+    if (cart.length === 0) return;
+    const tendered =
+      paymentMethod.toLowerCase() === "cash" ? Number(amountTendered) || 0 : totals.total;
+    const change =
+      paymentMethod.toLowerCase() === "cash" ? Math.max(0, tendered - totals.total) : null;
+    if (paymentMethod.toLowerCase() === "cash" && tendered + 1e-9 < totals.total) {
+      setCheckoutErr("Amount tendered is less than total.");
+      return;
+    }
+    const lines = cart.map((l) => ({
+      productId: l.product.id,
+      quantity: l.qty,
+      unitPrice: l.product.unit_price,
+      discount: 0,
+      pharmacyPrescriptionItemId: l.prescriptionItemId ?? null,
+    }));
+    const orNum = await generateOrNumber();
+    const disc = Math.max(0, Number(discountAmount) || 0);
+    const { saleId, error } = await completePharmacySale({
+      shiftId,
+      patientId,
+      prescriptionId,
+      servedBy,
+      paymentMethod,
+      amountTendered: paymentMethod.toLowerCase() === "cash" ? tendered : null,
+      changeAmount: change,
+      discountAmount: disc,
+      discountType: disc > 0 ? "MANUAL" : null,
+      subtotal: totals.subtotal,
+      vatAmount: totals.vat,
+      totalAmount: totals.total,
+      orNumber: orNum,
+      lines,
+    });
+    if (error || !saleId) {
+      setCheckoutErr(error ?? "Checkout failed.");
+      return;
+    }
+    setCart([]);
+    setPayOpen(false);
+    setPrescriptionId(null);
+    setPatientId(null);
+    setPatientName(null);
+    setDiscountAmount("0");
+    setAmountTendered("");
+    printReceipt(orNum, totals.total);
+  }, [
+    shiftId,
+    cart,
+    paymentMethod,
+    amountTendered,
+    totals,
+    patientId,
+    prescriptionId,
+    servedBy,
+    discountAmount,
+  ]);
+
+  const printReceipt = (orNumber: string, total: number) => {
+    const w = window.open("", "_blank");
+    if (!w) return;
+    w.document.write(`<!DOCTYPE html><html><head><title>Receipt</title>
+      <style>
+        body{font-family:system-ui,sans-serif;padding:16px;max-width:320px;}
+        img.logo{height:36px;margin-bottom:8px;}
+        h1{font-size:14px;margin:0 0 8px;}
+      </style></head><body>
+      <img class="logo" src="${LIFEHUB_LOGO_SRC}" alt="LifeHub" />
+      <h1>Pharmacy sale</h1>
+      <p>OR: ${orNumber}</p>
+      <p><strong>Total: PHP ${total.toFixed(2)}</strong></p>
+      </body></html>`);
+    w.document.close();
+    w.focus();
+    w.print();
+  };
+
+  const printReadingWindow = (title: string, snap: ShiftReadingSnapshot) => {
+    const w = window.open("", "_blank");
+    if (!w) return;
+    const rows = Object.entries(snap.paymentBreakdown || {})
+      .map(([k, v]) => `<tr><td>${k}</td><td align="right">PHP ${Number(v).toFixed(2)}</td></tr>`)
+      .join("");
+    w.document.write(`<!DOCTYPE html><html><head><title>${title}</title>
+      <style>body{font-family:system-ui,sans-serif;padding:16px;} table{border-collapse:collapse;width:100%} td{padding:4px;border-bottom:1px solid #eee}</style>
+      </head><body>
+      <img src="${LIFEHUB_LOGO_SRC}" alt="LifeHub" style="height:40px;object-fit:contain" />
+      <h2>${title}</h2>
+      <p>Shift: ${snap.shiftId.slice(0, 8)}…</p>
+      <p>Beginning cash: PHP ${snap.beginningCash.toFixed(2)}</p>
+      <p>Gross sales: PHP ${snap.grossSales.toFixed(2)}</p>
+      <p>Transactions: ${snap.transactionCount}</p>
+      <p>Expected drawer: ${snap.expectedCashDrawer != null ? `PHP ${snap.expectedCashDrawer.toFixed(2)}` : "—"}</p>
+      <table>${rows}</table>
+      </body></html>`);
+    w.document.close();
+    w.focus();
+    w.print();
+  };
+
+  const runXReading = useCallback(async () => {
+    if (!shiftId) return;
+    const { snapshot, error } = await aggregateShiftSales(shiftId);
+    if (error || !snapshot) {
+      setCheckoutErr(error ?? "Reading failed");
+      return;
+    }
+    const r = await recordXReadingForShift({ shiftId, createdBy: servedBy });
+    if (r.error) {
+      setCheckoutErr(r.error);
+      return;
+    }
+    printReadingWindow("X-Reading (interim)", snapshot);
+  }, [shiftId, servedBy]);
+
+  const voidCartLine = useCallback(() => {
+    setCart((prev) => {
+      if (prev.length === 0) return prev;
+      const key =
+        cartSelectedKey && prev.some((l) => l.key === cartSelectedKey)
+          ? cartSelectedKey
+          : prev[prev.length - 1]!.key;
+      return prev.filter((l) => l.key !== key);
+    });
+    setCartSelectedKey(null);
+  }, [cartSelectedKey]);
+
+  const holdCurrentSale = useCallback(() => {
+    if (cart.length === 0) {
+      setCheckoutErr("Cart is empty — nothing to hold.");
+      return;
+    }
+    const label = `Hold · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · ${cart.length} line(s) · ₱${totals.total.toFixed(2)}`;
+    const snap: HeldSaleSnapshot = {
+      id: crypto.randomUUID(),
+      savedAt: Date.now(),
+      label,
+      lines: cart.map((l) => ({ ...l })),
+      prescriptionId,
+      patientId,
+      patientName,
+    };
+    setHeldSales((h) => [...h, snap]);
+    setCart([]);
+    setCartSelectedKey(null);
+    setPrescriptionId(null);
+    setPatientId(null);
+    setPatientName(null);
+    setDiscountAmount("0");
+    setPosInfo("Sale held. Use Held carts to recall.");
+  }, [cart, totals.total, prescriptionId, patientId, patientName]);
+
+  const recallHeldSale = useCallback((h: HeldSaleSnapshot) => {
+    if (cart.length > 0) {
+      const ok = window.confirm("Replace the current cart with this held sale?");
+      if (!ok) return;
+    }
+    setCart(h.lines.map((l) => ({ ...l, key: crypto.randomUUID() })));
+    setPrescriptionId(h.prescriptionId);
+    setPatientId(h.patientId);
+    setPatientName(h.patientName);
+    setHeldSales((list) => list.filter((x) => x.id !== h.id));
+    setHeldDialogOpen(false);
+    setPosInfo("Recalled held sale.");
+  }, [cart.length]);
+
+  const discardHeldSale = useCallback((id: string) => {
+    setHeldSales((list) => list.filter((x) => x.id !== id));
+  }, []);
+
+  const printCashCountSlip = useCallback(() => {
+    const rows = PHP_DRAWER_DENOMS.map((d) => {
+      const q = parseDenomQty(denomQty[String(d.value)] ?? "");
+      if (q === 0) return "";
+      return `<tr><td>${d.label}</td><td align="right">${q}</td><td align="right">PHP ${round2(d.value * q).toFixed(2)}</td></tr>`;
+    }).join("");
+    const g = parseMoneyAmount(countGcashPeso);
+    const db = parseMoneyAmount(countDebitPeso);
+    const extraRows = [
+      g > 0 ? `<tr><td>GCash</td><td align="right">—</td><td align="right">PHP ${g.toFixed(2)}</td></tr>` : "",
+      db > 0 ? `<tr><td>Debit card</td><td align="right">—</td><td align="right">PHP ${db.toFixed(2)}</td></tr>` : "",
+    ].join("");
+    const w = window.open("", "_blank");
+    if (!w) return;
+    w.document.write(`<!DOCTYPE html><html><head><title>Cash count</title>
+      <style>body{font-family:system-ui,sans-serif;padding:16px;} table{border-collapse:collapse;width:100%;max-width:480px} th,td{padding:6px;border-bottom:1px solid #eee} th{text-align:left}</style>
+      </head><body>
+      <img src="${LIFEHUB_LOGO_SRC}" alt="LifeHub" style="height:36px;object-fit:contain" />
+      <h2>Cash count</h2>
+      <p>Beginning cash (shift): PHP ${shiftBeginningCash.toFixed(2)}</p>
+      <table>
+        <thead><tr><th>Item</th><th align="right">Qty</th><th align="right">Amount</th></tr></thead>
+        <tbody>${rows}${extraRows}</tbody>
+      </table>
+      <p><strong>Total counted: PHP ${cashCountTotal.toFixed(2)}</strong></p>
+      <p style="color:#666;font-size:12px">${new Date().toLocaleString()}</p>
+      </body></html>`);
+    w.document.close();
+    w.focus();
+    w.print();
+  }, [denomQty, countGcashPeso, countDebitPeso, cashCountTotal, shiftBeginningCash]);
+
+  const applyCashCountToZ = useCallback(() => {
+    setZActualCash(String(cashCountTotal));
+    setCashCountOpen(false);
+    setShiftDialogOpen(true);
+    setPosInfo("Total copied to End of shift → Actual cash. Confirm and run Z-reading to close.");
+  }, [cashCountTotal]);
+
+  const runZReading = useCallback(async () => {
+    if (!shiftId) return;
+    const actual = Number(zActualCash);
+    if (!Number.isFinite(actual)) return;
+    const { snapshot: snapBefore } = await aggregateShiftSales(shiftId);
+    const err = await closeShiftWithZ({
+      shiftId,
+      closedBy: servedBy,
+      actualCash: actual,
+    });
+    if (err.error) {
+      setCheckoutErr(err.error);
+      return;
+    }
+    if (snapBefore) printReadingWindow("Z-Reading (close shift)", snapBefore);
+    setShiftDialogOpen(false);
+    setZActualCash("");
+    setShiftId(null);
+    setShiftOpenModal(true);
+  }, [shiftId, servedBy, zActualCash]);
+
+  const openCatalog = useCallback(async () => {
+    const { rows, error } = await listPharmacyCategories();
+    if (error) setCatalogMsg(error);
+    else {
+      setCatalogMsg(null);
+      setCategories(rows);
+      if (rows.length && prodCategoryId === "") setProdCategoryId(rows[0].id);
+    }
+    setCatalogOpen(true);
+  }, [prodCategoryId]);
+
+  const saveCategory = useCallback(async () => {
+    const e = await insertPharmacyCategory({ code: catCode, name: catName });
+    setCatalogMsg(e.error ?? "Category saved.");
+    const { rows } = await listPharmacyCategories();
+    setCategories(rows);
+  }, [catCode, catName]);
+
+  const saveProduct = useCallback(async () => {
+    if (prodCategoryId === "") return;
+    const price = Number(prodPrice);
+    if (!prodGeneric.trim() || !Number.isFinite(price)) {
+      setCatalogMsg("Generic name and valid price required.");
+      return;
+    }
+    const r = await insertProductForPos({
+      categoryId: prodCategoryId as number,
+      genericName: prodGeneric,
+      brandName: prodBrand || null,
+      strength: prodStrength || null,
+      unitOfMeasure: prodUom,
+      unitPrice: price,
+      unitCost: price * 0.7,
+      barcode: prodBarcode || null,
+    });
+    setCatalogMsg(r.error ?? "Product added.");
+    if (!r.error) {
+      setProdGeneric("");
+      setProdBrand("");
+      setProdStrength("");
+      setProdPrice("");
+      setProdBarcode("");
+    }
+  }, [prodCategoryId, prodGeneric, prodBrand, prodStrength, prodUom, prodPrice, prodBarcode]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+      if (e.key === "F2") {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+      if (e.key === "F3") {
+        e.preventDefault();
+        holdCurrentSale();
+      }
+      if (e.key === "F4") {
+        e.preventDefault();
+        openPaymentModal();
+      }
+      if (e.key === "F5") {
+        e.preventDefault();
+        openPriceCheckModal();
+      }
+      if (e.key === "F6") {
+        e.preventDefault();
+        setCashCountOpen(true);
+      }
+      if (e.key === "F7") {
+        e.preventDefault();
+        voidCartLine();
+      }
+      if (e.key === "F9") {
+        e.preventDefault();
+        setHeldDialogOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [holdCurrentSale, voidCartLine, openPaymentModal, openPriceCheckModal]);
+
+  const onPriceCheckKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setPriceCheckSel((i) => Math.min(Math.max(0, priceCheckResults.length - 1), i + 1));
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setPriceCheckSel((i) => Math.max(0, i - 1));
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void commitPriceCheck();
+    }
+  };
+
+  const onOmnibarKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setResultSel((i) => Math.min(Math.max(0, results.length - 1), i + 1));
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setResultSel((i) => Math.max(0, i - 1));
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void submitOmnibar();
+    }
+  };
+
+  return (
+    <Box
+      ref={posRootRef}
+      sx={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100vh",
+        overflow: "hidden",
+        bgcolor: "background.default",
+      }}
+    >
+      <Paper
+        elevation={0}
+        sx={{
+          px: 2,
+          py: 2,
+          borderRadius: 0,
+          borderBottom: "1px solid",
+          borderColor: "divider",
+          display: "flex",
+          alignItems: "center",
+          gap: 2,
+          flexWrap: "wrap",
+          bgcolor: "background.paper",
+        }}
+      >
+        <Image
+          src={LIFEHUB_LOGO_SRC}
+          alt="LifeHub"
+          width={168}
+          height={48}
+          style={{ objectFit: "contain" }}
+          unoptimized
+        />
+        <Divider orientation="vertical" flexItem sx={{ display: { xs: "none", sm: "block" }, alignSelf: "stretch" }} />
+        <TextField
+          inputRef={searchRef}
+          name="omnibar"
+          placeholder="Search, scan barcode, or encounter ID — press Enter (F2 focus)"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={onOmnibarKeyDown}
+          sx={{ flex: 1, minWidth: 280, ...POS_BAR_FIELD_SX }}
+          hiddenLabel
+          autoComplete="off"
+          InputProps={{
+            startAdornment: (
+              <InputAdornment position="start">
+                <ManageSearchIcon sx={{ fontSize: 26 }} color="primary" />
+              </InputAdornment>
+            ),
+          }}
+        />
+        <Chip
+          label={shiftId ? `Shift open · Beg PHP ${shiftBeginningCash.toFixed(2)}` : "No shift"}
+          color={shiftId ? "success" : "warning"}
+          size="medium"
+          sx={{ "& .MuiChip-label": { fontSize: "0.875rem", py: 0.5 } }}
+        />
+        {patientName && (
+          <Chip label={`Patient: ${patientName}`} size="medium" variant="outlined" color="info" sx={{ "& .MuiChip-label": { fontSize: "0.875rem" } }} />
+        )}
+        <Button size="medium" sx={{ minHeight: 48 }} startIcon={<Inventory2OutlinedIcon />} onClick={() => void openCatalog()}>
+          Catalog
+        </Button>
+        <Tooltip title={isFullscreen ? "Exit full screen (Esc)" : "Full screen"}>
+          <IconButton
+            onClick={() => void toggleFullscreen()}
+            color="primary"
+            aria-label={isFullscreen ? "Exit full screen" : "Enter full screen"}
+            sx={{
+              ml: { xs: 0, sm: "auto" },
+              minWidth: 48,
+              minHeight: 48,
+              border: "1px solid",
+              borderColor: "divider",
+              borderRadius: 2,
+            }}
+          >
+            {isFullscreen ? <FullscreenExitIcon sx={{ fontSize: 28 }} /> : <FullscreenIcon sx={{ fontSize: 28 }} />}
+          </IconButton>
+        </Tooltip>
+      </Paper>
+
+      {posInfo && (
+        <Alert severity="success" onClose={() => setPosInfo(null)}>
+          {posInfo}
+        </Alert>
+      )}
+      {checkoutErr && (
+        <Alert severity="error" onClose={() => setCheckoutErr(null)}>
+          {checkoutErr}
+        </Alert>
+      )}
+
+      <Box sx={{ flex: 1, display: "flex", minHeight: 0 }}>
+        <Box sx={{ flex: 1.2, minWidth: 0, p: 2, overflow: "auto" }}>
+          <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
+            Results (↑↓ select row, Enter or tap a row to add — same bar above for barcode or encounter ID)
+          </Typography>
+          <TableContainer component={Paper} variant="outlined">
+            <Table size="small" stickyHeader>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Product</TableCell>
+                  <TableCell>Strength</TableCell>
+                  <TableCell align="right">Price</TableCell>
+                  <TableCell align="right">Stock</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {results.map((r, i) => (
+                  <TableRow
+                    key={r.id}
+                    hover
+                    selected={i === resultSel}
+                    onClick={() => {
+                      setResultSel(i);
+                      openAddLineModal(r, null);
+                    }}
+                    sx={{ cursor: "pointer" }}
+                  >
+                    <TableCell>
+                      {r.generic_name}
+                      {r.brand_name ? ` (${r.brand_name})` : ""}
+                    </TableCell>
+                    <TableCell>{[r.strength, r.dosage_form].filter(Boolean).join(" · ")}</TableCell>
+                    <TableCell align="right">₱{r.unit_price.toFixed(2)}</TableCell>
+                    <TableCell align="right">
+                      {formatPosStockQty(resultStockQty[r.id])}
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {results.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={4} align="center">
+                      <Typography variant="body2" color="text.secondary">
+                        {query.trim() ? "No matches" : "Type to search"}
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Box>
+
+        <Paper
+          sx={{
+            width: { xs: "100%", md: 400 },
+            borderRadius: 0,
+            borderLeft: "1px solid",
+            borderColor: "divider",
+            p: 2,
+            display: "flex",
+            flexDirection: "column",
+            gap: 1.5,
+          }}
+        >
+          <Typography variant="h6" fontWeight={800}>
+            Cart
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            Tap a line to select · Void line (F7) removes selection or last line
+          </Typography>
+          <Stack spacing={1} sx={{ flex: 1, overflow: "auto" }}>
+            {cart.map((line) => (
+              <Paper
+                key={line.key}
+                variant="outlined"
+                onClick={() => setCartSelectedKey(line.key)}
+                sx={{
+                  p: 1,
+                  cursor: "pointer",
+                  outline: cartSelectedKey === line.key ? "2px solid" : "none",
+                  outlineColor: "primary.main",
+                  outlineOffset: 2,
+                }}
+              >
+                <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography variant="body2" fontWeight={600} noWrap>
+                      {line.product.generic_name}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" display="block" noWrap>
+                      ₱{line.product.unit_price.toFixed(2)} × {line.qty}
+                    </Typography>
+                  </Box>
+                  <Stack direction="row" alignItems="center" spacing={0.5}>
+                    <IconButton
+                      size="small"
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        setCart((c) =>
+                          c.map((x) =>
+                            x.key === line.key ? { ...x, qty: Math.max(1, x.qty - 1) } : x,
+                          ),
+                        );
+                      }}
+                    >
+                      <RemoveIcon fontSize="small" />
+                    </IconButton>
+                    <Typography variant="body2" sx={{ minWidth: 28, textAlign: "center" }}>
+                      {line.qty}
+                    </Typography>
+                    <IconButton
+                      size="small"
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        setCart((c) =>
+                          c.map((x) => (x.key === line.key ? { ...x, qty: x.qty + 1 } : x)),
+                        );
+                      }}
+                    >
+                      <AddIcon fontSize="small" />
+                    </IconButton>
+                    <IconButton
+                      size="small"
+                      color="error"
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        setCart((c) => c.filter((x) => x.key !== line.key));
+                      }}
+                    >
+                      <DeleteOutlineIcon fontSize="small" />
+                    </IconButton>
+                  </Stack>
+                </Stack>
+              </Paper>
+            ))}
+            {cart.length === 0 && (
+              <Typography variant="body2" color="text.secondary">
+                Cart is empty — search or scan to add items.
+              </Typography>
+            )}
+          </Stack>
+          <Divider />
+          <Stack spacing={0.5}>
+            <Stack direction="row" justifyContent="space-between">
+              <Typography variant="body2">Items</Typography>
+              <Typography variant="body2" sx={{ fontVariantNumeric: "tabular-nums" }}>
+                ₱{totals.gross.toFixed(2)}
+              </Typography>
+            </Stack>
+            {totals.discountApplied > 0 && (
+              <Stack direction="row" justifyContent="space-between">
+                <Typography variant="body2" color="success.main">
+                  Discount
+                </Typography>
+                <Typography variant="body2" sx={{ fontVariantNumeric: "tabular-nums" }} color="success.main">
+                  −₱{totals.discountApplied.toFixed(2)}
+                </Typography>
+              </Stack>
+            )}
+            <Stack direction="row" justifyContent="space-between">
+              <Typography variant="body2" color="text.secondary">
+                VAT (est.)
+              </Typography>
+              <Typography variant="body2" sx={{ fontVariantNumeric: "tabular-nums" }}>
+                ₱{totals.vat.toFixed(2)}
+              </Typography>
+            </Stack>
+            <Stack direction="row" justifyContent="space-between" alignItems="baseline">
+              <Typography variant="h6" fontWeight={800}>
+                Total
+              </Typography>
+              <Typography variant="h6" fontWeight={800} color="primary.main">
+                ₱{totals.total.toFixed(2)}
+              </Typography>
+            </Stack>
+          </Stack>
+          <Button
+            variant="outlined"
+            size="large"
+            fullWidth
+            startIcon={<LocalOfferIcon />}
+            disabled={cart.length === 0}
+            onClick={() => {
+              setDiscountDraft(discountAmount);
+              setDiscountDialogOpen(true);
+            }}
+          >
+            {Number(discountAmount) > 0 ? `Discount · ₱${Number(discountAmount).toFixed(2)}` : "Discount"}
+          </Button>
+          <Button
+            variant="contained"
+            size="large"
+            fullWidth
+            startIcon={<PointOfSaleIcon />}
+            disabled={!shiftId || cart.length === 0}
+            onClick={() => openPaymentModal()}
+          >
+            Pay (F4)
+          </Button>
+        </Paper>
+      </Box>
+
+      <Paper
+        sx={{
+          p: 2,
+          borderRadius: 0,
+          borderTop: "1px solid",
+          borderColor: "divider",
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 1.5,
+          alignItems: "center",
+          bgcolor: (t) => t.palette.grey[50],
+        }}
+      >
+        <Button
+          variant="contained"
+          color="success"
+          size="medium"
+          sx={POS_FOOTER_BTN_SX}
+          startIcon={<CalculateOutlinedIcon />}
+          onClick={() => setCashCountOpen(true)}
+        >
+          Cash count
+        </Button>
+        <Tooltip title="Remove selected cart line, or the last line if none selected (F7)">
+          <span>
+            <Button
+              variant="contained"
+              color="error"
+              size="medium"
+              sx={POS_FOOTER_BTN_SX}
+              startIcon={<UndoOutlinedIcon />}
+              disabled={cart.length === 0}
+              onClick={() => voidCartLine()}
+            >
+              Void line
+            </Button>
+          </span>
+        </Tooltip>
+        <Tooltip title="Look up price in a window (F5)">
+          <Button
+            variant="contained"
+            color="info"
+            size="medium"
+            sx={POS_FOOTER_BTN_SX}
+            startIcon={<PriceChangeOutlinedIcon />}
+            onClick={() => openPriceCheckModal()}
+          >
+            Price check
+          </Button>
+        </Tooltip>
+        <Tooltip title="Park this cart for another customer (F3). Recall from Held carts.">
+          <span>
+            <Button
+              variant="contained"
+              color="warning"
+              size="medium"
+              sx={{ ...POS_FOOTER_BTN_SX, color: "rgba(0,0,0,0.87)" }}
+              startIcon={<PauseCircleOutlineIcon />}
+              disabled={cart.length === 0}
+              onClick={() => holdCurrentSale()}
+            >
+              Hold sale
+            </Button>
+          </span>
+        </Tooltip>
+        <Button
+          variant="contained"
+          color="secondary"
+          size="medium"
+          sx={POS_FOOTER_BTN_SX}
+          startIcon={<PlaylistPlayIcon />}
+          disabled={heldSales.length === 0}
+          onClick={() => setHeldDialogOpen(true)}
+        >
+          Held carts{heldSales.length > 0 ? ` (${heldSales.length})` : ""}
+        </Button>
+        <Divider orientation="vertical" flexItem sx={{ display: { xs: "none", sm: "block" }, alignSelf: "stretch", mx: 0.5 }} />
+        <Button
+          variant="contained"
+          color="primary"
+          size="medium"
+          sx={POS_FOOTER_BTN_SX}
+          onClick={() => setShiftOpenModal(true)}
+        >
+          Start shift
+        </Button>
+        <Tooltip title="End of shift">
+          <Button
+            variant="contained"
+            size="medium"
+            sx={{
+              ...POS_FOOTER_BTN_SX,
+              bgcolor: "#6a1b9a",
+              color: "#fff",
+              "&:hover": { bgcolor: "#4a148c", boxShadow: 2 },
+            }}
+            startIcon={<LogoutIcon />}
+            onClick={() => setShiftDialogOpen(true)}
+          >
+            EOD
+          </Button>
+        </Tooltip>
+        <Typography variant="caption" color="text.secondary" sx={{ flex: 1, minWidth: 200 }}>
+          One bar: type, scan, or encounter UUID · Enter · F2 search · F3 hold · F4 pay · F5 price check · F6 cash count · F7 void line · F9 held carts · Esc full screen
+        </Typography>
+      </Paper>
+
+      <Dialog open={shiftOpenModal} onClose={() => shiftId && setShiftOpenModal(false)}>
+        <DialogTitle>Beginning cash</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            fullWidth
+            label="Beginning cash (PHP)"
+            value={beginInput}
+            onChange={(e) => setBeginInput(e.target.value)}
+            margin="normal"
+            sx={POS_BAR_FIELD_SX}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setShiftOpenModal(false)} disabled={!shiftId}>
+            Cancel
+          </Button>
+          <Button variant="contained" onClick={() => void startShift()}>
+            Open shift
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={priceCheckOpen}
+        onClose={() => {
+          setPriceCheckOpen(false);
+          setPriceCheckQuery("");
+          setPriceCheckResults([]);
+          setPriceCheckSel(0);
+          setPriceCheckHit(null);
+          setPriceCheckHint(null);
+        }}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Price check</DialogTitle>
+        <DialogContent>
+          <TextField
+            inputRef={priceCheckInputRef}
+            fullWidth
+            hiddenLabel
+            placeholder="Search or scan barcode — Enter"
+            value={priceCheckQuery}
+            onChange={(e) => setPriceCheckQuery(e.target.value)}
+            onKeyDown={onPriceCheckKeyDown}
+            sx={{ mt: 1, ...POS_BAR_FIELD_SX }}
+            autoComplete="off"
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <ManageSearchIcon sx={{ fontSize: 26 }} color="primary" />
+                </InputAdornment>
+              ),
+            }}
+          />
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
+            ↑↓ select a row · Enter looks up price (nothing is added to the cart)
+          </Typography>
+          {priceCheckResults.length > 0 && (
+            <TableContainer component={Paper} variant="outlined" sx={{ mt: 2, maxHeight: 220 }}>
+              <Table size="small" stickyHeader>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Product</TableCell>
+                    <TableCell align="right">Price</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {priceCheckResults.map((r, i) => (
+                    <TableRow
+                      key={r.id}
+                      hover
+                      selected={i === priceCheckSel}
+                      onClick={() => setPriceCheckSel(i)}
+                      sx={{ cursor: "pointer" }}
+                    >
+                      <TableCell>{formatProductOptionLabel(r)}</TableCell>
+                      <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
+                        ₱{r.unit_price.toFixed(2)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
+          {priceCheckHint && (
+            <Alert severity="warning" sx={{ mt: 2 }} onClose={() => setPriceCheckHint(null)}>
+              {priceCheckHint}
+            </Alert>
+          )}
+          <Box
+            sx={{
+              mt: 3,
+              p: 3,
+              borderRadius: 2,
+              bgcolor: priceCheckHit ? "action.hover" : "transparent",
+              ...(!priceCheckHit && { border: "1px dashed", borderColor: "divider" }),
+              textAlign: "center",
+              minHeight: 200,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 1,
+            }}
+          >
+            {priceCheckHit ? (
+              <>
+                <Typography variant="h6" fontWeight={700} sx={{ lineHeight: 1.35, px: 1 }}>
+                  {formatProductOptionLabel(priceCheckHit)}
+                </Typography>
+                <Typography
+                  component="p"
+                  sx={{
+                    fontSize: { xs: "2.75rem", sm: "3.5rem" },
+                    fontWeight: 800,
+                    color: "primary.main",
+                    fontVariantNumeric: "tabular-nums",
+                    lineHeight: 1.1,
+                    my: 0.5,
+                  }}
+                >
+                  ₱{priceCheckHit.unit_price.toFixed(2)}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Shelf price (VAT-inclusive)
+                </Typography>
+              </>
+            ) : (
+              <Typography variant="body1" color="text.secondary">
+                Scan or type, then press Enter or Show price
+              </Typography>
+            )}
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
+          <Button
+            size="large"
+            onClick={() => {
+              setPriceCheckOpen(false);
+              setPriceCheckQuery("");
+              setPriceCheckResults([]);
+              setPriceCheckSel(0);
+              setPriceCheckHit(null);
+              setPriceCheckHint(null);
+            }}
+          >
+            Close
+          </Button>
+          <Button size="large" variant="contained" onClick={() => void commitPriceCheck()}>
+            Show price
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={discountDialogOpen} onClose={() => setDiscountDialogOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Discount</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2, mt: 0.5 }}>
+            Enter a peso amount to subtract from the cart before VAT display. Items total:{" "}
+            <strong>₱{totals.gross.toFixed(2)}</strong>
+          </Typography>
+          <TextField
+            autoFocus
+            fullWidth
+            label="Discount (PHP)"
+            value={discountDraft}
+            onChange={(e) => setDiscountDraft(e.target.value.replace(/[^\d.]/g, ""))}
+            sx={POS_BAR_FIELD_SX}
+          />
+        </DialogContent>
+        <DialogActions sx={{ flexWrap: "wrap", gap: 1 }}>
+          <Button
+            onClick={() => {
+              setDiscountDraft("0");
+              setDiscountAmount("0");
+              setDiscountDialogOpen(false);
+            }}
+          >
+            Clear discount
+          </Button>
+          <Button onClick={() => setDiscountDialogOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              const n = Number(discountDraft);
+              if (!Number.isFinite(n) || n < 0) return;
+              setDiscountAmount(String(Math.max(0, n)));
+              setDiscountDialogOpen(false);
+            }}
+          >
+            Apply
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={payOpen} onClose={() => setPayOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Payment</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2.5} sx={{ mt: 1 }}>
+            <Typography variant="h6" fontWeight={700} sx={{ fontVariantNumeric: "tabular-nums" }}>
+              Total due: ₱{totals.total.toFixed(2)}
+            </Typography>
+            <Typography variant="subtitle2" color="text.secondary">
+              Pay with
+            </Typography>
+            <Stack direction="row" spacing={1.5}>
+              {PAY_MODAL_METHODS.map((m) => (
+                <Button
+                  key={m}
+                  fullWidth
+                  size="large"
+                  variant={paymentMethod === m ? "contained" : "outlined"}
+                  onClick={() => {
+                    setPaymentMethod(m);
+                    if (m === "Cash") {
+                      setAmountTendered((prev) => (prev.trim() === "" ? totals.total.toFixed(2) : prev));
+                    }
+                  }}
+                >
+                  {m}
+                </Button>
+              ))}
+            </Stack>
+            {paymentMethod === "Cash" && (
+              <TextField
+                label="Cash received"
+                value={amountTendered}
+                onChange={(e) => setAmountTendered(e.target.value)}
+                fullWidth
+                sx={POS_BAR_FIELD_SX}
+              />
+            )}
+            {paymentMethod === "GCash" && (
+              <Typography variant="body2" color="text.secondary">
+                Record this sale as GCash. The customer pays <strong>₱{totals.total.toFixed(2)}</strong> via GCash (confirm
+                on your wallet app).
+              </Typography>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button size="large" onClick={() => setPayOpen(false)}>
+            Cancel
+          </Button>
+          <Button size="large" variant="contained" onClick={() => void pay()}>
+            Complete sale
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={shiftDialogOpen} onClose={() => setShiftDialogOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>End of shift</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <Typography variant="body2">
+              Use <strong>Cash count</strong> in the footer, then <strong>END SHIFT</strong> there to fill the field below — or type actual cash yourself.
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              X-reading does not close the shift. Z-reading closes the shift after you enter actual cash.
+            </Typography>
+            <Button variant="outlined" onClick={() => void runXReading()}>
+              X-reading (print)
+            </Button>
+            <TextField
+              label="Actual cash in drawer (for Z)"
+              value={zActualCash}
+              onChange={(e) => setZActualCash(e.target.value)}
+              fullWidth
+              sx={POS_BAR_FIELD_SX}
+            />
+            <Button variant="contained" color="warning" onClick={() => void runZReading()}>
+              End shift (Z-reading)
+            </Button>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setShiftDialogOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={cashCountOpen} onClose={() => setCashCountOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>Cash count</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Shift beginning cash: <strong>PHP {shiftBeginningCash.toFixed(2)}</strong>
+          </Typography>
+          <Box
+            sx={{
+              display: "grid",
+              gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+              gap: 3,
+              alignItems: "flex-start",
+            }}
+          >
+            <Stack spacing={1.25}>
+              <Typography variant="subtitle2" color="text.secondary">
+                Cash (pieces)
+              </Typography>
+              {PHP_DRAWER_DENOMS.map((d) => (
+                <TextField
+                  key={d.value}
+                  label={d.label}
+                  value={denomQty[String(d.value)] ?? ""}
+                  onChange={(e) =>
+                    setDenomQty((prev) => ({ ...prev, [String(d.value)]: e.target.value.replace(/[^\d]/g, "") }))
+                  }
+                  fullWidth
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="0"
+                  InputLabelProps={{ shrink: true }}
+                  sx={CASH_COUNT_FIELD_SX}
+                />
+              ))}
+            </Stack>
+            <Stack spacing={1.25}>
+              <Typography variant="subtitle2" color="text.secondary">
+                Other tender (PHP)
+              </Typography>
+              <TextField
+                label="GCash"
+                value={countGcashPeso}
+                onChange={(e) => setCountGcashPeso(e.target.value.replace(/[^\d.]/g, ""))}
+                fullWidth
+                type="text"
+                inputMode="decimal"
+                placeholder="0"
+                InputLabelProps={{ shrink: true }}
+                sx={CASH_COUNT_FIELD_SX}
+              />
+              <TextField
+                label="Debit Card"
+                value={countDebitPeso}
+                onChange={(e) => setCountDebitPeso(e.target.value.replace(/[^\d.]/g, ""))}
+                fullWidth
+                type="text"
+                inputMode="decimal"
+                placeholder="0"
+                InputLabelProps={{ shrink: true }}
+                sx={CASH_COUNT_FIELD_SX}
+              />
+            </Stack>
+          </Box>
+          <Typography variant="h6" sx={{ mt: 3, fontVariantNumeric: "tabular-nums" }}>
+            Total counted: PHP {cashCountTotal.toFixed(2)}
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ flexWrap: "wrap", gap: 1, px: 3, pb: 2 }}>
+          <Button
+            size="large"
+            onClick={() => {
+              setDenomQty(emptyDenomQty());
+              setCountGcashPeso("");
+              setCountDebitPeso("");
+            }}
+          >
+            Clear quantities
+          </Button>
+          <Button size="large" onClick={() => void printCashCountSlip()}>
+            Print slip
+          </Button>
+          <Button size="large" onClick={() => setCashCountOpen(false)}>
+            Close
+          </Button>
+          <Button size="large" variant="contained" color="primary" onClick={() => applyCashCountToZ()} disabled={!shiftId}>
+            END SHIFT
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={heldDialogOpen} onClose={() => setHeldDialogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Held carts</DialogTitle>
+        <DialogContent>
+          {heldSales.length === 0 ? (
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              No sales on hold. Add items to the cart and tap <strong>Hold sale</strong> to park a transaction.
+            </Typography>
+          ) : (
+            <Stack spacing={2} sx={{ mt: 1 }}>
+              {heldSales.map((h) => (
+                <Paper key={h.id} variant="outlined" sx={{ p: 2 }}>
+                  <Typography variant="body2" fontWeight={600}>
+                    {h.label}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                    {new Date(h.savedAt).toLocaleString()} · {h.lines.length} line(s)
+                  </Typography>
+                  <Stack direction="row" spacing={1} flexWrap="wrap">
+                    <Button size="small" variant="contained" onClick={() => recallHeldSale(h)}>
+                      Recall
+                    </Button>
+                    <Button size="small" color="error" onClick={() => discardHeldSale(h.id)}>
+                      Discard
+                    </Button>
+                  </Stack>
+                </Paper>
+              ))}
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setHeldDialogOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={addLineOpen} onClose={closeAddLineModal} maxWidth="sm" fullWidth>
+        <DialogTitle>Add to cart</DialogTitle>
+        <DialogContent>
+          {addLineProduct && (
+            <Stack spacing={2} sx={{ mt: 0.5 }}>
+              <Box>
+                <Typography variant="body1" fontWeight={700}>
+                  {addLineProduct.generic_name}
+                  {addLineProduct.brand_name ? ` (${addLineProduct.brand_name})` : ""}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {[addLineProduct.strength, addLineProduct.dosage_form].filter(Boolean).join(" · ")} · ₱
+                  {addLineProduct.unit_price.toFixed(2)}
+                </Typography>
+              </Box>
+              <Stack direction="row" spacing={1} alignItems="center">
+                {!addLineExpiryReady ? (
+                  <>
+                    <CircularProgress size={22} />
+                    <Typography variant="body2" color="text.secondary">
+                      Loading expiry…
+                    </Typography>
+                  </>
+                ) : (
+                  <Typography variant="body2">{addLineExpiryInfo ?? "—"}</Typography>
+                )}
+              </Stack>
+              <TextField
+                label="Quantity"
+                value={addLineQty}
+                onChange={(e) => {
+                  setAddLineQtyErr(null);
+                  setAddLineQty(e.target.value.replace(/[^\d]/g, ""));
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void confirmAddLineFromModal();
+                  }
+                }}
+                fullWidth
+                autoFocus
+                inputProps={{ inputMode: "numeric", min: 1 }}
+                error={Boolean(addLineQtyErr)}
+                helperText={addLineQtyErr ?? undefined}
+                InputLabelProps={{ shrink: true }}
+              />
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={closeAddLineModal}>Cancel</Button>
+          <Button variant="contained" onClick={() => void confirmAddLineFromModal()}>
+            Add to cart
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={catalogOpen} onClose={() => setCatalogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Catalog</DialogTitle>
+        <DialogContent>
+          <Typography variant="subtitle2" sx={{ mt: 1 }}>
+            New category
+          </Typography>
+          <Stack direction="row" spacing={1} sx={{ mb: 2 }}>
+            <TextField label="Code" size="small" value={catCode} onChange={(e) => setCatCode(e.target.value)} />
+            <TextField label="Name" size="small" value={catName} onChange={(e) => setCatName(e.target.value)} />
+            <Button variant="outlined" onClick={() => void saveCategory()}>
+              Save
+            </Button>
+          </Stack>
+          <Typography variant="subtitle2">New product</Typography>
+          <Stack spacing={1} sx={{ mt: 1 }}>
+            <TextField
+              select
+              label="Category"
+              size="small"
+              value={prodCategoryId}
+              onChange={(e) => setProdCategoryId(Number(e.target.value))}
+            >
+              {categories.map((c) => (
+                <MenuItem key={c.id} value={c.id}>
+                  {c.name}
+                </MenuItem>
+              ))}
+            </TextField>
+            <TextField
+              label="Generic name"
+              size="small"
+              value={prodGeneric}
+              onChange={(e) => setProdGeneric(e.target.value)}
+              fullWidth
+            />
+            <TextField
+              label="Brand"
+              size="small"
+              value={prodBrand}
+              onChange={(e) => setProdBrand(e.target.value)}
+              fullWidth
+            />
+            <TextField
+              label="Strength"
+              size="small"
+              value={prodStrength}
+              onChange={(e) => setProdStrength(e.target.value)}
+              fullWidth
+            />
+            <TextField label="UOM" size="small" value={prodUom} onChange={(e) => setProdUom(e.target.value)} />
+            <TextField
+              label="Unit price"
+              size="small"
+              value={prodPrice}
+              onChange={(e) => setProdPrice(e.target.value)}
+            />
+            <TextField
+              label="Barcode"
+              size="small"
+              value={prodBarcode}
+              onChange={(e) => setProdBarcode(e.target.value)}
+            />
+            <Button variant="contained" onClick={() => void saveProduct()}>
+              Add product
+            </Button>
+            {catalogMsg && (
+              <Typography variant="caption" color={catalogMsg.includes("error") ? "error" : "text.secondary"}>
+                {catalogMsg}
+              </Typography>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCatalogOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
+  );
+}

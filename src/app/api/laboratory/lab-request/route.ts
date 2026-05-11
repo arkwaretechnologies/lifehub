@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import type { LabPackageDetail } from "@/lib/labPackages";
+import { attachLabRequestSummariesPackagesForDb, type EncounterLabRequestSummary } from "@/lib/labRequests";
 import { queueAdminClient } from "@/lib/receptionQueueServer";
 
 type LabRequestHeader = {
@@ -8,6 +10,7 @@ type LabRequestHeader = {
   request_date: string;
   request_time: string | null;
   priority: string;
+  clinical_diagnosis: string | null;
   remarks: string | null;
   created_at: string;
 };
@@ -16,6 +19,8 @@ type LabRequestHeader = {
 export type LabRequestHeaderView = LabRequestHeader & {
   patient_name: string | null;
   queue_display: string | null;
+  lab_packages: LabPackageDetail[];
+  package_covered_test_ids: string[];
 };
 
 export type LabRequestItemView = {
@@ -48,7 +53,7 @@ export async function GET(req: Request) {
 
   const { data: header, error: hErr } = await admin
     .from("lab_requests")
-    .select("id, encounter_id, patient_id, request_date, request_time, priority, remarks, created_at")
+    .select("id, encounter_id, patient_id, request_date, request_time, priority, clinical_diagnosis, remarks, created_at")
     .eq("id", id)
     .maybeSingle();
 
@@ -56,6 +61,22 @@ export async function GET(req: Request) {
   if (!header) return NextResponse.json({ error: "Lab request not found." }, { status: 404 });
 
   const baseHeader = header as LabRequestHeader;
+
+  const pkgSeed: EncounterLabRequestSummary = {
+    id: baseHeader.id,
+    request_date: baseHeader.request_date,
+    request_time: baseHeader.request_time,
+    priority: baseHeader.priority,
+    clinical_diagnosis: baseHeader.clinical_diagnosis,
+    remarks: baseHeader.remarks,
+    created_at: baseHeader.created_at,
+    labTestIds: [],
+    lab_packages: [],
+    package_covered_test_ids: [],
+  };
+  const [pkgRow] = await attachLabRequestSummariesPackagesForDb(admin, [pkgSeed]);
+  const lab_packages = pkgRow?.lab_packages ?? [];
+  const package_covered_test_ids = pkgRow?.package_covered_test_ids ?? [];
   let patient_name: string | null = null;
   if (baseHeader.patient_id != null) {
     const { data: pat, error: pErr } = await admin.from("patients").select("name").eq("id", baseHeader.patient_id).maybeSingle();
@@ -133,15 +154,34 @@ export async function GET(req: Request) {
   }
 
   const testIds = [...new Set(itemRows.map((r) => r.lab_test_id).filter(Boolean))];
-  const testsById = new Map<string, { name: string | null; specimen_type: string | null }>();
+  const testsById = new Map<
+    string,
+    {
+      name: string | null;
+      specimen_type: string | null;
+      unit: string | null;
+      reference_range: string | null;
+    }
+  >();
   if (testIds.length > 0) {
     const { data: tests, error: tErr } = await admin
       .from("lab_tests")
-      .select("id, name, specimen_type")
+      .select("id, name, specimen_type, unit, reference_range")
       .in("id", testIds);
     if (tErr) return NextResponse.json({ error: tErr.message }, { status: 500 });
-    for (const t of (tests ?? []) as Array<{ id: string; name: string | null; specimen_type: string | null }>) {
-      testsById.set(t.id, { name: t.name, specimen_type: t.specimen_type });
+    for (const t of (tests ?? []) as Array<{
+      id: string;
+      name: string | null;
+      specimen_type: string | null;
+      unit: string | null;
+      reference_range: string | null;
+    }>) {
+      testsById.set(t.id, {
+        name: t.name,
+        specimen_type: t.specimen_type,
+        unit: t.unit,
+        reference_range: t.reference_range,
+      });
     }
   }
 
@@ -157,8 +197,8 @@ export async function GET(req: Request) {
       notes: r.notes,
       collected_item: r.collected_item ?? null,
       result_value: rr?.result_value ?? null,
-      result_unit: rr?.result_unit ?? null,
-      reference_range: rr?.reference_range ?? null,
+      result_unit: rr?.result_unit ?? t?.unit ?? null,
+      reference_range: rr?.reference_range ?? t?.reference_range ?? null,
       flag: rr?.flag ?? null,
       remarks: rr?.remarks ?? null,
       result_status: rr?.status ?? null,
@@ -171,6 +211,8 @@ export async function GET(req: Request) {
     ...baseHeader,
     patient_name,
     queue_display,
+    lab_packages,
+    package_covered_test_ids,
   };
 
   return NextResponse.json({

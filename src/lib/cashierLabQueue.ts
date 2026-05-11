@@ -1,12 +1,19 @@
 import { supabase } from "@/lib/supabaseClient";
 import { PHYSICIAN_FEE_SALES_TABLE, PHYSICIAN_FEE_STATUS_PAID } from "@/lib/physicianFeeSales";
 import {
+  enrichEncounterLabRequestSummariesWithPackages,
   LAB_REQUEST_ITEMS_TABLE,
   LAB_REQUESTS_TABLE,
   type EncounterLabRequestSummary,
 } from "@/lib/labRequests";
 
 const LAB_SALES_TABLE = "lab_sales" as const;
+
+/** Cashier hides visits closed out as paid or completed (`encounters.disposition`). */
+export function isCashierHiddenEncounterDisposition(disposition: string | null | undefined): boolean {
+  const v = (disposition ?? "").trim().toLowerCase();
+  return v === "paid" || v === "completed";
+}
 
 const PAGE_SIZE = 1000;
 const ENCOUNTER_IN_CHUNK = 120;
@@ -102,6 +109,7 @@ export async function fetchLabRequestsWithoutLabSaleForEncounters(
     request_date: string;
     request_time: string | null;
     priority: string;
+    clinical_diagnosis: string | null;
     remarks: string | null;
     created_at: string;
   };
@@ -112,7 +120,7 @@ export async function fetchLabRequestsWithoutLabSaleForEncounters(
     const chunk = uniqueEnc.slice(i, i + ENCOUNTER_IN_CHUNK);
     const { data, error } = await supabase
       .from(LAB_REQUESTS_TABLE)
-      .select("id, encounter_id, request_date, request_time, priority, remarks, created_at")
+      .select("id, encounter_id, request_date, request_time, priority, clinical_diagnosis, remarks, created_at")
       .in("encounter_id", chunk)
       .order("created_at", { ascending: false });
 
@@ -152,16 +160,24 @@ export async function fetchLabRequestsWithoutLabSaleForEncounters(
     }
   }
 
+  const flatSummaries: EncounterLabRequestSummary[] = pendingRaw.map((r) => ({
+    id: r.id,
+    request_date: r.request_date,
+    request_time: r.request_time,
+    priority: r.priority,
+    clinical_diagnosis: r.clinical_diagnosis,
+    remarks: r.remarks,
+    created_at: r.created_at,
+    labTestIds: byRequestTests.get(r.id) ?? [],
+    lab_packages: [],
+    package_covered_test_ids: [],
+  }));
+
+  const enriched = await enrichEncounterLabRequestSummariesWithPackages(flatSummaries);
+  const bySummaryId = new Map(enriched.map((s) => [s.id, s]));
+
   for (const r of pendingRaw) {
-    const summary: EncounterLabRequestSummary = {
-      id: r.id,
-      request_date: r.request_date,
-      request_time: r.request_time,
-      priority: r.priority,
-      remarks: r.remarks,
-      created_at: r.created_at,
-      labTestIds: byRequestTests.get(r.id) ?? [],
-    };
+    const summary = bySummaryId.get(r.id)!;
     const enc = String(r.encounter_id);
     const list = byEncounter.get(enc) ?? [];
     list.push(summary);
@@ -189,7 +205,7 @@ export async function fetchStandaloneLabRequestsWithoutLabSaleForPatient(patient
 
   const { data, error } = await supabase
     .from(LAB_REQUESTS_TABLE)
-    .select("id, request_date, request_time, priority, remarks, created_at")
+    .select("id, request_date, request_time, priority, clinical_diagnosis, remarks, created_at")
     .is("encounter_id", null)
     .eq("patient_id", patientId)
     .order("created_at", { ascending: false });
@@ -198,16 +214,17 @@ export async function fetchStandaloneLabRequestsWithoutLabSaleForPatient(patient
     return { requests: [], error: error.message };
   }
 
-  type ReqRow = {
+  type StandaloneReqRow = {
     id: string;
     request_date: string;
     request_time: string | null;
     priority: string;
+    clinical_diagnosis: string | null;
     remarks: string | null;
     created_at: string;
   };
 
-  const requestsRaw = ((data ?? []) as ReqRow[]).filter((r) => r.id && !sold.set.has(String(r.id)));
+  const requestsRaw = ((data ?? []) as StandaloneReqRow[]).filter((r) => r.id && !sold.set.has(String(r.id)));
 
   if (requestsRaw.length === 0) {
     return { requests: [], error: null };
@@ -234,15 +251,20 @@ export async function fetchStandaloneLabRequestsWithoutLabSaleForPatient(patient
     }
   }
 
-  const requests: EncounterLabRequestSummary[] = requestsRaw.map((r) => ({
+  const summaries: EncounterLabRequestSummary[] = requestsRaw.map((r) => ({
     id: r.id,
     request_date: r.request_date,
     request_time: r.request_time,
     priority: r.priority,
+    clinical_diagnosis: r.clinical_diagnosis,
     remarks: r.remarks,
     created_at: r.created_at,
     labTestIds: byRequestTests.get(r.id) ?? [],
+    lab_packages: [],
+    package_covered_test_ids: [],
   }));
+
+  const requests = await enrichEncounterLabRequestSummariesWithPackages(summaries);
 
   return { requests, error: null };
 }

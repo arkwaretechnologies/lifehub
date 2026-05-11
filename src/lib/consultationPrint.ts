@@ -329,6 +329,39 @@ function drawWrapped(
   return y;
 }
 
+/** Word-wrap like `drawWrapped`, but each line break in `text` starts a new paragraph with a small gap. */
+function drawWrappedWithNewlines(
+  page: PDFPage,
+  text: string,
+  x: number,
+  yStart: number,
+  maxWidth: number,
+  font: PDFFont,
+  size: number,
+  lineHeight: number,
+): void {
+  const blocks = text.replace(/\r\n/g, "\n").split("\n");
+  let y = yStart;
+  for (const blk of blocks) {
+    const segment = blk.replace(/\s+$/g, "");
+    if (segment.trim() === "") {
+      y -= lineHeight * 0.65;
+      continue;
+    }
+    const yAfter = drawWrapped(page, segment, x, y, maxWidth, font, size, lineHeight);
+    y = yAfter - lineHeight * 0.35;
+  }
+}
+
+/** Page 3 — PLANS/TREATMENT narrative (keep x aligned with focused exam / diagnosis fields on LH-HPE-001). */
+const PLAN_NOTES_P3 = {
+  x: 94,
+  fromTop: 330,
+  maxWidthSubtract: 200,
+  fontSize: 8.8,
+  lineHeight: 11,
+} as const;
+
 function drawAtTop(page: PDFPage, text: string, x: number, fromTop: number, size: number, font: PDFFont): void {
   const t = text.trim();
   if (!t) return;
@@ -434,10 +467,20 @@ export async function openConsultationPrintWindow(args: {
       drawWrapped(p1, reaction, 320, h1 - 346, w1 - 72, font, size, 10);
     }
 
-    const med1 = (details.currentMedications[0] ?? "").trim();
-    const med2 = (details.currentMedications[1] ?? "").trim();
-    if (med1) drawAtTop(p1, med1, 320, 366, size2, font);
-    if (med2) drawAtTop(p1, med2, 320, 377, size2, font);
+    const medsList = details.currentMedications.map((m) => String(m ?? "").trim()).filter((m) => m.length > 0);
+    if (medsList.length > 0) {
+      const { height: hm, width: wm } = p1.getSize();
+      drawWrappedWithNewlines(
+        p1,
+        medsList.map((m) => `- ${m}`).join("\n"),
+        320,
+        hm - 366,
+        wm - 340,
+        font,
+        size2,
+        10,
+      );
+    }
 
     // FAMILY HISTORY: checkboxes + Others
     const fh = details.familyHistory;
@@ -611,16 +654,18 @@ export async function openConsultationPrintWindow(args: {
       size,
       11,
     );
-    drawWrapped(
-      p3,
-      details.planNotes,
-      36,
-      yTop(224),
-      width - 72,
-      font,
-      size,
-      11,
-    );
+    if (details.planNotes.trim()) {
+      drawWrappedWithNewlines(
+        p3,
+        details.planNotes,
+        PLAN_NOTES_P3.x,
+        yTop(PLAN_NOTES_P3.fromTop),
+        width - PLAN_NOTES_P3.maxWidthSubtract,
+        font,
+        PLAN_NOTES_P3.fontSize,
+        PLAN_NOTES_P3.lineHeight,
+      );
+    }
 
     drawAtTop(p3, details.disposition, 37, 288, 8.7, font);
     drawAtTop(p3, physician.fullname, 123, 623, 9, font);

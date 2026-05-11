@@ -32,16 +32,26 @@ import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
 import {
   fetchLabRequestHeaderById,
   fetchLabRequestItemDetailsForRequestIds,
+  hasUnpricedNonPackageLabLines,
+  isBillingAsLabPackage,
+  labLineCheckoutUnitFee,
+  labRequestCheckoutSubtotal,
+  labRequestPackagesDisplayNames,
   type LabRequestHeaderRow,
   type LabRequestItemDetailRow,
+  type LabRequestPackagePricing,
 } from "@/lib/labRequests";
 import { PaymentModal } from "@/components/cashier/PaymentModal";
 import { fetchActivePaymentMethods, type PaymentMethodRow } from "@/lib/paymentMethods";
-import { fetchLabTestUnitPricesByIds } from "@/lib/labTests";
+import { fetchLabTestCheckoutPricesByIds } from "@/lib/labTests";
 import { createLabSaleWithItems, generateNextDailyOrNumber } from "@/lib/cashierPayments";
 import { fetchActiveDiscountTypes, type DiscountTypeRow } from "@/lib/discountTypes";
 import { fetchQueuePriorities, type QueuePriorityRow } from "@/lib/queueReception";
 import { openCashierAcknowledgementReceiptPrint } from "@/lib/cashierAcknowledgementReceiptPrint";
+import {
+  openReceptionQueueReceiptPrint,
+  storeCashierLabQueueReprintOffer,
+} from "@/lib/receptionQueueReceiptPrint";
 import { CONSULTATION_BRANDING } from "@/components/consultation/consultationTypes";
 
 function isUuid(s: string): boolean {
@@ -55,6 +65,10 @@ function formatLabTime(value: string | null | undefined): string {
   if (s.length >= 5 && s[4] === ":") return s.slice(0, 5);
   const m = s.match(/(\d{1,2}:\d{2})/);
   return m?.[1] ?? "—";
+}
+
+function formatMoneyDisplay(v: number): string {
+  return v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function receptionQueueNoLine(queueNoTrimmed: string): string {
@@ -90,7 +104,7 @@ export default function CashierLabRequestDetail() {
     message: string;
   } | null>(null);
   const [labQueuePrioritySel, setLabQueuePrioritySel] = useState<number | "">("");
-  /** After-pay lab queue label (on-screen only; slips are printed at reception). */
+  /** After-pay lab queue label; queue slip prints here when visit had no reception queue no. */
   const [labReceiptQueueDisplay, setLabReceiptQueueDisplay] = useState("");
   const [encounterTransId, setEncounterTransId] = useState("");
 
@@ -234,13 +248,20 @@ export default function CashierLabRequestDetail() {
     setPayBusy(true);
     try {
       const allLabTestIds = [...new Set(items.map((r) => r.lab_test_id).filter(Boolean))];
-      const priceRes = await fetchLabTestUnitPricesByIds(allLabTestIds);
-      if (priceRes.error) throw new Error(priceRes.error);
+      const priceRes = await fetchLabTestCheckoutPricesByIds(allLabTestIds);
+      const linesByReq = new Map([[labRequestId, items]]);
+      if (priceRes.error && hasUnpricedNonPackageLabLines(req ? [req] : [], linesByReq, priceRes.unitPriceById)) {
+        throw new Error(priceRes.error);
+      }
 
+      const pkgReq: LabRequestPackagePricing = {
+        lab_packages: req.lab_packages,
+        package_covered_test_ids: req.package_covered_test_ids,
+      };
       const payloadItems = items.map((it) => ({
         lab_test_id: it.lab_test_id,
         quantity: 1,
-        unit_price: priceRes.unitPriceById.get(it.lab_test_id) ?? 0,
+        unit_price: labLineCheckoutUnitFee(pkgReq, items, it, priceRes.unitPriceById),
         discount: 0,
         notes: it.notes,
       }));
@@ -266,10 +287,15 @@ export default function CashierLabRequestDetail() {
       if (res.error) throw new Error(res.error);
 
       let labQueueLine = "";
+      let labQueueSlip:
+        | { queueDisplay: string; queueTicketId: string | null; transId: string }
+        | null = null;
       const encId = encounterTransId.trim();
       const pidStr = patientIdStr?.trim() ?? "";
       if (encId && pidStr && /^\d+$/.test(pidStr)) {
         const pid = Number.parseInt(pidStr, 10);
+        const encSnap = await fetchEncounterSummaryByTransId(encId);
+        const receptionQueueNoBeforePay = (encSnap.encounter?.queueNo ?? "").trim();
         const queueRes = await fetch("/api/cashier/lab-queue-ticket", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -287,19 +313,26 @@ export default function CashierLabRequestDetail() {
         const qj = (await queueRes.json().catch(() => ({}))) as {
           error?: string;
           queueDisplay?: string;
+          queueTicketId?: string;
         };
         if (!queueRes.ok || qj.error) throw new Error(qj.error ?? "Could not create laboratory queue ticket.");
         const qd = (qj.queueDisplay ?? "").trim();
+        const tid = (qj.queueTicketId ?? "").trim();
         setLabReceiptQueueDisplay(qd);
         labQueueLine = qd
           ? ` Laboratory queue: ${qd}. Collect your laboratory slip at reception.`
           : " Laboratory queue assigned. Collect your laboratory slip at reception.";
+        if (!receptionQueueNoBeforePay && qd) {
+          labQueueSlip = { queueDisplay: qd, queueTicketId: tid || null, transId: encId };
+        } else if (receptionQueueNoBeforePay && qd && tid) {
+          storeCashierLabQueueReprintOffer({ ticketId: tid, queueDisplay: qd });
+        }
       }
 
       setPayOpen(false);
       const paymentLines = items.map((it) => ({
         label: (it.test_name ?? "").trim() || `Test ${it.lab_test_id}`,
-        amount: priceRes.unitPriceById.get(it.lab_test_id) ?? 0,
+        amount: labLineCheckoutUnitFee(pkgReq, items, it, priceRes.unitPriceById),
       }));
 
       await openCashierAcknowledgementReceiptPrint({
@@ -320,6 +353,15 @@ export default function CashierLabRequestDetail() {
         amountTendered: args.amountTendered,
         changeAmount: args.changeAmount,
       });
+      if (labQueueSlip != null) {
+        await openReceptionQueueReceiptPrint({
+          patientName: (patientName ?? "").trim() || "Patient",
+          destinationLabel: "Laboratory",
+          queueDisplay: labQueueSlip.queueDisplay,
+          transId: labQueueSlip.transId,
+          queueTicketId: labQueueSlip.queueTicketId,
+        });
+      }
       setPaySuccess(`Payment saved.${labQueueLine}`);
       await reloadAll();
       router.replace("/cashier?tab=walkin");
@@ -364,16 +406,22 @@ export default function CashierLabRequestDetail() {
             }
             setLabTotalLoading(true);
             const allLabTestIds = [...new Set(items.map((r) => r.lab_test_id).filter(Boolean))];
-            void fetchLabTestUnitPricesByIds(allLabTestIds).then((res) => {
+            const headSnap = header;
+            const itemsSnap = items;
+            void fetchLabTestCheckoutPricesByIds(allLabTestIds).then((res) => {
               setLabTotalLoading(false);
-              if (res.error) {
+              const pricing: LabRequestPackagePricing =
+                headSnap != null
+                  ? { lab_packages: headSnap.lab_packages, package_covered_test_ids: headSnap.package_covered_test_ids }
+                  : { lab_packages: [], package_covered_test_ids: [] };
+              const byReq = new Map([[labRequestId, itemsSnap]]);
+              if (res.error && hasUnpricedNonPackageLabLines(headSnap ? [headSnap] : [], byReq, res.unitPriceById)) {
                 setPayError(res.error);
                 setLabTotalDue(0);
                 return;
               }
-              let sum = 0;
-              for (const row of items) sum += res.unitPriceById.get(row.lab_test_id) ?? 0;
-              setLabTotalDue(sum);
+              setPayError("");
+              setLabTotalDue(labRequestCheckoutSubtotal(pricing, itemsSnap, res.unitPriceById));
             });
           }}
           sx={{ textTransform: "none" }}
@@ -452,7 +500,17 @@ export default function CashierLabRequestDetail() {
         }}
         onClose={() => setPayOpen(false)}
         totalDue={totalDue}
-        summaryRows={[{ label: "Laboratory tests", amount: labTotalDue }]}
+        summaryRows={[
+          {
+            label:
+              req && isBillingAsLabPackage(req)
+                ? req.lab_packages.length > 1
+                  ? "Laboratory packages"
+                  : "Laboratory package"
+                : "Laboratory tests",
+            amount: labTotalDue,
+          },
+        ]}
         labQueuePrioritySelect={
           encounterTransId && queuePriorities.length > 0
             ? {
@@ -488,13 +546,23 @@ export default function CashierLabRequestDetail() {
             <CardContent>
               <ConsultationSectionTitle>Laboratory order — unpaid</ConsultationSectionTitle>
               <Typography variant="body2" color="text.primary" sx={{ ...consultBodyTypoSx, mb: 2, display: "block" }}>
-                Tests on this order that still need to be paid at the register.
+                {isBillingAsLabPackage(req)
+                  ? "Laboratory package on this order — pay at the register."
+                  : "Tests on this order that still need to be paid at the register."}
               </Typography>
 
               <Typography variant="subtitle2" sx={{ mb: 0.5, fontWeight: 700 }}>
                 Lab order · {formatDateMMDDYYYY(req.request_date)} {formatLabTime(req.request_time)} ·{" "}
                 {req.priority ?? "—"}
               </Typography>
+              {req.lab_packages.length > 0 && !isBillingAsLabPackage(req) ? (
+                <Typography variant="body2" sx={{ ...consultBodyTypoSx, mb: req.remarks?.trim() ? 0.5 : 1 }}>
+                  Package{req.lab_packages.length > 1 ? "s" : ""}:{" "}
+                  <Box component="span" sx={{ fontWeight: 700 }}>
+                    {labRequestPackagesDisplayNames(req)}
+                  </Box>
+                </Typography>
+              ) : null}
               {req.remarks?.trim() ? (
                 <Typography variant="body2" sx={{ ...consultBodyTypoSx, mb: 1 }}>
                   {req.remarks}
@@ -505,16 +573,50 @@ export default function CashierLabRequestDetail() {
                 <Table size="small" sx={consultTableSx}>
                   <TableHead>
                     <TableRow sx={consultTableHeadRowSx}>
-                      <TableCell sx={consultTableHeadCellSx}>Test</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>
+                        {isBillingAsLabPackage(req) ? "Package" : "Test"}
+                      </TableCell>
                       <TableCell sx={consultTableHeadCellSx}>Priority</TableCell>
                       <TableCell sx={consultTableHeadCellSx}>Notes</TableCell>
-                      <TableCell sx={consultTableHeadCellSx}>Line reference</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {items.length === 0 ? (
+                    {isBillingAsLabPackage(req) && req.lab_packages.length > 0 ? (
+                      req.lab_packages.map((pkg) => (
+                        <TableRow key={`walkin-lab-pkg-${req.id}-${pkg.id}`}>
+                          <TableCell sx={consultTableBodyCellSx}>
+                            <Typography variant="body2" fontWeight={700}>
+                              {pkg.name}
+                            </Typography>
+                            {pkg.description?.trim() ? (
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                sx={{ display: "block", mt: 0.5, whiteSpace: "pre-wrap" }}
+                              >
+                                {pkg.description.trim()}
+                              </Typography>
+                            ) : null}
+                            <Typography variant="caption" color="primary.main" sx={{ display: "block", mt: 0.5, fontWeight: 700 }}>
+                              {pkg.package_price > 0 ? `Package price PHP ${formatMoneyDisplay(pkg.package_price)}` : null}
+                            </Typography>
+                          </TableCell>
+                          <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
+                            {req.priority ?? "—"}
+                          </TableCell>
+                          <TableCell sx={consultTableBodyCellSx}>
+                            {[
+                              req.clinical_diagnosis?.trim(),
+                              req.remarks?.trim(),
+                            ]
+                              .filter(Boolean)
+                              .join(" · ") || "—"}
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    ) : items.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={4} sx={consultTableBodyCellSx}>
+                        <TableCell colSpan={3} sx={consultTableBodyCellSx}>
                           No line items.
                         </TableCell>
                       </TableRow>
@@ -528,16 +630,6 @@ export default function CashierLabRequestDetail() {
                             {it.priority ?? "—"}
                           </TableCell>
                           <TableCell sx={consultTableBodyCellSx}>{it.notes?.trim() || "—"}</TableCell>
-                          <TableCell
-                            sx={{
-                              ...consultTableBodyCellSx,
-                              fontFamily: "monospace",
-                              fontSize: "0.75rem",
-                              wordBreak: "break-all",
-                            }}
-                          >
-                            {it.id}
-                          </TableCell>
                         </TableRow>
                       ))
                     )}

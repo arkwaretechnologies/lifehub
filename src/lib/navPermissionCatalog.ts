@@ -142,6 +142,8 @@ export function isAllowedPageKey(key: string): boolean {
 
 export function pageKeyForPath(pathname: string): string | null {
   const p = pathname === "/" ? "/dashboard" : pathname;
+  // Sub-routes inherit leaf RBAC (e.g. /pharmacy/pos uses pharmacy permission).
+  if (p === "/pharmacy" || p.startsWith("/pharmacy/")) return "pharmacy";
   for (const m of PERMISSION_MODULES) {
     if (m.kind === "leaf" && m.href === p) return m.pageKey;
     if (m.kind === "group") {

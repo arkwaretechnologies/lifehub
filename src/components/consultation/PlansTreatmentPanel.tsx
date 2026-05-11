@@ -18,13 +18,17 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Chip,
   FormControl,
   FormControlLabel,
   Grid,
   IconButton,
+  MenuItem,
   Radio,
   RadioGroup,
+  Select,
   Snackbar,
+  Stack,
   Table,
   TableBody,
   TableCell,
@@ -49,16 +53,20 @@ import {
 import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
 import {
   createLabRequestWithItems,
+  parseLabRequestPackageId,
   deleteLabRequestsForEncounter,
   fetchLabRequestsForEncounter,
   parsePatientIdForLab,
   type EncounterLabRequestSummary,
+  type LabRequestItemPriority,
 } from "@/lib/labRequests";
 import {
   fetchLabCatalogGrouped,
   type LabCatalogSection,
+  type LabTestCatalogItem,
 } from "@/lib/labTests";
 import { fetchActiveLabPricesByTestIds } from "@/lib/labServicePrices";
+import { fetchActiveLabPackagesWithTests, type LabPackageWithTests } from "@/lib/labPackages";
 import { openPrescriptionPrintWindow } from "@/lib/prescriptionPrint";
 import type { UserProfile } from "@/lib/types";
 import {
@@ -68,6 +76,7 @@ import {
   searchActiveProducts,
   type ProductCatalogRow,
 } from "@/lib/pharmacyProducts";
+import { upsertPrescriptionForEncounter } from "@/lib/pharmacyPosDb";
 import { supabase } from "@/lib/supabaseClient";
 import {
   fetchCurrentMedicationsForEncounter,
@@ -75,6 +84,26 @@ import {
 } from "@/lib/currentMedications";
 import { fetchActivePhysicianServices, type PhysicianServiceRow } from "@/lib/physicianServices";
 import type { LabRequestItemView } from "@/app/api/laboratory/lab-request/route";
+
+/** Urinalysis & fecalysis catalog uses `lab_tests.description` as subsection headings in the lab modal. */
+function labCategoryUsesUaFecalSubgroups(category: { code?: string }): boolean {
+  const c = String(category.code ?? "").toUpperCase();
+  return c === "UA_FECAL" || c === "MICRO2" || c === "MICRO";
+}
+
+function groupLabTestsByDescription(tests: LabTestCatalogItem[]): { heading: string; tests: LabTestCatalogItem[] }[] {
+  const order: string[] = [];
+  const byHeading = new Map<string, LabTestCatalogItem[]>();
+  for (const t of tests) {
+    const key = (t.description ?? "").trim();
+    if (!byHeading.has(key)) {
+      order.push(key);
+      byHeading.set(key, []);
+    }
+    byHeading.get(key)!.push(t);
+  }
+  return order.map((heading) => ({ heading, tests: byHeading.get(heading) ?? [] }));
+}
 
 const tabPanelSx = { pt: 2, minHeight: 280 };
 
@@ -377,12 +406,17 @@ export default function PlansTreatmentPanel({
   const [labTestsError, setLabTestsError] = useState("");
   const [selectedLabTestIds, setSelectedLabTestIds] = useState<Set<string>>(() => new Set());
   const [labSubmitting, setLabSubmitting] = useState(false);
+  const [labRequestPriority, setLabRequestPriority] = useState<LabRequestItemPriority>("Routine");
+  const [labClinicalDiagnosis, setLabClinicalDiagnosis] = useState("");
+  const [labRequestRemarks, setLabRequestRemarks] = useState("");
   const [labDialogError, setLabDialogError] = useState("");
   const [labDialogSuccess, setLabDialogSuccess] = useState("");
   const [encounterLabRequests, setEncounterLabRequests] = useState<EncounterLabRequestSummary[]>([]);
   const [requestedTestIdSet, setRequestedTestIdSet] = useState<Set<string>>(() => new Set());
   const [labEncounterError, setLabEncounterError] = useState("");
   const [labPriceByTestId, setLabPriceByTestId] = useState<Map<string, number>>(() => new Map());
+  const [labPackages, setLabPackages] = useState<LabPackageWithTests[]>([]);
+  const [selectedLabPackageIds, setSelectedLabPackageIds] = useState<Set<string>>(() => new Set());
   const [paidLabRequestIds, setPaidLabRequestIds] = useState<Set<string>>(() => new Set());
   /** Lab requests that have at least one saved `lab_results` row (payment not required). */
   const [labRequestIdsWithResults, setLabRequestIdsWithResults] = useState<Set<string>>(() => new Set());
@@ -479,6 +513,7 @@ export default function PlansTreatmentPanel({
 
   useEffect(() => {
     setSelectedLabTestIds(new Set());
+    setSelectedLabPackageIds(new Set());
     setImagingForm(emptyImagingForm);
     setMedicationLines([]);
     setProductCache({});
@@ -673,7 +708,39 @@ export default function PlansTreatmentPanel({
     if (!labsModalOpen) return;
     setLabDialogError("");
     setLabDialogSuccess("");
+    setLabRequestPriority("Routine");
+    setLabClinicalDiagnosis("");
+    setLabRequestRemarks("");
+    setSelectedLabPackageIds(new Set());
   }, [labsModalOpen]);
+
+  useEffect(() => {
+    if (!labsModalOpen || labPackages.length === 0) return;
+    setSelectedLabPackageIds((prev) => {
+      const next = new Set<string>();
+      for (const id of prev) {
+        const pkg = labPackages.find((p) => p.id === id);
+        if (
+          pkg &&
+          pkg.labTestIds.length > 0 &&
+          pkg.labTestIds.every((tid) => selectedLabTestIds.has(tid))
+        ) {
+          next.add(id);
+        }
+      }
+      if (next.size === prev.size) {
+        let same = true;
+        for (const x of next) {
+          if (!prev.has(x)) {
+            same = false;
+            break;
+          }
+        }
+        if (same) return prev;
+      }
+      return next;
+    });
+  }, [labsModalOpen, selectedLabTestIds, labPackages]);
 
   /** Paid (`lab_sales`) and requests that already have result rows — drives View result vs View catalog. */
   const syncPaidAndResultsFromRequestIds = useCallback(async (reqIds: string[]) => {
@@ -722,12 +789,16 @@ export default function PlansTreatmentPanel({
     setLabTestsError("");
     setLabEncounterError("");
     void (async () => {
-      const [cat, enc] = await Promise.all([
+      const [cat, enc, pkgRes] = await Promise.all([
         fetchLabCatalogGrouped(),
         fetchLabRequestsForEncounter(transId),
+        fetchActiveLabPackagesWithTests(),
       ]);
       if (cancelled) return;
       setLabTestsLoading(false);
+      if (!pkgRes.error) {
+        setLabPackages(pkgRes.packages.filter((p) => p.labTestIds.length > 0));
+      }
       if (cat.error) {
         setLabTestsError(cat.error);
         setLabSections([]);
@@ -821,6 +892,70 @@ export default function PlansTreatmentPanel({
     });
   }, []);
 
+  const toggleLabPackageSelection = useCallback(
+    (pkg: LabPackageWithTests) => {
+      if (pkg.labTestIds.length === 0) return;
+      const wasOn = selectedLabPackageIds.has(pkg.id);
+      setSelectedLabPackageIds((prev) => {
+        const next = new Set(prev);
+        if (wasOn) next.delete(pkg.id);
+        else next.add(pkg.id);
+        return next;
+      });
+      setSelectedLabTestIds((sel) => {
+        const n2 = new Set(sel);
+        if (wasOn) {
+          for (const t of pkg.labTestIds) n2.delete(t);
+        } else {
+          for (const t of pkg.labTestIds) n2.add(t);
+        }
+        return n2;
+      });
+    },
+    [selectedLabPackageIds],
+  );
+
+  const addLabPackageFromDropdown = useCallback(
+    (packageId: string) => {
+      const pkg = labPackages.find((p) => p.id === packageId);
+      if (!pkg || pkg.labTestIds.length === 0) return;
+      if (selectedLabPackageIds.has(pkg.id)) return;
+      setSelectedLabPackageIds((prev) => new Set(prev).add(pkg.id));
+      setSelectedLabTestIds((sel) => {
+        const n2 = new Set(sel);
+        for (const t of pkg.labTestIds) n2.add(t);
+        return n2;
+      });
+    },
+    [labPackages, selectedLabPackageIds],
+  );
+
+  const syncStructuredPrescription = useCallback(async () => {
+    const withProducts = medicationLines.filter((l) => l.productId.trim() !== "");
+    if (withProducts.length === 0) {
+      return { prescriptionId: null as string | null, error: null as string | null };
+    }
+    const patientId = Number(patient.patientId);
+    if (!Number.isFinite(patientId)) {
+      return { prescriptionId: null, error: "Patient id is missing; cannot save prescription for pharmacy." };
+    }
+    const physId =
+      profile != null && typeof profile.user_id === "number" && Number.isFinite(profile.user_id)
+        ? profile.user_id
+        : null;
+    const rxLines = withProducts.map((l) => ({
+      productId: l.productId.trim(),
+      quantityPrescribed: Math.max(1, Math.round(Number(l.quantity.trim()) || 0)),
+      sig: [l.frequency.trim(), l.notes.trim()].filter(Boolean).join(" · ") || null,
+    }));
+    return upsertPrescriptionForEncounter({
+      transId,
+      patientId,
+      physicianUserId: physId,
+      rxLines,
+    });
+  }, [medicationLines, patient.patientId, profile, transId]);
+
   const printMedicationPrescription = useCallback(async () => {
     if (medicationRowsMissingQuantity(medicationLines)) {
       setMedToastSeverity("error");
@@ -849,6 +984,11 @@ export default function PlansTreatmentPanel({
 
     setPrintRxLoading(true);
     try {
+      const rx = await syncStructuredPrescription();
+      if (rx.error) {
+        window.alert(rx.error);
+        return;
+      }
       const ok = await openPrescriptionPrintWindow({
         patient,
         physician: { fullname, specialty, licenseNo, ptrNo, s2No },
@@ -863,7 +1003,7 @@ export default function PlansTreatmentPanel({
     } finally {
       setPrintRxLoading(false);
     }
-  }, [patient, profile, medicationLines, productCache]);
+  }, [patient, profile, medicationLines, productCache, syncStructuredPrescription]);
 
   const saveEncounterMedications = useCallback(async () => {
     if (medicationRowsMissingQuantity(medicationLines)) {
@@ -894,6 +1034,13 @@ export default function PlansTreatmentPanel({
         setMedToastOpen(true);
         return;
       }
+      const rx = await syncStructuredPrescription();
+      if (rx.error) {
+        setMedToastSeverity("error");
+        setMedToastMessage(rx.error);
+        setMedToastOpen(true);
+        return;
+      }
       setForm((f) => ({ ...f, plan_medications: rows.length > 0 }));
       medsBaselineStrRef.current = medicationLinesSnapshot(medicationLines);
       setMedToastSeverity("success");
@@ -902,20 +1049,38 @@ export default function PlansTreatmentPanel({
     } finally {
       setMedSaveLoading(false);
     }
-  }, [transId, medicationLines, productCache]);
+  }, [transId, medicationLines, productCache, syncStructuredPrescription]);
 
   const visibleLabSections = useMemo(
-    () => labSections.filter((s) => s.tests.length > 0),
+    () =>
+      labSections.filter((s) => {
+        if (s.tests.length === 0) return false;
+        const code = String(s.category.code ?? "").toUpperCase();
+        return code !== "SERO" && code !== "MISC";
+      }),
     [labSections]
   );
 
+  const testsCoveredBySelectedPackages = useMemo(() => {
+    const s = new Set<string>();
+    for (const pkg of labPackages) {
+      if (!selectedLabPackageIds.has(pkg.id)) continue;
+      for (const t of pkg.labTestIds) s.add(t);
+    }
+    return s;
+  }, [labPackages, selectedLabPackageIds]);
+
   const labSelectedTotal = useMemo(() => {
     let sum = 0;
+    for (const pkg of labPackages) {
+      if (selectedLabPackageIds.has(pkg.id)) sum += pkg.package_price;
+    }
     for (const id of selectedLabTestIds) {
+      if (testsCoveredBySelectedPackages.has(id)) continue;
       sum += labPriceByTestId.get(id) ?? 0;
     }
     return sum;
-  }, [selectedLabTestIds, labPriceByTestId]);
+  }, [selectedLabTestIds, labPriceByTestId, labPackages, selectedLabPackageIds, testsCoveredBySelectedPackages]);
 
   /** Paid at cashier OR lab already has saved result rows (results may exist without `lab_sales`). */
   const canViewLabResults = useMemo(() => {
@@ -1003,15 +1168,24 @@ export default function PlansTreatmentPanel({
       }
     }
 
+    const remarksTrim = labRequestRemarks.trim();
+    const diagTrim = labClinicalDiagnosis.trim();
+
+    const packageIds = [...selectedLabPackageIds]
+      .map((pid) => parseLabRequestPackageId(pid))
+      .filter((n): n is number => n != null);
+
     const { labRequestId, error } = await createLabRequestWithItems({
       encounterId: transId,
       patientId: parsePatientIdForLab(patient.patientId),
       referringPhysician: patient.referringPhysician?.trim() ? patient.referringPhysician.trim() : null,
       physicianId,
-      priority: "Routine",
-      remarks: null,
+      priority: labRequestPriority,
+      clinicalDiagnosis: diagTrim !== "" ? diagTrim : null,
+      remarks: remarksTrim !== "" ? remarksTrim : null,
       labTestIds: [...selectedLabTestIds],
-      itemPriority: "Routine",
+      itemPriority: labRequestPriority,
+      packageIds,
     });
     setLabSubmitting(false);
     if (error) {
@@ -1020,6 +1194,7 @@ export default function PlansTreatmentPanel({
     }
     setLabDialogSuccess(`Lab request saved (${labRequestId?.slice(0, 8)}…).`);
     setSelectedLabTestIds(new Set());
+    setSelectedLabPackageIds(new Set());
     const encRefresh = await fetchLabRequestsForEncounter(transId);
     if (!encRefresh.error) {
       setEncounterLabRequests(encRefresh.requests);
@@ -1036,6 +1211,10 @@ export default function PlansTreatmentPanel({
     selectedLabTestIds,
     isNew,
     syncPaidAndResultsFromRequestIds,
+    labClinicalDiagnosis,
+    labRequestRemarks,
+    labRequestPriority,
+    selectedLabPackageIds,
   ]);
 
   const closeLabsModal = useCallback(() => {
@@ -1076,6 +1255,7 @@ export default function PlansTreatmentPanel({
   /** Discard unstaged lab picks, then sync main LABS checkbox (off if no saved requests). */
   const discardLabsModalClose = useCallback(() => {
     setSelectedLabTestIds(new Set());
+    setSelectedLabPackageIds(new Set());
     setForm((f) => ({
       ...f,
       plan_labs:
@@ -1236,8 +1416,14 @@ export default function PlansTreatmentPanel({
                       disabled={loading}
                       onChange={(_, c) => {
                         setForm((f) => ({ ...f, plan_labs: c }));
-                        if (c) setLabsModalOpen(true);
-                        else setLabsModalOpen(false);
+                        if (c) {
+                          const viewId = viewResultsLabRequestId.trim();
+                          if (canViewLabResults && viewId) {
+                            openLabResultsModal(viewId);
+                          } else {
+                            setLabsModalOpen(true);
+                          }
+                        } else setLabsModalOpen(false);
                       }}
                     />
                   }
@@ -1465,6 +1651,143 @@ export default function PlansTreatmentPanel({
               No lab tests found in the catalog.
             </Typography>
           ) : (
+            <Stack spacing={2} sx={{ mb: 2.5 }}>
+              <FormControl variant="standard">
+                <Typography
+                  id="plans-labs-priority-label"
+                  variant="caption"
+                  fontWeight={700}
+                  sx={{ display: "block", mb: 0.5 }}
+                >
+                  Priority
+                </Typography>
+                <RadioGroup
+                  row
+                  aria-labelledby="plans-labs-priority-label"
+                  name="lab-request-priority"
+                  value={labRequestPriority}
+                  onChange={(e) => setLabRequestPriority(e.target.value as LabRequestItemPriority)}
+                >
+                  <FormControlLabel value="Routine" control={<Radio size="small" />} label="Routine" sx={consultFormControlLabelSx} />
+                  <FormControlLabel value="STAT" control={<Radio size="small" />} label="STAT" sx={consultFormControlLabelSx} />
+                </RadioGroup>
+              </FormControl>
+              <TextField
+                label="Clinical data / provisional diagnosis"
+                value={labClinicalDiagnosis}
+                onChange={(e) => setLabClinicalDiagnosis(e.target.value)}
+                fullWidth
+                multiline
+                minRows={2}
+                variant="outlined"
+                size="small"
+              />
+              <TextField
+                label="Remarks"
+                value={labRequestRemarks}
+                onChange={(e) => setLabRequestRemarks(e.target.value)}
+                fullWidth
+                multiline
+                minRows={2}
+                variant="outlined"
+                size="small"
+              />
+            </Stack>
+          )}
+          {!labTestsLoading && !labTestsError && visibleLabSections.length > 0 ? (
+            <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
+              {labPackages.length > 0 ? (
+                <Box
+                  sx={{
+                    border: "1px solid",
+                    borderColor: "divider",
+                    borderRadius: 1,
+                    p: 1.5,
+                    bgcolor: "background.paper",
+                    breakInside: "avoid",
+                  }}
+                >
+                  <Typography
+                    variant="subtitle2"
+                    fontWeight={800}
+                    color="info.main"
+                    sx={{ letterSpacing: "0.06em", mb: 1.25 }}
+                  >
+                    LAB PACKAGES
+                  </Typography>
+                  <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
+                    Add lab package
+                  </Typography>
+                  <FormControl fullWidth size="small" variant="outlined">
+                    <Select
+                      value=""
+                      displayEmpty
+                      inputProps={{ "aria-label": "Add lab package" }}
+                      onChange={(e) => {
+                        const v = String(e.target.value ?? "");
+                        if (v) addLabPackageFromDropdown(v);
+                      }}
+                      renderValue={(v) =>
+                        v === "" ? (
+                          <Typography component="span" variant="body2" color="text.secondary">
+                            Select a package to add…
+                          </Typography>
+                        ) : (
+                          labPackages.find((p) => p.id === v)?.name ?? ""
+                        )
+                      }
+                    >
+                      <MenuItem value="" disabled>
+                        <em>Select a package…</em>
+                      </MenuItem>
+                      {labPackages.map((pkg) => (
+                        <MenuItem
+                          key={pkg.id}
+                          value={pkg.id}
+                          disabled={selectedLabPackageIds.has(pkg.id)}
+                          sx={{ alignItems: "flex-start", whiteSpace: "normal", py: 1 }}
+                        >
+                          <Box sx={{ display: "flex", justifyContent: "space-between", gap: 2, width: "100%" }}>
+                            <Box sx={{ minWidth: 0 }}>
+                              <Typography variant="body2" fontWeight={700}>
+                                {pkg.name}
+                              </Typography>
+                              {pkg.description ? (
+                                <Typography variant="caption" color="text.secondary" display="block">
+                                  {pkg.description}
+                                </Typography>
+                              ) : null}
+                            </Box>
+                            <Typography variant="caption" fontWeight={800} sx={{ flexShrink: 0 }}>
+                              {money2(pkg.package_price)}
+                            </Typography>
+                          </Box>
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  {selectedLabPackageIds.size > 0 ? (
+                    <Box sx={{ mt: 1.5 }}>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
+                        Selected packages
+                      </Typography>
+                      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
+                        {labPackages
+                          .filter((p) => selectedLabPackageIds.has(p.id))
+                          .map((pkg) => (
+                            <Chip
+                              key={pkg.id}
+                              label={`${pkg.name} · ${money2(pkg.package_price)}`}
+                              size="small"
+                              onDelete={() => toggleLabPackageSelection(pkg)}
+                              sx={{ fontWeight: 600 }}
+                            />
+                          ))}
+                      </Box>
+                    </Box>
+                  ) : null}
+                </Box>
+              ) : null}
             <Box
               sx={{
                 columnCount: { xs: 1, sm: 2, md: 3 },
@@ -1498,52 +1821,107 @@ export default function PlansTreatmentPanel({
                   >
                     {section.category.name.toUpperCase()}
                   </Typography>
-                  <Box sx={{ display: "flex", flexDirection: "column", gap: 0.25 }}>
-                    {section.tests.map((test) => {
-                      const alreadyRequested = !isNew && requestedTestIdSet.has(test.id);
-                      const checked = alreadyRequested || selectedLabTestIds.has(test.id);
-                      return (
-                        <FormControlLabel
-                          key={test.id}
-                          sx={{
-                            ...consultFormControlLabelSx,
-                            display: "flex",
-                            flexDirection: "row",
-                            alignItems: "center",
-                            ml: 0,
-                            mr: 0,
-                            gap: 0.5,
-                            "& .MuiFormControlLabel-label": { display: "inline", lineHeight: 1.35 },
-                          }}
-                          control={
-                            <Checkbox
-                              size="small"
-                              checked={checked}
-                              disabled={alreadyRequested}
-                              onChange={() => {
-                                if (alreadyRequested) return;
-                                toggleLabTestSelection(test.id);
-                              }}
-                            />
-                          }
-                          label={
-                            <Box component="span" sx={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 1 }}>
-                              <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
-                                {test.name}
-                              </Typography>
-                              <Typography component="span" variant="caption" sx={{ fontWeight: 800, whiteSpace: "nowrap" }}>
-                                {money2(labPriceByTestId.get(test.id) ?? 0)}
-                              </Typography>
-                            </Box>
-                          }
-                        />
-                      );
-                    })}
+                  <Box sx={{ display: "flex", flexDirection: "column", gap: 1.25 }}>
+                    {(labCategoryUsesUaFecalSubgroups(section.category)
+                      ? groupLabTestsByDescription(section.tests)
+                      : [{ heading: "", tests: section.tests }]
+                    ).map(({ heading, tests: subTests }) => (
+                      <Box key={`${String(section.category.id)}-${heading || "default"}`}>
+                        {heading ? (
+                          <Typography
+                            variant="caption"
+                            fontWeight={700}
+                            color="text.secondary"
+                            sx={{ display: "block", mb: 0.75, letterSpacing: "0.04em" }}
+                          >
+                            {heading}
+                          </Typography>
+                        ) : null}
+                        <Box sx={{ display: "flex", flexDirection: "column", gap: 0.25 }}>
+                          {subTests.map((test) => {
+                            const alreadyRequested = !isNew && requestedTestIdSet.has(test.id);
+                            const checked = alreadyRequested || selectedLabTestIds.has(test.id);
+                            const coveredByPkg = testsCoveredBySelectedPackages.has(test.id);
+                            return (
+                              <FormControlLabel
+                                key={test.id}
+                                sx={{
+                                  ...consultFormControlLabelSx,
+                                  display: "flex",
+                                  flexDirection: "row",
+                                  alignItems: "flex-start",
+                                  ml: 0,
+                                  mr: 0,
+                                  gap: 0.5,
+                                  "& .MuiFormControlLabel-label": { display: "block", lineHeight: 1.35 },
+                                }}
+                                control={
+                                  <Checkbox
+                                    size="small"
+                                    sx={{ mt: 0.25 }}
+                                    checked={checked}
+                                    disabled={alreadyRequested}
+                                    onChange={() => {
+                                      if (alreadyRequested) return;
+                                      toggleLabTestSelection(test.id);
+                                    }}
+                                  />
+                                }
+                                label={
+                                  <Box
+                                    component="span"
+                                    sx={{ display: "flex", flexDirection: "column", gap: 0.25, minWidth: 0, flex: 1 }}
+                                  >
+                                    <Box
+                                      component="span"
+                                      sx={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 1 }}
+                                    >
+                                      <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
+                                        {test.name}
+                                      </Typography>
+                                      <Typography
+                                        component="span"
+                                        variant="caption"
+                                        sx={{ fontWeight: 800, whiteSpace: "nowrap" }}
+                                      >
+                                        {coveredByPkg ? "—" : money2(labPriceByTestId.get(test.id) ?? 0)}
+                                      </Typography>
+                                    </Box>
+                                    {coveredByPkg ? (
+                                      <Typography component="span" variant="caption" color="text.secondary">
+                                        Included in package (bundle price)
+                                      </Typography>
+                                    ) : null}
+                                    {!coveredByPkg &&
+                                    (test.specimen_type ||
+                                      test.unit ||
+                                      test.requires_fasting ||
+                                      test.reference_range) ? (
+                                      <Typography component="span" variant="caption" color="text.secondary">
+                                        {[
+                                          test.specimen_type,
+                                          test.unit ? `Unit ${test.unit}` : null,
+                                          test.requires_fasting ? "Fasting required" : null,
+                                          test.reference_range ? `Ref ${test.reference_range}` : null,
+                                        ]
+                                          .filter(Boolean)
+                                          .join(" · ")}
+                                      </Typography>
+                                    ) : null}
+                                  </Box>
+                                }
+                              />
+                            );
+                          })}
+                        </Box>
+                      </Box>
+                    ))}
                   </Box>
                 </Box>
               ))}
             </Box>
-          )}
+            </Box>
+          ) : null}
         </DialogContent>
         <DialogActions sx={{ px: 2, py: 1.5, justifyContent: "space-between", flexWrap: "wrap", gap: 1 }}>
           <Typography variant="caption" color="text.secondary" sx={{ mr: "auto" }}>

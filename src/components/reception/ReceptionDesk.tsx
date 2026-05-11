@@ -59,7 +59,12 @@ import {
   type ReceptionTriageRoute,
 } from "@/lib/queueReception";
 import PatientAddDialog from "@/components/patient/PatientAddDialog";
-import { fetchLabCatalogGrouped, fetchLabTestUnitPricesByIds, fetchLabTestsByIds, type LabCatalogSection } from "@/lib/labTests";
+import {
+  fetchLabCatalogGrouped,
+  fetchLabTestCheckoutPricesByIds,
+  fetchLabTestsByIds,
+  type LabCatalogSection,
+} from "@/lib/labTests";
 import { PaymentModal, type PaymentModalSummaryRow } from "@/components/cashier/PaymentModal";
 import { createLabSaleWithItems, generateNextDailyOrNumber } from "@/lib/cashierPayments";
 import { fetchActivePaymentMethods, type PaymentMethodRow } from "@/lib/paymentMethods";
@@ -693,7 +698,7 @@ export default function ReceptionDesk() {
             return;
           }
           setLabTotalLoading(true);
-          const pr = await fetchLabTestUnitPricesByIds(labTestIds);
+          const pr = await fetchLabTestCheckoutPricesByIds(labTestIds);
           setLabTotalLoading(false);
           if (pr.error) {
             setLoadError(pr.error);
@@ -791,7 +796,7 @@ export default function ReceptionDesk() {
     setLabPayBusy(true);
     setLabPayError("");
     try {
-      const priceRes = await fetchLabTestUnitPricesByIds(pending.labTestIds);
+      const priceRes = await fetchLabTestCheckoutPricesByIds(pending.labTestIds);
       if (priceRes.error) throw new Error(priceRes.error);
       const items = pending.labTestIds.map((id) => ({
         lab_test_id: id,

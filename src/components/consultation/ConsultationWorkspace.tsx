@@ -28,7 +28,9 @@ import {
   formFromPhysicalExaminationRowOrDefault,
   type PhysicalExaminationForm,
 } from "@/lib/physicalExamination";
+import { buildConsultationPlanNotesForPrint } from "@/lib/consultationPlanPrint";
 import { openConsultationPrintWindow } from "@/lib/consultationPrint";
+import { fetchLabRequestsForEncounter, fetchLabRequestItemDetailsForRequestIds } from "@/lib/labRequests";
 import type { UserProfile } from "@/lib/types";
 import { formFromAllergiesRowOrDefault, fetchAllergies } from "@/lib/allergies";
 import { fetchCurrentMedicationsForEncounter } from "@/lib/currentMedications";
@@ -363,6 +365,32 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
                   peExam.error ? null : peExam.row,
                 );
                 const peForm = getPhysicalExaminationFromPanel() ?? peFormFromDb;
+
+                const planForm = plans.form;
+                let labRequests: Awaited<ReturnType<typeof fetchLabRequestsForEncounter>>["requests"] = [];
+                let labItems: Awaited<
+                  ReturnType<typeof fetchLabRequestItemDetailsForRequestIds>
+                >["items"] = [];
+                const lr = await fetchLabRequestsForEncounter(transId);
+                if (!lr.error && lr.requests.length > 0) {
+                  labRequests = lr.requests;
+                  const det = await fetchLabRequestItemDetailsForRequestIds(lr.requests.map((r) => r.id));
+                  if (!det.error) labItems = det.items;
+                }
+
+                const medLinesBase =
+                  currentMedsFromFields.length > 0
+                    ? currentMedsFromFields
+                    : currentMeds.error
+                      ? []
+                      : currentMeds.medications.map((m) => {
+                          const name = (m.medication_name ?? "").trim();
+                          const dosage = (m.dosage ?? "").trim();
+                          const frequency = (m.frequency ?? "").trim();
+                          const parts = [name, dosage, frequency].filter((x) => x.length > 0);
+                          return parts.join(" | ");
+                        });
+
                 const ok = await openConsultationPrintWindow({
                   patient,
                   physician: {
@@ -378,7 +406,12 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
                     focusedExamNotes: getFocusedExamNotesFromPanel() ?? focused.notes,
                     clinicalDiagnosis:
                       getClinicalDiagnosisFromPanel() ?? diagnosis.form.clinical_diagnosis,
-                    planNotes: plans.form.plan_notes,
+                    planNotes: buildConsultationPlanNotesForPrint({
+                      plan: planForm,
+                      labRequests,
+                      labItems,
+                      medicationLines: medLinesBase,
+                    }),
                     disposition: plans.form.disposition ?? "",
                     vitalBp: bp,
                     vitalHr: v?.heart_rate != null ? String(v.heart_rate) : "",
@@ -405,13 +438,15 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
                     currentMedications:
                       currentMedsFromFields.length > 0
                         ? currentMedsFromFields
-                        : currentMeds.medications.map((m) => {
-                            const name = (m.medication_name ?? "").trim();
-                            const dosage = (m.dosage ?? "").trim();
-                            const frequency = (m.frequency ?? "").trim();
-                            const parts = [name, dosage, frequency].filter((x) => x.length > 0);
-                            return parts.join(" | ");
-                          }),
+                        : currentMeds.error
+                          ? []
+                          : currentMeds.medications.map((m) => {
+                              const name = (m.medication_name ?? "").trim();
+                              const dosage = (m.dosage ?? "").trim();
+                              const frequency = (m.frequency ?? "").trim();
+                              const parts = [name, dosage, frequency].filter((x) => x.length > 0);
+                              return parts.join(" | ");
+                            }),
                   },
                 });
                 if (!ok) {

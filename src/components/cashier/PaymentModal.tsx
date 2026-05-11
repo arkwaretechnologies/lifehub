@@ -303,6 +303,14 @@ export function PaymentModal(props: {
 
   return (
     <Dialog open={open} onClose={busy ? undefined : onClose} maxWidth="sm" fullWidth>
+      <form
+        noValidate
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (disableConfirm || genBusy) return;
+          void handleConfirm();
+        }}
+      >
       <DialogTitle>{title}</DialogTitle>
       <DialogContent sx={{ pt: 1 }}>
         {errorText ? (
@@ -423,6 +431,7 @@ export function PaymentModal(props: {
           InputProps={{
             endAdornment: onGenerateOrNumber ? (
               <Button
+                type="button"
                 size="small"
                 onClick={() => void handleGenerateOr()}
                 disabled={!!busy || genBusy}
@@ -526,18 +535,19 @@ export function PaymentModal(props: {
         ) : null}
       </DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button onClick={onClose} disabled={!!busy} sx={{ textTransform: "none" }}>
+        <Button type="button" onClick={onClose} disabled={!!busy} sx={{ textTransform: "none" }}>
           Cancel
         </Button>
         <Button
+          type="submit"
           variant="contained"
           color="secondary"
-          onClick={() => void handleConfirm()}
           disabled={disableConfirm || genBusy}
         >
           Pay
         </Button>
       </DialogActions>
+      </form>
     </Dialog>
   );
 }

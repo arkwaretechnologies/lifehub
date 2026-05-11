@@ -4,7 +4,10 @@ import {
   type ConsultationPatient,
   type ConsultationPatientProfile,
 } from "@/components/consultation/consultationTypes";
-import { fetchCashierUnpaidPhysicianFeeEncounterCounts } from "@/lib/cashierLabQueue";
+import {
+  fetchCashierUnpaidPhysicianFeeEncounterCounts,
+  isCashierHiddenEncounterDisposition,
+} from "@/lib/cashierLabQueue";
 import { buildPatientSearchOrFilter, PATIENT_DIRECTORY_SELECT, sanitizePatientSearchQuery } from "@/lib/patientsCatalog";
 import { supabase } from "@/lib/supabaseClient";
 import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
@@ -719,7 +722,8 @@ export async function fetchConsultationPatientsPage(
 /**
  * Cashier: paginated encounter search by keywords (space-separated tokens are AND-ed).
  * Each token matches if it appears in patient name (matched uppercase), encounter `trans_id` (partial, lowercase), full UUID equality, or numeric `patient_id`.
- * Only encounters with at least one `physician_fee_sales` row whose `status` is not Paid (or null) are returned — same scope as the cashier unpaid queue.
+ * Only encounters with at least one `physician_fee_sales` row whose `status` is not Paid or Completed (or null) are returned — same scope as the cashier unpaid queue.
+ * Encounters whose `disposition` is Paid or Completed are excluded.
  */
 export async function fetchCashierEncountersSearchPage(
   pageIndex: number,
@@ -783,23 +787,23 @@ export async function fetchCashierEncountersSearchPage(
     return { rows: [], count: 0, error: null };
   }
 
-  type SortMeta = { trans_id: string; encounter_date: string; encounter_time: string | null };
+  type SortMeta = { trans_id: string; encounter_date: string; encounter_time: string | null; disposition?: string | null };
   const metaById = new Map<string, SortMeta>();
   const metaChunk = 120;
   for (let i = 0; i < allIds.length; i += metaChunk) {
     const chunk = allIds.slice(i, i + metaChunk);
     const { data: metaRows, error: metaErr } = await supabase
       .from(ENCOUNTERS_TABLE)
-      .select("trans_id, encounter_date, encounter_time")
+      .select("trans_id, encounter_date, encounter_time, disposition")
       .in("trans_id", chunk);
     if (metaErr) {
       return { rows: [], count: 0, error: metaErr.message };
     }
     for (const row of metaRows ?? []) {
       const r = row as SortMeta;
-      if (r.trans_id != null && r.trans_id !== "") {
-        metaById.set(String(r.trans_id), { ...r, trans_id: String(r.trans_id) });
-      }
+      if (r.trans_id == null || r.trans_id === "") continue;
+      if (isCashierHiddenEncounterDisposition(r.disposition)) continue;
+      metaById.set(String(r.trans_id), { ...r, trans_id: String(r.trans_id) });
     }
   }
 

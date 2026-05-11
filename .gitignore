@@ -24,6 +24,12 @@
 .DS_Store
 *.pem
 
+# local scratch from unpacking Word lab templates (not used by the app)
+.tmp_lab_doc/
+.tmp_lab_req_doc/
+.tmp_lab_req.zip
+.tmp_lab_template.zip
+
 # debug
 npm-debug.log*
 yarn-debug.log*
@@ -39,10 +45,14 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
-
+database.types.ts
 
 docs/
 sql/
 .env.local
 reference/
+
+# supabase (SQL migrations & CLI temp — generated/local)
+supabase/migrations/
+supabase/.temp/
 supabase/

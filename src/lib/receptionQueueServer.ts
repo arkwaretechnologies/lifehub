@@ -14,6 +14,12 @@ import {
 import { numericIdFromUnknown } from "@/lib/sessionUserId";
 import { parseBp } from "@/lib/bpInput";
 import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
+import {
+  LAB_REQUEST_ITEMS_TABLE,
+  LAB_REQUEST_PACKAGES_TABLE,
+  LAB_REQUESTS_TABLE,
+  normalizeLabRequestPackageIdList,
+} from "@/lib/labRequests";
 
 const ACTIVE_STATUSES: QueueTicketStatus[] = ["Waiting", "Called", "Serving"];
 
@@ -449,8 +455,11 @@ async function adminCreateLabRequestWithItems(input: {
   referringPhysician: string | null;
   physicianId: number | null;
   priority: string;
+  clinicalDiagnosis?: string | null;
   remarks: string | null;
   labTestIds: string[];
+  itemPriority?: "Routine" | "STAT" | null;
+  packageIds?: number[] | null;
 }): Promise<{ labRequestId: string | null; error: string | null }> {
   const admin = queueAdminClient();
   if (!admin) return { labRequestId: null, error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." };
@@ -459,8 +468,15 @@ async function adminCreateLabRequestWithItems(input: {
   const request_date = now.toISOString().slice(0, 10);
   const request_time = now.toTimeString().slice(0, 8);
 
+  const clinical =
+    input.clinicalDiagnosis != null && input.clinicalDiagnosis.trim() !== ""
+      ? input.clinicalDiagnosis.trim()
+      : null;
+
+  const packageIds = normalizeLabRequestPackageIdList(input.packageIds ?? []);
+
   const { data: row, error: insErr } = await admin
-    .from("lab_requests")
+    .from(LAB_REQUESTS_TABLE)
     .insert({
       encounter_id: input.encounterId,
       patient_id: input.patientId,
@@ -468,6 +484,7 @@ async function adminCreateLabRequestWithItems(input: {
       request_time,
       priority: input.priority || "Routine",
       referring_physician: input.referringPhysician,
+      clinical_diagnosis: clinical,
       remarks: input.remarks,
       physician_id: input.physicianId,
     })
@@ -477,16 +494,31 @@ async function adminCreateLabRequestWithItems(input: {
   if (insErr) return { labRequestId: null, error: insErr.message };
   const labRequestId = (row as { id: string }).id;
 
+  if (packageIds.length > 0) {
+    const pkgRows = packageIds.map((lab_package_id, sort_order) => ({
+      lab_request_id: labRequestId,
+      lab_package_id,
+      sort_order,
+    }));
+    const { error: pkgErr } = await admin.from(LAB_REQUEST_PACKAGES_TABLE).insert(pkgRows);
+    if (pkgErr) {
+      await admin.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
+      return { labRequestId: null, error: pkgErr.message };
+    }
+  }
+
+  const linePriority = input.itemPriority ?? "Routine";
+
   const items = input.labTestIds.map((lab_test_id) => ({
     lab_request_id: labRequestId,
     lab_test_id,
     notes: null,
-    priority: "Routine",
+    priority: linePriority,
   }));
 
-  const { error: itemsErr } = await admin.from("lab_request_items").insert(items);
+  const { error: itemsErr } = await admin.from(LAB_REQUEST_ITEMS_TABLE).insert(items);
   if (itemsErr) {
-    await admin.from("lab_requests").delete().eq("id", labRequestId);
+    await admin.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
     return { labRequestId: null, error: itemsErr.message };
   }
 
@@ -1226,6 +1258,7 @@ export async function adminPrepareLaboratoryCheckin(
     referringPhysician: null,
     physicianId: null,
     priority: "Routine",
+    clinicalDiagnosis: null,
     remarks: "Reception lab-only (pending payment)",
     labTestIds: ids,
   });

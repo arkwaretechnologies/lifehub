@@ -59,6 +59,12 @@ import {
   fetchLabRequestsWithoutLabSaleForEncounters,
   fetchStandaloneLabRequestsWithoutLabSaleForPatient,
 } from "@/lib/cashierLabQueue";
+import type { CashierLabQueueReprintStored } from "@/lib/receptionQueueReceiptPrint";
+import {
+  clearCashierLabQueueReprintOffer,
+  openCashierQueueReceiptReprintByTicketId,
+  peekCashierLabQueueReprintOffer,
+} from "@/lib/receptionQueueReceiptPrint";
 
 const APP_USERS_TABLE = "users";
 
@@ -112,6 +118,10 @@ export default function CashierHome() {
   const [walkInLoading, setWalkInLoading] = useState(false);
   const [walkInError, setWalkInError] = useState("");
 
+  const [labQueueReprintOffer, setLabQueueReprintOffer] = useState<CashierLabQueueReprintStored | null>(null);
+  const [labQueueReprintBusy, setLabQueueReprintBusy] = useState(false);
+  const [labQueueReprintErr, setLabQueueReprintErr] = useState("");
+
   const [encounterRangeAnchor, setEncounterRangeAnchor] = useState<HTMLElement | null>(null);
   const [encounterRangePreset, setEncounterRangePreset] = useState<
     "today" | "yesterday" | "last3" | "last7" | "last15" | "last30"
@@ -151,6 +161,10 @@ export default function CashierHome() {
   useEffect(() => {
     void loadQueue();
   }, [loadQueue]);
+
+  useEffect(() => {
+    setLabQueueReprintOffer(peekCashierLabQueueReprintOffer());
+  }, []);
 
   useEffect(() => {
     const t = searchParams.get("tab");
@@ -469,6 +483,25 @@ export default function CashierHome() {
       ? "Type encounter id or patient name keywords to search visits."
       : "No visits match your search.";
 
+  const dismissLabQueueReprintOffer = () => {
+    clearCashierLabQueueReprintOffer();
+    setLabQueueReprintOffer(null);
+    setLabQueueReprintErr("");
+  };
+
+  const handleLabQueueReprint = async () => {
+    if (!labQueueReprintOffer) return;
+    setLabQueueReprintBusy(true);
+    setLabQueueReprintErr("");
+    const r = await openCashierQueueReceiptReprintByTicketId(labQueueReprintOffer.ticketId);
+    setLabQueueReprintBusy(false);
+    if (!r.ok) {
+      setLabQueueReprintErr(r.error ?? "Could not reprint.");
+      return;
+    }
+    dismissLabQueueReprintOffer();
+  };
+
   return (
     <>
       <Box
@@ -529,6 +562,35 @@ export default function CashierHome() {
         </Tooltip>
       </Box>
 
+      {labQueueReprintOffer ? (
+        <Alert severity="info" sx={{ mb: 2 }} onClose={dismissLabQueueReprintOffer}>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            Laboratory queue{" "}
+            <Box component="span" fontWeight={800}>
+              {labQueueReprintOffer.queueDisplay.trim() || "—"}
+            </Box>{" "}
+            — you can reprint the thermal laboratory queue slip (the visit already had a reception queue number, so the
+            slip was not printed automatically).
+          </Typography>
+          {labQueueReprintErr ? (
+            <Typography variant="caption" color="error" sx={{ display: "block", mb: 1 }}>
+              {labQueueReprintErr}
+            </Typography>
+          ) : null}
+          <Button
+            variant="contained"
+            color="info"
+            size="small"
+            disabled={labQueueReprintBusy}
+            onClick={() => void handleLabQueueReprint()}
+            sx={{ textTransform: "none" }}
+            startIcon={labQueueReprintBusy ? <CircularProgress size={16} color="inherit" /> : null}
+          >
+            {labQueueReprintBusy ? "Printing…" : "Reprint laboratory queue slip"}
+          </Button>
+        </Alert>
+      ) : null}
+
       {queueError ? (
         <Alert severity="warning" sx={{ mb: 2 }} onClose={() => setQueueError("")}>
           {queueError}
@@ -543,12 +605,18 @@ export default function CashierHome() {
             walk-in laboratory orders below.
           </Typography>
 
-          <Box sx={{ mb: 2, maxWidth: 480 }}>
+          <Box
+            component="form"
+            autoComplete="off"
+            onSubmit={(e) => e.preventDefault()}
+            sx={{ mb: 2, maxWidth: 480 }}
+          >
             <FormFieldLabel htmlFor="cashier-patient-search" variant="consultation">
               Search visits
             </FormFieldLabel>
             <TextField
               id="cashier-patient-search"
+              name="cashier_visit_search"
               hiddenLabel
               placeholder="Encounter ID or patient name keywords…"
               value={searchInput}
@@ -556,6 +624,7 @@ export default function CashierHome() {
               {...commonFieldProps}
               sx={[fieldInputSx, { "& .MuiInputBase-input": { textTransform: "none" } }]}
               slotProps={{
+                htmlInput: { autoComplete: "off" },
                 input: {
                   startAdornment: (
                     <InputAdornment position="start">

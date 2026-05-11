@@ -768,6 +768,13 @@ export default function LabResultsPage() {
                             Specimen: {it.specimen_type ?? "—"}
                             {it.priority ? ` · Priority: ${it.priority}` : ""}
                           </Typography>
+                          {it.result_unit || it.reference_range ? (
+                            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                              {[it.result_unit ? `Unit: ${it.result_unit}` : null, it.reference_range ? `Ref: ${it.reference_range}` : null]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </Typography>
+                          ) : null}
                         </Box>
 
                         <FormControlLabel

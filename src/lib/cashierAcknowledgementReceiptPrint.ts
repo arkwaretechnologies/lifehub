@@ -1,5 +1,12 @@
 "use client";
 
+import {
+  THERMAL_RECEIPT_FONT_FACE_CSS,
+  THERMAL_RECEIPT_FONT_FAMILY,
+  THERMAL_RECEIPT_HEADER_LOGO_CSS,
+  resolveThermalReceiptLogoSrc,
+} from "@/lib/thermalReceiptFontCss";
+
 export type CashierAcknowledgementPaymentLine = {
   label: string;
   amount: number;
@@ -59,6 +66,8 @@ export async function openCashierAcknowledgementReceiptPrint(args: CashierAcknow
   const change =
     args.changeAmount == null || !Number.isFinite(Number(args.changeAmount)) ? null : Number(args.changeAmount);
 
+  const logoSrc = resolveThermalReceiptLogoSrc();
+
   const paymentLines = (args.paymentLines ?? []).filter((l) => String(l.label ?? "").trim() !== "");
   const paymentLinesHtml =
     paymentLines.length > 0
@@ -85,15 +94,17 @@ export async function openCashierAcknowledgementReceiptPrint(args: CashierAcknow
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Acknowledgement receipt</title>
+  <title>Acknowledgement Receipt</title>
   <style>
+    ${THERMAL_RECEIPT_FONT_FACE_CSS}
     @page { size: 80mm auto; margin: 0; }
     html, body { padding: 0; margin: 0; }
     body {
       width: 80mm;
-      font-family: ui-sans-serif, system-ui, Segoe UI, Roboto, Arial, sans-serif;
+      font-family: ${THERMAL_RECEIPT_FONT_FAMILY};
       color: #111;
     }
+    ${THERMAL_RECEIPT_HEADER_LOGO_CSS}
     .paper { padding: 6mm 5mm; }
     .center { text-align: center; }
     .title { font-weight: 800; font-size: 14px; letter-spacing: 0.02em; }
@@ -104,13 +115,16 @@ export async function openCashierAcknowledgementReceiptPrint(args: CashierAcknow
     .label { font-size: 11px; color: #222; }
     .value { font-size: 11px; font-weight: 700; text-align: right; }
     .kv { font-size: 11px; line-height: 1.25; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .mono { font-family: ${THERMAL_RECEIPT_FONT_FAMILY}; }
     .foot { margin-top: 10px; font-size: 10px; color: #444; text-align: center; }
     .qr { width: 120px; height: 120px; display: block; margin: 8px auto 0; }
   </style>
 </head>
 <body>
   <div class="paper">
+    <div class="receipt-logo-wrap">
+      <img class="receipt-logo" src="${escapeHtml(logoSrc)}" alt="" />
+    </div>
     <div class="center title">${escapeHtml(args.facilityName)}</div>
     ${facilityAddress.map((l) => `<div class="center sub">${escapeHtml(l)}</div>`).join("")}
     ${args.facilityContactLine ? `<div class="center sub muted">${escapeHtml(args.facilityContactLine)}</div>` : ""}
@@ -139,7 +153,7 @@ export async function openCashierAcknowledgementReceiptPrint(args: CashierAcknow
 
     <div class="rule"></div>
     ${transIdQrDataUrl ? `<div class="center" style="margin-top:6px"><img class="qr" src="${transIdQrDataUrl}" alt="" /></div>` : ""}
-    <div class="foot">Acknowledgement receipt</div>
+    <div class="foot">Acknowledgement Receipt</div>
   </div>
 </body>
 </html>`;
@@ -147,7 +161,7 @@ export async function openCashierAcknowledgementReceiptPrint(args: CashierAcknow
   const blob = new Blob([html], { type: "text/html;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const iframe = document.createElement("iframe");
-  iframe.setAttribute("title", "Acknowledgement receipt print");
+  iframe.setAttribute("title", "Acknowledgement Receipt print");
   iframe.style.position = "fixed";
   iframe.style.right = "0";
   iframe.style.bottom = "0";

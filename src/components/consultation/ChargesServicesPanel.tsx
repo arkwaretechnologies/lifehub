@@ -20,7 +20,7 @@ import type { ConsultationPatient } from "@/components/consultation/consultation
 import { useConsultationSave } from "@/components/consultation/consultationSaveContext";
 import { fetchActivePhysicianServices, type PhysicianServiceRow } from "@/lib/physicianServices";
 import { fetchActiveDiscountTypes, type DiscountTypeRow } from "@/lib/discountTypes";
-import { fetchLabRequestsForEncounter } from "@/lib/labRequests";
+import { fetchLabRequestsForEncounter, isBillingAsLabPackage } from "@/lib/labRequests";
 import { fetchActiveLabPricesByTestIds } from "@/lib/labServicePrices";
 import { fetchLabTestsByIds } from "@/lib/labTests";
 import { fetchEncounterPlansTreatment } from "@/lib/consultationData";
@@ -184,18 +184,51 @@ export default function ChargesServicesPanel({ transId, patient }: { transId: st
     setLabItems([]);
     const enc = await fetchLabRequestsForEncounter(transId);
     if (enc.error) return;
-    const prices = await fetchActiveLabPricesByTestIds(enc.requestedTestIds);
+    const requests = enc.requests;
+    if (requests.length === 0) return;
+
+    const allTestIds = [...new Set(requests.flatMap((r) => r.labTestIds))];
+    if (allTestIds.length === 0) return;
+
+    const prices = await fetchActiveLabPricesByTestIds(allTestIds);
     if (prices.error) return;
-    const tests = await fetchLabTestsByIds(enc.requestedTestIds);
+    const tests = await fetchLabTestsByIds(allTestIds);
     if (tests.error) return;
+
+    const priceMap = prices.pricesByTestId;
     let sum = 0;
     const items: PricedItem[] = [];
-    for (const id of enc.requestedTestIds) {
-      const price = prices.pricesByTestId.get(id) ?? 0;
-      sum += price;
-      const name = tests.testsById.get(id)?.name ?? `Lab test ${id.slice(0, 8)}…`;
-      items.push({ name, price });
+
+    const sortedReqs = [...requests].sort((a, b) => a.created_at.localeCompare(b.created_at));
+
+    for (const req of sortedReqs) {
+      const cov = new Set(req.package_covered_test_ids ?? []);
+      if (isBillingAsLabPackage(req) && req.lab_packages.length > 0) {
+        for (const pkg of req.lab_packages) {
+          const p = Number.isFinite(pkg.package_price) ? pkg.package_price : 0;
+          sum += p;
+          items.push({
+            name: `${pkg.name} (laboratory package)`,
+            price: p,
+          });
+        }
+        for (const tid of req.labTestIds) {
+          if (cov.has(tid)) continue;
+          const price = priceMap.get(tid) ?? 0;
+          sum += price;
+          const name = tests.testsById.get(tid)?.name ?? `Lab test ${tid.slice(0, 8)}…`;
+          items.push({ name, price });
+        }
+      } else {
+        for (const tid of req.labTestIds) {
+          const price = priceMap.get(tid) ?? 0;
+          sum += price;
+          const name = tests.testsById.get(tid)?.name ?? `Lab test ${tid.slice(0, 8)}…`;
+          items.push({ name, price });
+        }
+      }
     }
+
     setLabExtraTotal(sum);
     items.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     setLabItems(items);
@@ -625,11 +658,11 @@ export default function ChargesServicesPanel({ transId, patient }: { transId: st
               {labItems.length > 0 ? (
                 <Box sx={{ mt: 1 }}>
                   <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.5 }}>
-                    Lab tests
+                    Laboratory services
                   </Typography>
                   <Box component="ul" sx={{ m: 0, pl: 2.25 }}>
-                    {labItems.map((it) => (
-                      <Box component="li" key={`lab-${it.name}`} sx={{ mb: 0.25 }}>
+                    {labItems.map((it, idx) => (
+                      <Box component="li" key={`lab-${idx}-${it.name}`} sx={{ mb: 0.25 }}>
                         <Typography variant="body2" component="span">
                           {it.name}
                         </Typography>

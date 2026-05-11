@@ -230,9 +230,16 @@ function filterMenuSectionsByRbac(
 
 function sectionContainsPath(section: MenuSection, path: string): boolean {
   for (const item of section.items) {
-    if (item.kind === "link" && item.href === path) return true;
-    if (item.kind === "group" && item.children.some((c) => c.href === path)) return true;
+    if (item.kind === "link" && navLeafMatchesHref(item.href, path)) return true;
+    if (item.kind === "group" && item.children.some((c) => navLeafMatchesHref(c.href, path))) return true;
   }
+  return false;
+}
+
+/** Exact match, or sub-routes under a leaf (e.g. /pharmacy/pos when nav href is /pharmacy). */
+function navLeafMatchesHref(href: string, pathname: string): boolean {
+  if (pathname === href) return true;
+  if (href === "/pharmacy" && pathname.startsWith("/pharmacy/")) return true;
   return false;
 }
 
@@ -311,7 +318,7 @@ function SidebarContent() {
 
   /** Top-level row: full pill, active = soft grey track + accent blue (screenshot dashboard). */
   const renderTopLevelLink = (item: MenuLinkItem) => {
-    const active = pathname === item.href;
+    const active = navLeafMatchesHref(item.href, pathname);
     return (
       <ListItemButton
         component={Link}

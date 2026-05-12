@@ -35,6 +35,7 @@ import Image from "next/image";
 import { LIFEHUB_LOGO_SRC } from "@/lib/lifehubLogo";
 import { useAuth } from "@/components/AuthProvider";
 import type { MenuAccessState } from "@/lib/menuAccess";
+import { canAccessPharmacyHub } from "@/lib/navPermissionCatalog";
 
 export const DRAWER_WIDTH = 280;
 
@@ -213,7 +214,11 @@ function filterMenuSectionsByRbac(
     const items: NavItem[] = [];
     for (const item of section.items) {
       if (item.kind === "link") {
-        if (allowed.has(item.pageKey)) items.push(item);
+        if (item.href === "/pharmacy") {
+          if (canAccessPharmacyHub(allowed)) items.push(item);
+        } else if (allowed.has(item.pageKey)) {
+          items.push(item);
+        }
       } else {
         const kids = item.children.filter((c) => allowed.has(c.pageKey));
         if (kids.length > 0) {

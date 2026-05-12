@@ -245,7 +245,8 @@ const theme = createTheme({
       },
     },
     MuiTextField: {
-      defaultProps: { variant: "outlined" as const },
+      /** Reduce browser autofill / heuristics on generic app fields (login overrides explicitly). */
+      defaultProps: { variant: "outlined" as const, autoComplete: "off" },
       styleOverrides: {
         root: {
           "& .MuiOutlinedInput-root": {
@@ -255,6 +256,9 @@ const theme = createTheme({
       },
     },
     MuiOutlinedInput: {
+      defaultProps: {
+        autoComplete: "off",
+      },
       styleOverrides: {
         root: {
           transition: `box-shadow ${MOTION.duration} ${MOTION.easing}, background-color ${MOTION.duration} ${MOTION.easing}`,

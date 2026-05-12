@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { Box, CircularProgress } from "@mui/material";
 import { useAuth } from "@/components/AuthProvider";
-import { firstAllowedHref, pageKeyForPath } from "@/lib/navPermissionCatalog";
+import { firstAllowedHref, userMayAccessPath } from "@/lib/navPermissionCatalog";
 
 /** Auth gate for fullscreen POS (no sidebar); mirrors dashboard shell RBAC. */
 export default function PosProtectedShell({ children }: { children: React.ReactNode }) {
@@ -21,12 +21,9 @@ export default function PosProtectedShell({ children }: { children: React.ReactN
   useEffect(() => {
     if (loading || !user) return;
     if (!menuAccess.rbac || menuAccess.pageKeys.length === 0) return;
-    const key = pageKeyForPath(pathname);
-    if (key == null) return;
-    if (!menuAccess.pageKeys.includes(key)) {
-      const href = firstAllowedHref(menuAccess.pageKeys) ?? "/login";
-      router.replace(href);
-    }
+    if (userMayAccessPath(pathname, menuAccess.pageKeys)) return;
+    const href = firstAllowedHref(menuAccess.pageKeys) ?? "/login";
+    router.replace(href);
   }, [loading, user, menuAccess, pathname, router]);
 
   if (loading) {

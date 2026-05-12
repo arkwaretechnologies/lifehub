@@ -363,6 +363,8 @@ export default function LoginPage() {
                 type="text"
                 fullWidth
                 required
+                name="username"
+                autoComplete="username"
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
                 InputLabelProps={{ shrink: true }}
@@ -387,6 +389,8 @@ export default function LoginPage() {
                 type="password"
                 fullWidth
                 required
+                name="password"
+                autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 InputLabelProps={{ shrink: true }}

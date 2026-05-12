@@ -558,6 +558,543 @@ export async function completePharmacySale(input: CompletePharmacySaleInput): Pr
   return { saleId, error: null };
 }
 
+/** Strip characters that would widen `ilike` unintentionally. */
+function sanitizeOrSearchFragment(q: string): string {
+  return q.replace(/%/g, "").replace(/_/g, "").trim();
+}
+
+function r2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+export type PharmacySaleSearchRow = {
+  id: string;
+  or_number: string;
+  sale_date: string;
+  sale_time: string | null;
+  total_amount: number | null;
+  payment_method: string | null;
+  status: string | null;
+  shift_id: string | null;
+};
+
+/** Find completed sales by OR number (partial match). */
+export async function searchCompletedPharmacySalesByOrNumber(
+  orQuery: string,
+  limit = 30,
+): Promise<{ sales: PharmacySaleSearchRow[]; error: string | null }> {
+  const q = sanitizeOrSearchFragment(orQuery);
+  if (!q) return { sales: [], error: null };
+  const { data, error } = await supabase
+    .from(PHARMACY_SALES_TABLE)
+    .select("id, or_number, sale_date, sale_time, total_amount, payment_method, status, shift_id")
+    .eq("status", "Completed")
+    .ilike("or_number", `%${q}%`)
+    .order("sale_date", { ascending: false })
+    .order("sale_time", { ascending: false })
+    .limit(Math.min(Math.max(1, limit), 60));
+
+  if (error) return { sales: [], error: error.message };
+  const sales = (data ?? []) as PharmacySaleSearchRow[];
+  return { sales, error: null };
+}
+
+export type PharmacySaleVoidLine = {
+  id: string;
+  linenum: number;
+  product_id: string;
+  quantity: number;
+  unit_price: number;
+  line_total: number | null;
+  discount: number;
+  generic_name: string;
+  brand_name: string | null;
+};
+
+export type PharmacySaleVoidDetail = {
+  sale: PharmacySaleSearchRow & { notes: string | null; patient_id: number | null };
+  lines: PharmacySaleVoidLine[];
+};
+
+export async function fetchPharmacySaleWithItemsForVoid(saleId: string): Promise<{
+  detail: PharmacySaleVoidDetail | null;
+  error: string | null;
+}> {
+  const { data: sale, error: sErr } = await supabase
+    .from(PHARMACY_SALES_TABLE)
+    .select("id, or_number, sale_date, sale_time, total_amount, payment_method, status, shift_id, notes, patient_id")
+    .eq("id", saleId)
+    .maybeSingle();
+  if (sErr) return { detail: null, error: sErr.message };
+  if (!sale) return { detail: null, error: "Sale not found." };
+  const s = sale as PharmacySaleVoidDetail["sale"];
+  if ((s.status ?? "").trim() !== "Completed") {
+    return { detail: null, error: "Only completed sales can be modified." };
+  }
+
+  const { data: rawItems, error: iErr } = await supabase
+    .from(PHARMACY_SALE_ITEMS_TABLE)
+    .select("id, linenum, product_id, quantity, unit_price, line_total, discount")
+    .eq("pharmacy_sale_id", saleId)
+    .order("linenum", { ascending: true });
+  if (iErr) return { detail: null, error: iErr.message };
+
+  const items = (rawItems ?? []) as Array<{
+    id: string;
+    linenum: number;
+    product_id: string;
+    quantity: number;
+    unit_price: number;
+    line_total: number | null;
+    discount: number | null;
+  }>;
+  const productIds = [...new Set(items.map((i) => i.product_id))];
+  const nameById = new Map<string, { generic_name: string; brand_name: string | null }>();
+  if (productIds.length > 0) {
+    const { data: prows, error: pErr } = await supabase
+      .from(PRODUCTS_TABLE)
+      .select("id, generic_name, brand_name")
+      .in("id", productIds);
+    if (pErr) return { detail: null, error: pErr.message };
+    for (const p of (prows ?? []) as Array<{ id: string; generic_name: string; brand_name: string | null }>) {
+      nameById.set(p.id, { generic_name: p.generic_name, brand_name: p.brand_name });
+    }
+  }
+
+  const lines: PharmacySaleVoidLine[] = items.map((row) => {
+    const nm = nameById.get(row.product_id);
+    const disc = Number(row.discount) || 0;
+    return {
+      id: row.id,
+      linenum: row.linenum,
+      product_id: row.product_id,
+      quantity: Math.round(Number(row.quantity)) || 0,
+      unit_price: Number(row.unit_price) || 0,
+      line_total: row.line_total != null ? Number(row.line_total) : null,
+      discount: disc,
+      generic_name: nm?.generic_name ?? "(unknown product)",
+      brand_name: nm?.brand_name ?? null,
+    };
+  });
+
+  return { detail: { sale: s, lines }, error: null };
+}
+
+async function restoreStockForVoidViaMovements(saleId: string): Promise<{ usedMovements: boolean; error: string | null }> {
+  const saleNote = `Pharmacy sale ${saleId}`;
+  const { data: byNote, error: nErr } = await supabase
+    .from(STOCK_MOVEMENTS_TABLE)
+    .select("id, stock_id, product_id, quantity")
+    .eq("reference_type", "pharmacy_sale")
+    .eq("notes", saleNote);
+  if (nErr) return { usedMovements: false, error: nErr.message };
+
+  let movs = (byNote ?? []) as Array<{ id: string; stock_id: string | null; product_id: string; quantity: number }>;
+  if (movs.length === 0) {
+    const { data: byRef, error: rErr } = await supabase
+      .from(STOCK_MOVEMENTS_TABLE)
+      .select("id, stock_id, product_id, quantity")
+      .eq("reference_type", "pharmacy_sale")
+      .eq("reference_id", saleId);
+    if (rErr) return { usedMovements: false, error: rErr.message };
+    movs = (byRef ?? []) as Array<{ id: string; stock_id: string | null; product_id: string; quantity: number }>;
+  }
+
+  const dispenseRows = movs.filter((m) => m.stock_id && Number(m.quantity) < 0);
+  if (dispenseRows.length === 0) {
+    return { usedMovements: false, error: null };
+  }
+
+  const now = new Date().toISOString();
+  for (const m of dispenseRows) {
+    const stockId = m.stock_id as string;
+    const addBack = -Number(m.quantity);
+    if (!Number.isFinite(addBack) || addBack <= 0) continue;
+
+    const { data: lot, error: lErr } = await supabase.from(STOCK_TABLE).select("id, quantity").eq("id", stockId).maybeSingle();
+    if (lErr) return { usedMovements: true, error: lErr.message };
+    if (!lot) return { usedMovements: true, error: `Stock lot ${stockId.slice(0, 8)}… no longer exists — void aborted.` };
+
+    const prev = Number((lot as { quantity: number }).quantity) || 0;
+    const { error: upErr } = await supabase
+      .from(STOCK_TABLE)
+      .update({ quantity: prev + addBack, updated_at: now })
+      .eq("id", stockId);
+    if (upErr) return { usedMovements: true, error: upErr.message };
+
+    const { error: movInsErr } = await supabase.from(STOCK_MOVEMENTS_TABLE).insert({
+      product_id: m.product_id,
+      quantity: addBack,
+      movement_type: "VOID",
+      stock_id: stockId,
+      notes: `Void pharmacy sale ${saleId}`,
+      reference_type: "pharmacy_sale_void",
+      reference_id: saleId,
+    });
+    if (movInsErr) return { usedMovements: true, error: movInsErr.message };
+  }
+  return { usedMovements: true, error: null };
+}
+
+async function restoreStockForVoidFallbackLots(saleId: string): Promise<{ error: string | null }> {
+  const { data: items, error: iErr } = await supabase
+    .from(PHARMACY_SALE_ITEMS_TABLE)
+    .select("product_id, quantity")
+    .eq("pharmacy_sale_id", saleId);
+  if (iErr) return { error: iErr.message };
+
+  const now = new Date().toISOString();
+  for (const raw of items ?? []) {
+    const row = raw as { product_id: string; quantity: number };
+    const qty = Math.round(Number(row.quantity)) || 0;
+    if (qty <= 0) continue;
+
+    const { data: lots, error: lErr } = await supabase
+      .from(STOCK_TABLE)
+      .select("id, quantity")
+      .eq("product_id", row.product_id)
+      .order("expiry_date", { ascending: true, nullsFirst: false })
+      .limit(1);
+    if (lErr) return { error: lErr.message };
+    const lot = (lots ?? [])[0] as { id: string; quantity: number } | undefined;
+    if (!lot) {
+      return {
+        error: `No stock lot exists for a line item (product ${row.product_id.slice(0, 8)}…). Restore stock manually or contact admin.`,
+      };
+    }
+    const prev = Number(lot.quantity) || 0;
+    const { error: upErr } = await supabase
+      .from(STOCK_TABLE)
+      .update({ quantity: prev + qty, updated_at: now })
+      .eq("id", lot.id);
+    if (upErr) return { error: upErr.message };
+
+    const { error: movInsErr } = await supabase.from(STOCK_MOVEMENTS_TABLE).insert({
+      product_id: row.product_id,
+      quantity: qty,
+      movement_type: "VOID",
+      stock_id: lot.id,
+      notes: `Void pharmacy sale ${saleId} (lot fallback)`,
+      reference_type: "pharmacy_sale_void",
+      reference_id: saleId,
+    });
+    if (movInsErr) return { error: movInsErr.message };
+  }
+  return { error: null };
+}
+
+/**
+ * Marks a completed pharmacy sale void and puts quantity back on stock (via dispense movements, or lot fallback).
+ */
+export async function voidCompletedPharmacySale(args: {
+  saleId: string;
+  voidedByUserId: number | null;
+  reason?: string | null;
+}): Promise<{ error: string | null }> {
+  const saleId = args.saleId.trim();
+  if (!saleId) return { error: "Sale id required." };
+
+  const { data: head, error: hErr } = await supabase
+    .from(PHARMACY_SALES_TABLE)
+    .select("id, status, notes")
+    .eq("id", saleId)
+    .maybeSingle();
+  if (hErr) return { error: hErr.message };
+  if (!head) return { error: "Sale not found." };
+  if (String((head as { status: string }).status) !== "Completed") {
+    return { error: "This sale is not completed (or was already voided)." };
+  }
+
+  const { usedMovements, error: movErr } = await restoreStockForVoidViaMovements(saleId);
+  if (movErr) return { error: movErr };
+  if (!usedMovements) {
+    const fb = await restoreStockForVoidFallbackLots(saleId);
+    if (fb.error) return { error: fb.error };
+  }
+
+  const prevNotes = (head as { notes: string | null }).notes;
+  const stamp = new Date().toISOString();
+  const who = args.voidedByUserId != null ? `user_id=${args.voidedByUserId}` : "user=unknown";
+  const reason = args.reason?.trim() ? args.reason.trim() : "no reason given";
+  const voidLine = `[VOID ${stamp}] ${who} · ${reason}`;
+  const mergedNotes = [prevNotes?.trim() || null, voidLine].filter(Boolean).join("\n");
+
+  const { error: uErr } = await supabase
+    .from(PHARMACY_SALES_TABLE)
+    .update({
+      status: "Voided",
+      notes: mergedNotes,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", saleId)
+    .eq("status", "Completed");
+  if (uErr) return { error: uErr.message };
+  return { error: null };
+}
+
+type DispBucket = { stock_id: string; product_id: string; qtyOut: number };
+
+async function loadDispenseBucketsForSale(saleId: string): Promise<{ buckets: DispBucket[]; error: string | null }> {
+  const saleNote = `Pharmacy sale ${saleId}`;
+  const { data: byNote, error: nErr } = await supabase
+    .from(STOCK_MOVEMENTS_TABLE)
+    .select("id, stock_id, product_id, quantity")
+    .eq("reference_type", "pharmacy_sale")
+    .eq("notes", saleNote)
+    .order("id", { ascending: true });
+  if (nErr) return { buckets: [], error: nErr.message };
+  let rows = (byNote ?? []) as Array<{ stock_id: string | null; product_id: string; quantity: number }>;
+  if (rows.length === 0) {
+    const { data: byRef, error: rErr } = await supabase
+      .from(STOCK_MOVEMENTS_TABLE)
+      .select("id, stock_id, product_id, quantity")
+      .eq("reference_type", "pharmacy_sale")
+      .eq("reference_id", saleId)
+      .order("id", { ascending: true });
+    if (rErr) return { buckets: [], error: rErr.message };
+    rows = (byRef ?? []) as Array<{ stock_id: string | null; product_id: string; quantity: number }>;
+  }
+  const buckets: DispBucket[] = [];
+  for (const m of rows) {
+    const q = Number(m.quantity) || 0;
+    if (!m.stock_id || q >= 0) continue;
+    buckets.push({ stock_id: m.stock_id, product_id: m.product_id, qtyOut: -q });
+  }
+  return { buckets, error: null };
+}
+
+async function addStockReturnToLot(
+  productId: string,
+  stockId: string,
+  qty: number,
+  saleId: string,
+  label: string,
+): Promise<{ error: string | null }> {
+  if (qty <= 0) return { error: null };
+  const now = new Date().toISOString();
+  const { data: lot, error: lErr } = await supabase.from(STOCK_TABLE).select("id, quantity").eq("id", stockId).maybeSingle();
+  if (lErr) return { error: lErr.message };
+  if (!lot) return { error: "Stock lot missing during return." };
+  const prev = Number((lot as { quantity: number }).quantity) || 0;
+  const { error: upErr } = await supabase.from(STOCK_TABLE).update({ quantity: prev + qty, updated_at: now }).eq("id", stockId);
+  if (upErr) return { error: upErr.message };
+  const { error: movErr } = await supabase.from(STOCK_MOVEMENTS_TABLE).insert({
+    product_id: productId,
+    quantity: qty,
+    movement_type: "VOID",
+    stock_id: stockId,
+    notes: `${label} pharmacy sale ${saleId}`,
+    reference_type: "pharmacy_sale_return",
+    reference_id: saleId,
+  });
+  if (movErr) return { error: movErr.message };
+  return { error: null };
+}
+
+async function restoreReturnQtyUsingBuckets(
+  buckets: DispBucket[],
+  productId: string,
+  need: number,
+  saleId: string,
+): Promise<{ error: string | null }> {
+  let left = need;
+  for (const b of buckets) {
+    if (b.product_id !== productId) continue;
+    if (left <= 0) break;
+    if (b.qtyOut <= 0) continue;
+    const t = Math.min(left, b.qtyOut);
+    const e = await addStockReturnToLot(productId, b.stock_id, t, saleId, "Return");
+    if (e.error) return e;
+    b.qtyOut -= t;
+    left -= t;
+  }
+  if (left > 0.0001) {
+    const { data: lots, error: lErr } = await supabase
+      .from(STOCK_TABLE)
+      .select("id, quantity")
+      .eq("product_id", productId)
+      .order("expiry_date", { ascending: true, nullsFirst: false })
+      .limit(1);
+    if (lErr) return { error: lErr.message };
+    const lot = (lots ?? [])[0] as { id: string } | undefined;
+    if (!lot) {
+      return { error: `No stock lot for product ${productId.slice(0, 8)}… — add stock before returning this quantity.` };
+    }
+    return addStockReturnToLot(productId, lot.id, left, saleId, "Return (lot fallback)");
+  }
+  return { error: null };
+}
+
+/**
+ * Partial or full return: puts quantity back on stock (reversing dispense lots when possible),
+ * updates or removes `pharmacy_sale_items`, and adjusts sale totals / notes.
+ * If every line is fully returned, the sale is marked **Voided** (same outcome as void).
+ */
+export async function processPharmacySaleReturn(args: {
+  saleId: string;
+  lineReturns: { itemId: string; returnQty: number }[];
+  reason?: string | null;
+  returnedByUserId: number | null;
+}): Promise<{ error: string | null }> {
+  const saleId = args.saleId.trim();
+  if (!saleId) return { error: "Sale id required." };
+  if (!args.lineReturns?.length) return { error: "Select at least one line to return." };
+
+  const { data: head, error: hErr } = await supabase
+    .from(PHARMACY_SALES_TABLE)
+    .select("id, status, notes, subtotal, vat_amount, total_amount, discount_amount, or_number")
+    .eq("id", saleId)
+    .maybeSingle();
+  if (hErr) return { error: hErr.message };
+  if (!head) return { error: "Sale not found." };
+  if (String((head as { status: string }).status) !== "Completed") {
+    return { error: "Only completed sales can be returned against." };
+  }
+
+  const sale = head as {
+    notes: string | null;
+    subtotal: number | null;
+    vat_amount: number | null;
+    total_amount: number | null;
+    discount_amount: number | null;
+    or_number: string;
+  };
+
+  const { data: rawItems, error: iErr } = await supabase
+    .from(PHARMACY_SALE_ITEMS_TABLE)
+    .select("id, linenum, product_id, quantity, unit_price, line_total, discount")
+    .eq("pharmacy_sale_id", saleId);
+  if (iErr) return { error: iErr.message };
+  const itemsById = new Map(
+    (rawItems ?? []).map((r) => {
+      const row = r as {
+        id: string;
+        linenum: number;
+        product_id: string;
+        quantity: number;
+        unit_price: number;
+        line_total: number | null;
+        discount: number | null;
+      };
+      return [row.id, row] as const;
+    }),
+  );
+
+  const normalized: { itemId: string; returnQty: number }[] = [];
+  for (const lr of args.lineReturns) {
+    const q = Math.round(Number(lr.returnQty));
+    if (!Number.isFinite(q) || q < 1) continue;
+    normalized.push({ itemId: String(lr.itemId).trim(), returnQty: q });
+  }
+  if (normalized.length === 0) return { error: "Each return quantity must be at least 1." };
+
+  for (const { itemId, returnQty } of normalized) {
+    const row = itemsById.get(itemId);
+    if (!row) return { error: "Unknown line item." };
+    const sold = Math.round(Number(row.quantity)) || 0;
+    if (returnQty > sold) return { error: `Cannot return ${returnQty} — only ${sold} on that line.` };
+  }
+
+  const { buckets, error: bErr } = await loadDispenseBucketsForSale(saleId);
+  if (bErr) return { error: bErr };
+
+  const oldSub = Number(sale.subtotal) || 0;
+  const oldVat = Number(sale.vat_amount) || 0;
+  const disc = Number(sale.discount_amount) || 0;
+
+  const sorted = [...normalized].sort((a, b) => {
+    const ra = itemsById.get(a.itemId)!;
+    const rb = itemsById.get(b.itemId)!;
+    return ra.linenum - rb.linenum;
+  });
+
+  const returnQtyByProduct = new Map<string, number>();
+  for (const { itemId, returnQty } of sorted) {
+    const row = itemsById.get(itemId)!;
+    returnQtyByProduct.set(row.product_id, (returnQtyByProduct.get(row.product_id) ?? 0) + returnQty);
+  }
+  for (const [pid, tot] of returnQtyByProduct) {
+    const r = await restoreReturnQtyUsingBuckets(buckets, pid, tot, saleId);
+    if (r.error) return { error: r.error };
+  }
+
+  for (const { itemId, returnQty } of sorted) {
+    const row = itemsById.get(itemId)!;
+    const origQty = Math.round(Number(row.quantity)) || 0;
+    const origDisc = Number(row.discount) || 0;
+    const unit = Number(row.unit_price) || 0;
+    const newQty = origQty - returnQty;
+    if (newQty <= 0) {
+      const { error: delErr } = await supabase.from(PHARMACY_SALE_ITEMS_TABLE).delete().eq("id", itemId);
+      if (delErr) return { error: delErr.message };
+      itemsById.delete(itemId);
+    } else {
+      const newDisc = r2(origDisc * (newQty / origQty));
+      const newLine = r2(newQty * unit - newDisc);
+      const { error: upErr } = await supabase
+        .from(PHARMACY_SALE_ITEMS_TABLE)
+        .update({ quantity: newQty, discount: newDisc, line_total: newLine })
+        .eq("id", itemId);
+      if (upErr) return { error: upErr.message };
+      row.quantity = newQty;
+      row.discount = newDisc;
+      row.line_total = newLine;
+    }
+  }
+
+  const { data: remaining, error: remErr } = await supabase
+    .from(PHARMACY_SALE_ITEMS_TABLE)
+    .select("id")
+    .eq("pharmacy_sale_id", saleId)
+    .limit(1);
+  if (remErr) return { error: remErr.message };
+  if (!remaining || remaining.length === 0) {
+    const stamp = new Date().toISOString();
+    const who = args.returnedByUserId != null ? `user_id=${args.returnedByUserId}` : "user=unknown";
+    const reason = args.reason?.trim() ? args.reason.trim() : "no reason given";
+    const line = `[VOID full return ${stamp}] ${who} · ${reason}`;
+    const mergedNotes = [sale.notes?.trim() || null, line].filter(Boolean).join("\n");
+    const { error: uErr } = await supabase
+      .from(PHARMACY_SALES_TABLE)
+      .update({ status: "Voided", notes: mergedNotes, updated_at: new Date().toISOString() })
+      .eq("id", saleId)
+      .eq("status", "Completed");
+    if (uErr) return { error: uErr.message };
+    return { error: null };
+  }
+
+  const { data: sumRows, error: sErr } = await supabase
+    .from(PHARMACY_SALE_ITEMS_TABLE)
+    .select("line_total")
+    .eq("pharmacy_sale_id", saleId);
+  if (sErr) return { error: sErr.message };
+  const sumLines = (sumRows ?? []).reduce((s, r) => s + (Number((r as { line_total: number }).line_total) || 0), 0);
+  const newSub = Math.max(0, r2(sumLines - disc));
+  const newVat = oldSub > 0.01 ? r2(oldVat * (newSub / oldSub)) : 0;
+  const newTot = newSub;
+
+  const stamp = new Date().toISOString();
+  const who = args.returnedByUserId != null ? `user_id=${args.returnedByUserId}` : "user=unknown";
+  const reason = args.reason?.trim() ? args.reason.trim() : "no reason given";
+  const detailTxt = sorted.map((x) => `L${itemsById.get(x.itemId)!.linenum}×${x.returnQty}`).join(", ");
+  const retLine = `[RETURN ${stamp}] ${who} · ${reason} · ${detailTxt}`;
+  const mergedNotes = [sale.notes?.trim() || null, retLine].filter(Boolean).join("\n");
+
+  const { error: updErr } = await supabase
+    .from(PHARMACY_SALES_TABLE)
+    .update({
+      subtotal: newSub,
+      vat_amount: newVat,
+      total_amount: newTot,
+      notes: mergedNotes,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", saleId)
+    .eq("status", "Completed");
+  if (updErr) return { error: updErr.message };
+  return { error: null };
+}
+
 async function decrementStockFefo(
   productId: string,
   qtyNeeded: number,
@@ -600,7 +1137,8 @@ async function decrementStockFefo(
       stock_id: row.id,
       notes: `Pharmacy sale ${saleId}`,
       reference_type: "pharmacy_sale",
-      reference_id: null,
+      /** Lets void logic find movements when `notes` is unchanged. */
+      reference_id: saleId,
     });
     if (movErr) return { error: movErr.message };
 

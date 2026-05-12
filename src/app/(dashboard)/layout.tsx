@@ -6,7 +6,7 @@ import { Box, CircularProgress } from "@mui/material";
 import { useAuth } from "@/components/AuthProvider";
 import Sidebar, { DRAWER_WIDTH } from "@/components/Sidebar";
 import TopBar from "@/components/TopBar";
-import { firstAllowedHref, pageKeyForPath } from "@/lib/navPermissionCatalog";
+import { firstAllowedHref, userMayAccessPath } from "@/lib/navPermissionCatalog";
 
 function ProtectedShell({ children }: { children: React.ReactNode }) {
   const { user, loading, menuAccess } = useAuth();
@@ -23,12 +23,9 @@ function ProtectedShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (loading || !user) return;
     if (!menuAccess.rbac || menuAccess.pageKeys.length === 0) return;
-    const key = pageKeyForPath(pathname);
-    if (key == null) return;
-    if (!menuAccess.pageKeys.includes(key)) {
-      const href = firstAllowedHref(menuAccess.pageKeys) ?? "/login";
-      router.replace(href);
-    }
+    if (userMayAccessPath(pathname, menuAccess.pageKeys)) return;
+    const href = firstAllowedHref(menuAccess.pageKeys) ?? "/login";
+    router.replace(href);
   }, [loading, user, menuAccess, pathname, router]);
 
   if (loading) {

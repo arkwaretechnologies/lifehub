@@ -30,6 +30,7 @@ import {
   Typography,
   Paper,
   Chip,
+  Snackbar,
 } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import { useAuth } from "@/components/AuthProvider";
@@ -48,6 +49,7 @@ import {
   type SupplierRow,
 } from "@/lib/pharmacyPosDb";
 import PharmacySuppliersModal from "@/components/pharmacy/PharmacySuppliersModal";
+import { ACTION_PERMISSION_DENIED_MESSAGE, hasPharmacyCapability } from "@/lib/navPermissionCatalog";
 
 const ADD_NEW_SUPPLIER_SELECT_VALUE = "__add_new_supplier__";
 
@@ -115,7 +117,10 @@ type Props = {
 };
 
 export default function PharmacyStocksModal({ open, onClose }: Props) {
-  const { profile } = useAuth();
+  const { profile, menuAccess } = useAuth();
+  const [permDeniedOpen, setPermDeniedOpen] = useState(false);
+  const canManageSuppliers =
+    !menuAccess.rbac || hasPharmacyCapability(menuAccess.pageKeys, "pharmacy/suppliers");
   const performedBy =
     profile != null && typeof profile.user_id === "number"
       ? String(profile.user_id)
@@ -760,6 +765,10 @@ export default function PharmacyStocksModal({ open, onClose }: Props) {
                       onChange={(e) => {
                         const v = String(e.target.value);
                         if (v === ADD_NEW_SUPPLIER_SELECT_VALUE) {
+                          if (!canManageSuppliers) {
+                            setPermDeniedOpen(true);
+                            return;
+                          }
                           setSuppliersModalOpen(true);
                           return;
                         }
@@ -774,8 +783,14 @@ export default function PharmacyStocksModal({ open, onClose }: Props) {
                           {s.name}
                         </MenuItem>
                       ))}
-                      <Divider component="li" sx={{ my: 0.5 }} />
-                      <MenuItem value={ADD_NEW_SUPPLIER_SELECT_VALUE}>Add new supplier…</MenuItem>
+                      {canManageSuppliers ? (
+                        <Divider key="__supplier_divider__" component="li" sx={{ my: 0.5 }} />
+                      ) : null}
+                      {canManageSuppliers ? (
+                        <MenuItem key={ADD_NEW_SUPPLIER_SELECT_VALUE} value={ADD_NEW_SUPPLIER_SELECT_VALUE}>
+                          Add new supplier…
+                        </MenuItem>
+                      ) : null}
                     </Select>
                   </FormControl>
                   <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: -1 }}>
@@ -926,6 +941,17 @@ export default function PharmacyStocksModal({ open, onClose }: Props) {
         setSuppliersModalOpen(false);
       }}
     />
+
+    <Snackbar
+      open={permDeniedOpen}
+      autoHideDuration={5000}
+      onClose={() => setPermDeniedOpen(false)}
+      anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+    >
+      <Alert severity="error" variant="filled" onClose={() => setPermDeniedOpen(false)} sx={{ width: "100%" }}>
+        {ACTION_PERMISSION_DENIED_MESSAGE}
+      </Alert>
+    </Snackbar>
     </>
   );
 }

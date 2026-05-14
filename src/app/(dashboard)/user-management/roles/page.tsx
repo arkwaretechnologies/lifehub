@@ -34,6 +34,7 @@ import SaveOutlinedIcon from "@mui/icons-material/SaveOutlined";
 import {
   PERMISSION_MODULES,
   leafKeysForModule,
+  isNavSubgroup,
   type PermissionModule,
 } from "@/lib/navPermissionCatalog";
 
@@ -363,21 +364,50 @@ export default function RolesPage() {
           }
         />
         <Box sx={{ pl: 3.5, borderLeft: "2px solid", borderColor: "divider", ml: 1.25, mt: 0.5 }}>
-          {m.children.map((c) => (
-            <FormControlLabel
-              key={c.pageKey}
-              sx={{ display: "flex", ml: 0, py: 0.25 }}
-              control={
-                <Checkbox
-                  size="small"
-                  checked={pageKeysDraft.has(c.pageKey)}
-                  onChange={(_, checked) => toggleLeafKey(c.pageKey, checked)}
-                  disabled={selectedId === null || pagesLoading}
-                />
-              }
-              label={<Typography variant="body2">{c.label}</Typography>}
-            />
-          ))}
+          {m.children.map((c) => {
+            if (isNavSubgroup(c)) {
+              return (
+                <Box key={c.id} sx={{ mt: 0.75, "&:first-of-type": { mt: 0 } }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, letterSpacing: "0.04em" }}>
+                    {c.label}
+                  </Typography>
+                  <Box sx={{ pl: 1, mt: 0.35 }}>
+                    {c.children.map((leaf) => (
+                      <FormControlLabel
+                        key={`${m.id}-${leaf.href}`}
+                        sx={{ display: "flex", ml: 0, py: 0.25 }}
+                        control={
+                          <Checkbox
+                            size="small"
+                            checked={pageKeysDraft.has(leaf.pageKey)}
+                            onChange={(_, checked) => toggleLeafKey(leaf.pageKey, checked)}
+                            disabled={selectedId === null || pagesLoading}
+                          />
+                        }
+                        label={<Typography variant="body2">{leaf.label}</Typography>}
+                      />
+                    ))}
+                  </Box>
+                </Box>
+              );
+            }
+            const leaf = c;
+            return (
+              <FormControlLabel
+                key={`${m.id}-${leaf.href}`}
+                sx={{ display: "flex", ml: 0, py: 0.25 }}
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={pageKeysDraft.has(leaf.pageKey)}
+                    onChange={(_, checked) => toggleLeafKey(leaf.pageKey, checked)}
+                    disabled={selectedId === null || pagesLoading}
+                  />
+                }
+                label={<Typography variant="body2">{leaf.label}</Typography>}
+              />
+            );
+          })}
         </Box>
       </Box>
     );

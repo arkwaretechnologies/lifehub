@@ -10,6 +10,20 @@ export type NavLeaf = {
   href: string;
 };
 
+/** UI-only row under Settings → Laboratory (not a `page_key`). */
+export type NavSubgroup = {
+  kind: "subgroup";
+  id: string;
+  label: string;
+  children: NavLeaf[];
+};
+
+export type PermissionGroupChild = NavLeaf | NavSubgroup;
+
+export function isNavSubgroup(c: PermissionGroupChild): c is NavSubgroup {
+  return (c as NavSubgroup).kind === "subgroup";
+}
+
 export type PermissionModule =
   | {
       kind: "leaf";
@@ -24,7 +38,7 @@ export type PermissionModule =
       id: string;
       sectionHeading: string;
       label: string;
-      children: NavLeaf[];
+      children: PermissionGroupChild[];
     };
 
 /** Mirrors `Sidebar` structure; order matches nav. */
@@ -121,24 +135,55 @@ export const PERMISSION_MODULES: PermissionModule[] = [
     ],
   },
   {
-    kind: "leaf",
+    kind: "group",
     id: "settings",
     sectionHeading: "MANAGEMENT",
     label: "Settings",
-    pageKey: "settings",
-    href: "/settings",
+    children: [
+      {
+        kind: "subgroup",
+        id: "settings-laboratory",
+        label: "Laboratory",
+        children: [
+          {
+            label: "Lab Categories",
+            pageKey: "settings/laboratory/categories",
+            href: "/settings/laboratory/categories",
+          },
+          {
+            label: "Lab Tests",
+            pageKey: "settings/laboratory/lab-tests",
+            href: "/settings/laboratory/lab-tests",
+          },
+          {
+            label: "Imaging",
+            pageKey: "settings/laboratory/imaging",
+            href: "/settings/laboratory/imaging",
+          },
+          {
+            label: "Lab Packages",
+            pageKey: "settings/laboratory/packages",
+            href: "/settings/laboratory/packages",
+          },
+        ],
+      },
+    ],
   },
 ];
 
 export function leafKeysForModule(m: PermissionModule): string[] {
   if (m.kind === "leaf") return [m.pageKey];
-  return m.children.map((c) => c.pageKey);
+  return m.children.flatMap((c) =>
+    isNavSubgroup(c) ? c.children.map((x) => x.pageKey) : [(c as NavLeaf).pageKey],
+  );
 }
 
 const _all = new Set<string>();
 for (const m of PERMISSION_MODULES) {
   for (const k of leafKeysForModule(m)) _all.add(k);
 }
+/** Legacy `role_pages` rows may still store umbrella `settings` without granular keys. */
+_all.add("settings");
 export const ALLOWED_PAGE_KEYS: ReadonlySet<string> = _all;
 
 /** Granular pharmacy capabilities (assignable in Roles → Menu access). */
@@ -206,6 +251,13 @@ export function userMayAccessPath(pathname: string, pageKeys: readonly string[])
     return false;
   }
 
+  if (p === "/settings" || p.startsWith("/settings/")) {
+    if (keys.has("settings")) return true;
+    const settingsKey = pageKeyForPath(pathname);
+    if (settingsKey == null) return false;
+    return keys.has(settingsKey);
+  }
+
   const key = pageKeyForPath(pathname);
   if (key == null) return true;
   return keys.has(key);
@@ -222,8 +274,15 @@ export function pageKeyForPath(pathname: string): string | null {
   for (const m of PERMISSION_MODULES) {
     if (m.kind === "leaf" && m.href === p) return m.pageKey;
     if (m.kind === "group") {
-      const hit = m.children.find((c) => c.href === p);
-      if (hit) return hit.pageKey;
+      for (const c of m.children) {
+        if (isNavSubgroup(c)) {
+          const hit = c.children.find((x) => x.href === p);
+          if (hit) return hit.pageKey;
+        } else {
+          const leaf = c as NavLeaf;
+          if (leaf.href === p) return leaf.pageKey;
+        }
+      }
     }
   }
   return null;
@@ -235,8 +294,16 @@ export function firstAllowedHref(pageKeys: string[]): string | null {
   for (const m of PERMISSION_MODULES) {
     if (m.kind === "leaf" && allowed.has(m.pageKey)) return m.href;
     if (m.kind === "group") {
+      const settingsUmbrella = m.id === "settings" && allowed.has("settings");
       for (const c of m.children) {
-        if (allowed.has(c.pageKey)) return c.href;
+        if (isNavSubgroup(c)) {
+          for (const leaf of c.children) {
+            if (settingsUmbrella || allowed.has(leaf.pageKey)) return leaf.href;
+          }
+        } else {
+          const leaf = c as NavLeaf;
+          if (allowed.has(leaf.pageKey)) return leaf.href;
+        }
       }
     }
   }

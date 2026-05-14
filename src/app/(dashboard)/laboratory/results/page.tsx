@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
 import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
+import PrintOutlinedIcon from "@mui/icons-material/PrintOutlined";
 import SaveOutlinedIcon from "@mui/icons-material/SaveOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import {
@@ -41,6 +42,8 @@ import type { QueueTicketStatus } from "@/lib/queueReception";
 import type { LabQueueRow } from "@/app/api/laboratory/lab-queue/route";
 import type { LabRequestHeaderView, LabRequestItemView } from "@/app/api/laboratory/lab-request/route";
 import { formatDateMMDDYYYY, formatLabTime } from "@/lib/dateDisplay";
+import { mergeAutoFlagIntoLabResultRow } from "@/lib/labResultAutoFlag";
+import { openLabResultsPrintWindow } from "@/lib/labResultsPrint";
 
 export default function LabResultsPage() {
   const theme = useTheme();
@@ -122,8 +125,12 @@ export default function LabResultsPage() {
         setReqError(json.error ?? `Request failed (${res.status})`);
         return;
       }
-      setReqHeader(json.header ?? null);
-      setReqItems(Array.isArray(json.items) ? json.items : []);
+      const header = json.header ?? null;
+      setReqHeader(header);
+      const sex = header?.patient_sex ?? null;
+      setReqItems(
+        Array.isArray(json.items) ? json.items.map((it) => mergeAutoFlagIntoLabResultRow(it, sex)) : [],
+      );
     } catch {
       setReqError("Failed to load lab request details.");
     } finally {
@@ -308,19 +315,19 @@ export default function LabResultsPage() {
       const rid = json.row?.lab_request_item_id?.trim();
       if (rid) {
         setReqItems((prev) =>
-          prev.map((x) =>
-            x.id === rid
-              ? {
-                  ...x,
-                  result_value: json.row!.result_value ?? null,
-                  result_unit: json.row!.result_unit ?? null,
-                  reference_range: json.row!.reference_range ?? null,
-                  flag: json.row!.flag ?? null,
-                  remarks: json.row!.remarks ?? null,
-                  result_status: json.row!.status ?? x.result_status,
-                }
-              : x,
-          ),
+          prev.map((x) => {
+            if (x.id !== rid) return x;
+            const next = {
+              ...x,
+              result_value: json.row!.result_value ?? null,
+              result_unit: json.row!.result_unit ?? null,
+              reference_range: json.row!.reference_range ?? null,
+              flag: json.row!.flag ?? null,
+              remarks: json.row!.remarks ?? null,
+              result_status: json.row!.status ?? x.result_status,
+            };
+            return mergeAutoFlagIntoLabResultRow(next, reqHeader?.patient_sex ?? null);
+          }),
         );
       }
       void loadQueue();
@@ -336,6 +343,16 @@ export default function LabResultsPage() {
       setToastOpen(true);
     } finally {
       setItemSavingId(null);
+    }
+  };
+
+  const handlePrintLabResults = async () => {
+    if (!reqHeader || reqItems.length === 0) return;
+    const ok = await openLabResultsPrintWindow({ header: reqHeader, items: reqItems });
+    if (!ok) {
+      setToastSeverity("error");
+      setToastMessage("Could not generate lab result PDF. Check that template files exist and try again.");
+      setToastOpen(true);
     }
   };
 
@@ -665,9 +682,20 @@ export default function LabResultsPage() {
 
         <Card>
           <CardContent sx={{ p: 3 }}>
-            <Typography variant="subtitle1" fontWeight={800} sx={{ mb: 1 }}>
-              Request details
-            </Typography>
+            <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2, flexWrap: "wrap", mb: 1 }}>
+              <Typography variant="subtitle1" fontWeight={800}>
+                Request details
+              </Typography>
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={<PrintOutlinedIcon />}
+                disabled={!reqHeader || reqItems.length === 0}
+                onClick={() => void handlePrintLabResults()}
+              >
+                Print Laboratory Results
+              </Button>
+            </Box>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
               Select a ticket on the left to view requested tests. Mark each item as collected to enable result entry.
             </Typography>
@@ -811,9 +839,16 @@ export default function LabResultsPage() {
                             hiddenLabel
                             {...commonFieldProps}
                             value={it.result_value ?? ""}
-                            onChange={(e) =>
-                              setReqItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, result_value: e.target.value } : x)))
-                            }
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setReqItems((prev) =>
+                                prev.map((x) =>
+                                  x.id === it.id
+                                    ? mergeAutoFlagIntoLabResultRow({ ...x, result_value: v }, reqHeader?.patient_sex ?? null)
+                                    : x,
+                                ),
+                              );
+                            }}
                             disabled={!collected || busy}
                             sx={fieldSx}
                           />
@@ -831,7 +866,7 @@ export default function LabResultsPage() {
                               setReqItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, result_unit: e.target.value } : x)))
                             }
                             disabled={!collected || busy}
-                            sx={fieldSx}
+                            sx={[fieldSx, { "& .MuiInputBase-input": { textTransform: "none" } }]}
                           />
                         </Box>
                         <Box>
@@ -843,11 +878,16 @@ export default function LabResultsPage() {
                             hiddenLabel
                             {...commonFieldProps}
                             value={it.reference_range ?? ""}
-                            onChange={(e) =>
+                            onChange={(e) => {
+                              const v = e.target.value;
                               setReqItems((prev) =>
-                                prev.map((x) => (x.id === it.id ? { ...x, reference_range: e.target.value } : x)),
-                              )
-                            }
+                                prev.map((x) =>
+                                  x.id === it.id
+                                    ? mergeAutoFlagIntoLabResultRow({ ...x, reference_range: v }, reqHeader?.patient_sex ?? null)
+                                    : x,
+                                ),
+                              );
+                            }}
                             disabled={!collected || busy}
                             sx={fieldSx}
                           />

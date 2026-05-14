@@ -33,7 +33,7 @@ import {
   fetchLabRequestHeaderById,
   fetchLabRequestItemDetailsForRequestIds,
   hasUnpricedNonPackageLabLines,
-  isBillingAsLabPackage,
+  labRequestUsesPackageBundling,
   labLineCheckoutUnitFee,
   labRequestCheckoutSubtotal,
   labRequestPackagesDisplayNames,
@@ -503,7 +503,7 @@ export default function CashierLabRequestDetail() {
         summaryRows={[
           {
             label:
-              req && isBillingAsLabPackage(req)
+              req && labRequestUsesPackageBundling(req)
                 ? req.lab_packages.length > 1
                   ? "Laboratory packages"
                   : "Laboratory package"
@@ -546,7 +546,7 @@ export default function CashierLabRequestDetail() {
             <CardContent>
               <ConsultationSectionTitle>Laboratory order — unpaid</ConsultationSectionTitle>
               <Typography variant="body2" color="text.primary" sx={{ ...consultBodyTypoSx, mb: 2, display: "block" }}>
-                {isBillingAsLabPackage(req)
+                {labRequestUsesPackageBundling(req)
                   ? "Laboratory package on this order — pay at the register."
                   : "Tests on this order that still need to be paid at the register."}
               </Typography>
@@ -555,7 +555,7 @@ export default function CashierLabRequestDetail() {
                 Lab order · {formatDateMMDDYYYY(req.request_date)} {formatLabTime(req.request_time)} ·{" "}
                 {req.priority ?? "—"}
               </Typography>
-              {req.lab_packages.length > 0 && !isBillingAsLabPackage(req) ? (
+              {req.lab_packages.length > 0 && !labRequestUsesPackageBundling(req) ? (
                 <Typography variant="body2" sx={{ ...consultBodyTypoSx, mb: req.remarks?.trim() ? 0.5 : 1 }}>
                   Package{req.lab_packages.length > 1 ? "s" : ""}:{" "}
                   <Box component="span" sx={{ fontWeight: 700 }}>
@@ -574,14 +574,14 @@ export default function CashierLabRequestDetail() {
                   <TableHead>
                     <TableRow sx={consultTableHeadRowSx}>
                       <TableCell sx={consultTableHeadCellSx}>
-                        {isBillingAsLabPackage(req) ? "Package" : "Test"}
+                        {labRequestUsesPackageBundling(req) ? "Package" : "Test"}
                       </TableCell>
                       <TableCell sx={consultTableHeadCellSx}>Priority</TableCell>
                       <TableCell sx={consultTableHeadCellSx}>Notes</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {isBillingAsLabPackage(req) && req.lab_packages.length > 0 ? (
+                    {labRequestUsesPackageBundling(req) ? (
                       req.lab_packages.map((pkg) => (
                         <TableRow key={`walkin-lab-pkg-${req.id}-${pkg.id}`}>
                           <TableCell sx={consultTableBodyCellSx}>
@@ -598,7 +598,8 @@ export default function CashierLabRequestDetail() {
                               </Typography>
                             ) : null}
                             <Typography variant="caption" color="primary.main" sx={{ display: "block", mt: 0.5, fontWeight: 700 }}>
-                              {pkg.package_price > 0 ? `Package price PHP ${formatMoneyDisplay(pkg.package_price)}` : null}
+                              Package price PHP{" "}
+                              {formatMoneyDisplay(Number.isFinite(pkg.package_price) ? pkg.package_price : 0)}
                             </Typography>
                           </TableCell>
                           <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>

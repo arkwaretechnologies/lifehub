@@ -83,7 +83,15 @@ import {
   fetchCurrentMedicationsForEncounter,
   replaceCurrentMedicationsForEncounter,
 } from "@/lib/currentMedications";
-import { fetchActivePhysicianServices, type PhysicianServiceRow } from "@/lib/physicianServices";
+import {
+  buildImagingRequestLinesFromCatalog,
+  fetchActiveImagingCatalog,
+  imagingSelectionEqual,
+  parseImagingBlockToSelection,
+  upsertImagingBlock,
+  type ImagingCatalogRow,
+  type ImagingLineSelection,
+} from "@/lib/imagingCatalog";
 import type { LabRequestItemView } from "@/app/api/laboratory/lab-request/route";
 
 /** Urinalysis catalog uses `lab_tests.description` as subsection headings in the lab modal. */
@@ -176,97 +184,7 @@ const emptyPlansForm: EncounterPlansTreatmentForm = {
   disposition: null,
 };
 
-/** Imaging section aligned with paper form (LH-HPE-001). */
-type ImagingFormState = {
-  chestXray: boolean;
-  chestXrayView: string;
-  wholeAbdomenUtz: boolean;
-  echo2d: boolean;
-  thyroidScan: boolean;
-  tvs: boolean;
-};
-
-const emptyImagingForm: ImagingFormState = {
-  chestXray: false,
-  chestXrayView: "",
-  wholeAbdomenUtz: false,
-  echo2d: false,
-  thyroidScan: false,
-  tvs: false,
-};
-
-const IMAGING_NOTES_START = "[IMAGING_REQUEST]";
-const IMAGING_NOTES_END = "[/IMAGING_REQUEST]";
-
-function buildImagingRequestLines(v: ImagingFormState): string[] {
-  const lines: string[] = [];
-  if (v.chestXray) {
-    const view = v.chestXrayView.trim();
-    lines.push(view ? `- Chest X-ray (View: ${view})` : "- Chest X-ray");
-  }
-  if (v.wholeAbdomenUtz) lines.push("- Whole Abdomen UTZ");
-  if (v.echo2d) lines.push("- 2D Echo");
-  if (v.thyroidScan) lines.push("- Thyroid Scan");
-  if (v.tvs) lines.push("- Transvaginal UTZ (TVS)");
-  return lines;
-}
-
-function upsertImagingBlock(existingNotes: string, imagingLines: string[]): string {
-  const block =
-    imagingLines.length === 0
-      ? ""
-      : [IMAGING_NOTES_START, "IMAGING REQUEST:", ...imagingLines, IMAGING_NOTES_END].join("\n");
-
-  const notes = existingNotes ?? "";
-  const start = notes.indexOf(IMAGING_NOTES_START);
-  const end = notes.indexOf(IMAGING_NOTES_END);
-
-  // If no block exists, append a new one.
-  if (start === -1 || end === -1 || end < start) {
-    if (!block) return notes;
-    const sep = notes.trim().length ? "\n\n" : "";
-    return `${notes.trimEnd()}${sep}${block}\n`;
-  }
-
-  // Replace existing block.
-  const before = notes.slice(0, start).trimEnd();
-  const after = notes.slice(end + IMAGING_NOTES_END.length).trimStart();
-  if (!block) {
-    // Remove block entirely.
-    const merged = [before, after].filter(Boolean).join("\n\n");
-    return merged ? `${merged}\n` : "";
-  }
-  const merged = [before, block, after].filter(Boolean).join("\n\n");
-  return `${merged}\n`;
-}
-
-/** Restore imaging checkboxes from a saved plan_notes block when opening the modal. */
-function parseImagingNotesToForm(notes: string): ImagingFormState {
-  const start = notes.indexOf(IMAGING_NOTES_START);
-  const end = notes.indexOf(IMAGING_NOTES_END);
-  if (start === -1 || end === -1 || end < start) return { ...emptyImagingForm };
-  const inner = notes.slice(start + IMAGING_NOTES_START.length, end);
-  const next: ImagingFormState = { ...emptyImagingForm };
-  for (const raw of inner.split("\n")) {
-    const line = raw.trim();
-    if (!line || line === "IMAGING REQUEST:") continue;
-    const viewMatch = line.match(/^-\s*Chest X-ray \(View:\s*(.+)\)\s*$/);
-    if (viewMatch) {
-      next.chestXray = true;
-      next.chestXrayView = (viewMatch[1] ?? "").trim();
-      continue;
-    }
-    if (line === "- Chest X-ray") {
-      next.chestXray = true;
-      continue;
-    }
-    if (line === "- Whole Abdomen UTZ") next.wholeAbdomenUtz = true;
-    else if (line === "- 2D Echo") next.echo2d = true;
-    else if (line === "- Thyroid Scan") next.thyroidScan = true;
-    else if (line === "- Transvaginal UTZ (TVS)") next.tvs = true;
-  }
-  return next;
-}
+/** Imaging checklist + notes block helpers: `@/lib/imagingCatalog`. */
 
 function hasMedicationLinesSelected(lines: MedicationLineDraft[]): boolean {
   return lines.some((l) => l.productId.trim() !== "");
@@ -282,17 +200,6 @@ function isValidMedicationQuantity(q: string): boolean {
 
 function medicationRowsMissingQuantity(lines: MedicationLineDraft[]): boolean {
   return lines.some((l) => l.productId.trim() !== "" && !isValidMedicationQuantity(l.quantity));
-}
-
-function imagingFormsEqual(a: ImagingFormState, b: ImagingFormState): boolean {
-  return (
-    a.chestXray === b.chestXray &&
-    a.chestXrayView === b.chestXrayView &&
-    a.wholeAbdomenUtz === b.wholeAbdomenUtz &&
-    a.echo2d === b.echo2d &&
-    a.thyroidScan === b.thyroidScan &&
-    a.tvs === b.tvs
-  );
 }
 
 /** Stable compare for medications modal dirty check (ignores row keys). */
@@ -415,7 +322,8 @@ export default function PlansTreatmentPanel({
   const [labClinicalDiagnosis, setLabClinicalDiagnosis] = useState("");
   const [labRequestRemarks, setLabRequestRemarks] = useState("");
   const [labDialogError, setLabDialogError] = useState("");
-  const [labDialogSuccess, setLabDialogSuccess] = useState("");
+  const [labToastOpen, setLabToastOpen] = useState(false);
+  const [labToastMessage, setLabToastMessage] = useState("");
   const [encounterLabRequests, setEncounterLabRequests] = useState<EncounterLabRequestSummary[]>([]);
   const [requestedTestIdSet, setRequestedTestIdSet] = useState<Set<string>>(() => new Set());
   const [labEncounterError, setLabEncounterError] = useState("");
@@ -433,8 +341,9 @@ export default function PlansTreatmentPanel({
   const [labResultsItems, setLabResultsItems] = useState<LabRequestItemView[]>([]);
 
   const [imagingModalOpen, setImagingModalOpen] = useState(false);
-  const [imagingForm, setImagingForm] = useState<ImagingFormState>(emptyImagingForm);
-  const [imagingPriceByKey, setImagingPriceByKey] = useState<Record<string, number>>({});
+  const [imagingCatalog, setImagingCatalog] = useState<ImagingCatalogRow[]>([]);
+  const [imagingCatalogError, setImagingCatalogError] = useState("");
+  const [imagingForm, setImagingForm] = useState<Record<string, ImagingLineSelection>>({});
 
   const [medicationsModalOpen, setMedicationsModalOpen] = useState(false);
   const [medProductPreview, setMedProductPreview] = useState<ProductCatalogRow[]>([]);
@@ -451,56 +360,49 @@ export default function PlansTreatmentPanel({
   productCacheRef.current = productCache;
   const formRef = useRef(form);
   formRef.current = form;
-  const prevImagingOpenRef = useRef(false);
-  const imagingBaselineRef = useRef<ImagingFormState>(emptyImagingForm);
+  const imagingCatalogRef = useRef<ImagingCatalogRow[]>([]);
+  const imagingOpenedForParseRef = useRef(false);
+  const imagingBaselineRef = useRef<Record<string, ImagingLineSelection>>({});
   const medsBaselineStrRef = useRef("");
   const medsBaselineReadyRef = useRef(false);
 
   type PlansModalKind = "labs" | "imaging" | "medications";
   const [unsavedCloseDialog, setUnsavedCloseDialog] = useState<PlansModalKind | null>(null);
 
-  /** When the imaging modal opens, load checkboxes from the saved IMAGING block in plan_notes. */
   useEffect(() => {
-    if (imagingModalOpen) {
-      if (!prevImagingOpenRef.current) {
-        const parsed = parseImagingNotesToForm(formRef.current.plan_notes ?? "");
-        setImagingForm(parsed);
-        imagingBaselineRef.current = parsed;
-      }
-      prevImagingOpenRef.current = true;
-    } else {
-      prevImagingOpenRef.current = false;
-    }
-  }, [imagingModalOpen]);
+    imagingCatalogRef.current = imagingCatalog;
+  }, [imagingCatalog]);
 
   useEffect(() => {
-    if (!imagingModalOpen) return;
     let cancelled = false;
     void (async () => {
-      const r = await fetchActivePhysicianServices();
-      if (cancelled || r.error) return;
-      const lookup = new Map<string, PhysicianServiceRow>();
-      for (const s of r.services) {
-        lookup.set(`${s.service_type}`.trim().toLowerCase() + "|" + `${s.name}`.trim().toLowerCase(), s);
+      const r = await fetchActiveImagingCatalog();
+      if (cancelled) return;
+      if (r.error) setImagingCatalogError(r.error);
+      else {
+        setImagingCatalogError("");
+        setImagingCatalog(r.rows);
       }
-      const get = (serviceType: string, name: string): number => {
-        const key = `${serviceType}`.trim().toLowerCase() + "|" + `${name}`.trim().toLowerCase();
-        const s = lookup.get(key) ?? null;
-        const n = s ? (typeof s.default_fee === "number" ? s.default_fee : Number(String(s.default_fee ?? ""))) : 0;
-        return Number.isFinite(n) ? n : 0;
-      };
-      setImagingPriceByKey({
-        chestXray: get("Imaging", "Chest X-ray"),
-        wholeAbdomenUtz: get("Imaging", "Whole Abdomen UTZ"),
-        echo2d: get("Imaging", "2D Echo"),
-        thyroidScan: get("Imaging", "Thyroid Scan"),
-        tvs: get("Imaging", "Transvaginal UTZ (TVS)"),
-      });
     })();
     return () => {
       cancelled = true;
     };
-  }, [imagingModalOpen]);
+  }, []);
+
+  /** When the imaging modal opens and catalog is ready, hydrate from plan_notes once. */
+  useEffect(() => {
+    if (!imagingModalOpen) {
+      imagingOpenedForParseRef.current = false;
+      return;
+    }
+    if (imagingCatalog.length === 0) return;
+    if (!imagingOpenedForParseRef.current) {
+      const parsed = parseImagingBlockToSelection(formRef.current.plan_notes ?? "", imagingCatalog);
+      setImagingForm(parsed);
+      imagingBaselineRef.current = parsed;
+      imagingOpenedForParseRef.current = true;
+    }
+  }, [imagingModalOpen, imagingCatalog]);
 
   const mergeIntoProductCache = useCallback((rows: ProductCatalogRow[]) => {
     if (rows.length === 0) return;
@@ -519,7 +421,7 @@ export default function PlansTreatmentPanel({
   useEffect(() => {
     setSelectedLabTestIds(new Set());
     setSelectedLabPackageIds(new Set());
-    setImagingForm(emptyImagingForm);
+    setImagingForm({});
     setMedicationLines([]);
     setProductCache({});
     setMedProductPreview([]);
@@ -712,23 +614,44 @@ export default function PlansTreatmentPanel({
   useEffect(() => {
     if (!labsModalOpen) return;
     setLabDialogError("");
-    setLabDialogSuccess("");
+    setLabToastOpen(false);
     setLabRequestPriority("Routine");
     setLabClinicalDiagnosis("");
     setLabRequestRemarks("");
     setSelectedLabPackageIds(new Set());
   }, [labsModalOpen]);
 
+  /** Stable primitives for lab package prune effect (React 19 requires a fixed-size dep list; avoids Set/array identity issues). */
+  const labPackagePruneSelectedKey = useMemo(() => [...selectedLabTestIds].sort().join(","), [selectedLabTestIds]);
+  const labPackagePruneRequestedKey = useMemo(() => [...requestedTestIdSet].sort().join(","), [requestedTestIdSet]);
+  const labPackagePruneCatalogSig = useMemo(
+    () =>
+      labPackages
+        .map((p) => `${p.id}:${[...p.labTestIds].sort().join(",")}`)
+        .sort()
+        .join("|"),
+    [labPackages],
+  );
+
+  const labPackagePruneInputsRef = useRef({
+    labPackages,
+    selectedLabTestIds,
+    requestedTestIdSet,
+  });
+  labPackagePruneInputsRef.current = { labPackages, selectedLabTestIds, requestedTestIdSet };
+
   useEffect(() => {
-    if (!labsModalOpen || labPackages.length === 0) return;
+    if (!labsModalOpen) return;
+    const { labPackages: pkgs, selectedLabTestIds: sel, requestedTestIdSet: req } = labPackagePruneInputsRef.current;
+    if (pkgs.length === 0) return;
     setSelectedLabPackageIds((prev) => {
       const next = new Set<string>();
       for (const id of prev) {
-        const pkg = labPackages.find((p) => p.id === id);
+        const pkg = pkgs.find((p) => p.id === id);
         if (
           pkg &&
           pkg.labTestIds.length > 0 &&
-          pkg.labTestIds.every((tid) => selectedLabTestIds.has(tid))
+          pkg.labTestIds.every((tid) => sel.has(tid) || req.has(tid))
         ) {
           next.add(id);
         }
@@ -745,7 +668,7 @@ export default function PlansTreatmentPanel({
       }
       return next;
     });
-  }, [labsModalOpen, selectedLabTestIds, labPackages]);
+  }, [labsModalOpen, labPackagePruneSelectedKey, labPackagePruneRequestedKey, labPackagePruneCatalogSig]);
 
   /** Paid (`lab_sales`) and requests that already have result rows — drives View result vs View catalog. */
   const syncPaidAndResultsFromRequestIds = useCallback(async (reqIds: string[]) => {
@@ -801,8 +724,9 @@ export default function PlansTreatmentPanel({
       ]);
       if (cancelled) return;
       setLabTestsLoading(false);
+      const activePkgList = !pkgRes.error ? pkgRes.packages.filter((p) => p.labTestIds.length > 0) : [];
       if (!pkgRes.error) {
-        setLabPackages(pkgRes.packages.filter((p) => p.labTestIds.length > 0));
+        setLabPackages(activePkgList);
       }
       if (cat.error) {
         setLabTestsError(cat.error);
@@ -826,6 +750,7 @@ export default function PlansTreatmentPanel({
         setRequestedTestIdSet(new Set());
         setPaidLabRequestIds(new Set());
         setLabRequestIdsWithResults(new Set());
+        setSelectedLabPackageIds(new Set());
       } else {
         setEncounterLabRequests(enc.requests);
         setRequestedTestIdSet(new Set(enc.requestedTestIds));
@@ -833,6 +758,16 @@ export default function PlansTreatmentPanel({
           // In a new consultation, allow editing/removal of previously saved lab selections.
           setSelectedLabTestIds(new Set(enc.requestedTestIds));
         }
+        // Restore package chips from saved lab requests (View catalog).
+        const activePkgIdSet = new Set(activePkgList.map((p) => p.id));
+        const restoredPkgs = new Set<string>();
+        for (const req of enc.requests) {
+          for (const lp of req.lab_packages) {
+            const sid = String(lp.id);
+            if (activePkgIdSet.has(sid)) restoredPkgs.add(sid);
+          }
+        }
+        setSelectedLabPackageIds(restoredPkgs);
         // Keep labPriceByTestId from the catalog fetch above.
 
         const reqIds = enc.requests.map((r) => r.id).filter(Boolean);
@@ -1150,7 +1085,7 @@ export default function PlansTreatmentPanel({
 
   const submitLabRequest = useCallback(async () => {
     setLabDialogError("");
-    setLabDialogSuccess("");
+    setLabToastOpen(false);
     setLabSubmitting(true);
     const physicianId =
       profile != null && typeof profile.user_id === "number" && Number.isFinite(profile.user_id)
@@ -1189,7 +1124,8 @@ export default function PlansTreatmentPanel({
       setLabDialogError(error);
       return;
     }
-    setLabDialogSuccess(`Lab request saved (${labRequestId?.slice(0, 8)}…).`);
+    setLabToastMessage("Lab Request Saved");
+    setLabToastOpen(true);
     setSelectedLabTestIds(new Set());
     setSelectedLabPackageIds(new Set());
     const encRefresh = await fetchLabRequestsForEncounter(transId);
@@ -1229,7 +1165,7 @@ export default function PlansTreatmentPanel({
 
   const closeImagingModal = useCallback(() => {
     setForm((f) => {
-      const lines = buildImagingRequestLines(imagingForm);
+      const lines = buildImagingRequestLinesFromCatalog(imagingCatalogRef.current, imagingForm);
       if (lines.length === 0) {
         return {
           ...f,
@@ -1266,7 +1202,7 @@ export default function PlansTreatmentPanel({
   /** Revert imaging to last opened/saved baseline; uncheck main if baseline has no studies. */
   const discardImagingModalClose = useCallback(() => {
     const baseline = { ...imagingBaselineRef.current };
-    const lines = buildImagingRequestLines(baseline);
+    const lines = buildImagingRequestLinesFromCatalog(imagingCatalogRef.current, baseline);
     setForm((f) => ({
       ...f,
       plan_imaging: lines.length > 0,
@@ -1297,7 +1233,7 @@ export default function PlansTreatmentPanel({
   }, [selectedLabTestIds, closeLabsModal]);
 
   const requestCloseImagingModal = useCallback(() => {
-    if (!imagingFormsEqual(imagingForm, imagingBaselineRef.current)) {
+    if (!imagingSelectionEqual(imagingForm, imagingBaselineRef.current)) {
       setUnsavedCloseDialog("imaging");
       return;
     }
@@ -1627,11 +1563,6 @@ export default function PlansTreatmentPanel({
               {labDialogError}
             </Alert>
           ) : null}
-          {labDialogSuccess ? (
-            <Alert severity="success" sx={{ mb: 2 }} onClose={() => setLabDialogSuccess("")}>
-              {labDialogSuccess}
-            </Alert>
-          ) : null}
           {labEncounterError ? (
             <Alert severity="warning" sx={{ mb: 2 }} onClose={() => setLabEncounterError("")}>
               Could not load existing lab requests: {labEncounterError}
@@ -1749,11 +1680,6 @@ export default function PlansTreatmentPanel({
                               <Typography variant="body2" fontWeight={700}>
                                 {pkg.name}
                               </Typography>
-                              {pkg.description ? (
-                                <Typography variant="caption" color="text.secondary" display="block">
-                                  {pkg.description}
-                                </Typography>
-                              ) : null}
                             </Box>
                             <Typography variant="caption" fontWeight={800} sx={{ flexShrink: 0 }}>
                               {money2(pkg.package_price)}
@@ -2058,7 +1984,7 @@ export default function PlansTreatmentPanel({
         onClose={() => {
           requestCloseImagingModal();
         }}
-        maxWidth="sm"
+        maxWidth="md"
         fullWidth
         aria-labelledby="plans-imaging-dialog-title"
         slotProps={{
@@ -2089,143 +2015,101 @@ export default function PlansTreatmentPanel({
             overflow: "auto",
           }}
         >
-          <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            <Box>
-              <FormControlLabel
-                sx={imagingCheckboxLabelSx}
-                control={
-                  <Checkbox
-                    size="small"
-                    checked={imagingForm.chestXray}
-                    onChange={(_, c) => setImagingForm((f) => ({ ...f, chestXray: c }))}
-                  />
-                }
-                label={
-                  <Box component="span" sx={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 1 }}>
-                    <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
-                      Chest X-ray
-                    </Typography>
-                    <Typography component="span" variant="caption" sx={{ fontWeight: 800, whiteSpace: "nowrap" }}>
-                      {money2(imagingPriceByKey.chestXray ?? 0)}
-                    </Typography>
-                  </Box>
-                }
-              />
-              <Box
-                sx={{
-                  display: "flex",
-                  flexWrap: "wrap",
-                  alignItems: "center",
-                  gap: 1,
-                  pl: { xs: 0, sm: 4 },
-                  mt: 0.5,
-                }}
-              >
-                <Typography variant="body2" sx={{ textTransform: "uppercase", fontWeight: 600 }}>
-                  View:
-                </Typography>
-                <TextField
-                  size="small"
-                  placeholder=" "
-                  hiddenLabel
-                  value={imagingForm.chestXrayView}
-                  onChange={(e) => setImagingForm((f) => ({ ...f, chestXrayView: e.target.value }))}
-                  sx={[medicationOutlinedFieldSx, { flex: 1, minWidth: 160 }]}
-                />
-              </Box>
+          {imagingCatalogError ? (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {imagingCatalogError}
+            </Alert>
+          ) : null}
+          {imagingCatalog.length === 0 && !imagingCatalogError ? (
+            <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2, py: 3 }}>
+              <CircularProgress size={28} />
+              <Typography variant="body2" color="text.secondary" textAlign="center">
+                Loading imaging catalog… If this never finishes, add the <strong>imaging_catalog</strong> table (see
+                Settings → Laboratory → Imaging).
+              </Typography>
             </Box>
-
-            <FormControlLabel
-              sx={imagingCheckboxLabelSx}
-              control={
-                <Checkbox
-                  size="small"
-                  checked={imagingForm.wholeAbdomenUtz}
-                  onChange={(_, c) => setImagingForm((f) => ({ ...f, wholeAbdomenUtz: c }))}
-                />
-              }
-              label={
-                <Box component="span" sx={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 1 }}>
-                  <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
-                    Whole Abdomen UTZ
-                  </Typography>
-                  <Typography component="span" variant="caption" sx={{ fontWeight: 800, whiteSpace: "nowrap" }}>
-                    {money2(imagingPriceByKey.wholeAbdomenUtz ?? 0)}
-                  </Typography>
-                </Box>
-              }
-            />
-            <FormControlLabel
-              sx={imagingCheckboxLabelSx}
-              control={
-                <Checkbox
-                  size="small"
-                  checked={imagingForm.echo2d}
-                  onChange={(_, c) => setImagingForm((f) => ({ ...f, echo2d: c }))}
-                />
-              }
-              label={
-                <Box component="span" sx={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 1 }}>
-                  <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
-                    2D Echo
-                  </Typography>
-                  <Typography component="span" variant="caption" sx={{ fontWeight: 800, whiteSpace: "nowrap" }}>
-                    {money2(imagingPriceByKey.echo2d ?? 0)}
-                  </Typography>
-                </Box>
-              }
-            />
-            <FormControlLabel
-              sx={imagingCheckboxLabelSx}
-              control={
-                <Checkbox
-                  size="small"
-                  checked={imagingForm.thyroidScan}
-                  onChange={(_, c) => setImagingForm((f) => ({ ...f, thyroidScan: c }))}
-                />
-              }
-              label={
-                <Box component="span" sx={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 1 }}>
-                  <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
-                    Thyroid Scan
-                  </Typography>
-                  <Typography component="span" variant="caption" sx={{ fontWeight: 800, whiteSpace: "nowrap" }}>
-                    {money2(imagingPriceByKey.thyroidScan ?? 0)}
-                  </Typography>
-                </Box>
-              }
-            />
-            <FormControlLabel
-              sx={imagingCheckboxLabelSx}
-              control={
-                <Checkbox
-                  size="small"
-                  checked={imagingForm.tvs}
-                  onChange={(_, c) => setImagingForm((f) => ({ ...f, tvs: c }))}
-                />
-              }
-              label={
-                <Box component="span" sx={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 1 }}>
-                  <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
-                    Transvaginal UTZ (TVS)
-                  </Typography>
-                  <Typography component="span" variant="caption" sx={{ fontWeight: 800, whiteSpace: "nowrap" }}>
-                    {money2(imagingPriceByKey.tvs ?? 0)}
-                  </Typography>
-                </Box>
-              }
-            />
-          </Box>
+          ) : (
+            <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              {imagingCatalog.map((c) => {
+                const row = imagingForm[c.code] ?? { checked: false, view: "" };
+                const label = (c.view_field_label ?? "VIEW").trim() || "VIEW";
+                return (
+                  <Box key={c.code}>
+                    <FormControlLabel
+                      sx={imagingCheckboxLabelSx}
+                      control={
+                        <Checkbox
+                          size="small"
+                          checked={row.checked}
+                          onChange={(_, checked) =>
+                            setImagingForm((prev) => ({
+                              ...prev,
+                              [c.code]: { ...(prev[c.code] ?? { checked: false, view: "" }), checked },
+                            }))
+                          }
+                        />
+                      }
+                      label={
+                        <Box
+                          component="span"
+                          sx={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 1 }}
+                        >
+                          <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
+                            {c.name}
+                          </Typography>
+                          <Typography component="span" variant="caption" sx={{ fontWeight: 800, whiteSpace: "nowrap" }}>
+                            {money2(Number(c.default_price))}
+                          </Typography>
+                        </Box>
+                      }
+                    />
+                    {c.requires_view_field ? (
+                      <Box
+                        sx={{
+                          display: "flex",
+                          flexWrap: "wrap",
+                          alignItems: "center",
+                          gap: 1,
+                          pl: { xs: 0, sm: 4 },
+                          mt: 0.5,
+                        }}
+                      >
+                        <Typography variant="body2" sx={{ textTransform: "uppercase", fontWeight: 600 }}>
+                          {label}:
+                        </Typography>
+                        <TextField
+                          size="small"
+                          placeholder=" "
+                          hiddenLabel
+                          value={row.view}
+                          onChange={(e) =>
+                            setImagingForm((prev) => ({
+                              ...prev,
+                              [c.code]: { ...(prev[c.code] ?? { checked: false, view: "" }), view: e.target.value },
+                            }))
+                          }
+                          sx={[medicationOutlinedFieldSx, { flex: 1, minWidth: 160 }]}
+                        />
+                      </Box>
+                    ) : null}
+                  </Box>
+                );
+              })}
+            </Box>
+          )}
         </DialogContent>
         <DialogActions sx={{ px: 2, py: 1.5, justifyContent: "space-between", flexWrap: "wrap", gap: 1 }}>
           <Button
             type="button"
             variant="contained"
             color="secondary"
-            disabled={imagingFormsEqual(imagingForm, imagingBaselineRef.current)}
+            disabled={
+              imagingCatalog.length === 0 ||
+              imagingSelectionEqual(imagingForm, imagingBaselineRef.current)
+            }
             startIcon={<SaveOutlinedIcon />}
             onClick={() => {
-              const lines = buildImagingRequestLines(imagingForm);
+              const lines = buildImagingRequestLinesFromCatalog(imagingCatalog, imagingForm);
               setForm((f) => ({
                 ...f,
                 plan_imaging: lines.length > 0,
@@ -2289,7 +2173,7 @@ export default function PlansTreatmentPanel({
         >
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5 }}>
             Select pharmacy products, quantity, and unit. The list starts with the first products alphabetically; type at
-            least two letters to search the full catalog. Unit defaults from each product's recorded unit of measure and
+            least two letters to search the full catalog. Unit defaults from each product&apos;s recorded unit of measure and
             can be edited.
           </Typography>
           <Snackbar
@@ -2544,6 +2428,22 @@ export default function PlansTreatmentPanel({
           </Button>
         </DialogActions>
       </Dialog>
+
+      <Snackbar
+        open={labToastOpen}
+        autoHideDuration={4000}
+        onClose={() => setLabToastOpen(false)}
+        anchorOrigin={{ vertical: "top", horizontal: "center" }}
+      >
+        <Alert
+          severity="success"
+          variant="filled"
+          onClose={() => setLabToastOpen(false)}
+          sx={{ width: "100%" }}
+        >
+          {labToastMessage}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 }

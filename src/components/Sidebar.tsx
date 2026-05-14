@@ -20,6 +20,10 @@ import ExpandMore from "@mui/icons-material/ExpandMore";
 import DashboardOutlinedIcon from "@mui/icons-material/DashboardOutlined";
 import PersonOutlinedIcon from "@mui/icons-material/PersonOutlined";
 import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
+import CameraAltOutlinedIcon from "@mui/icons-material/CameraAltOutlined";
+import CategoryOutlinedIcon from "@mui/icons-material/CategoryOutlined";
+import AssignmentOutlinedIcon from "@mui/icons-material/AssignmentOutlined";
+import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import PointOfSaleOutlinedIcon from "@mui/icons-material/PointOfSaleOutlined";
 import MeetingRoomOutlinedIcon from "@mui/icons-material/MeetingRoomOutlined";
 import LocalPharmacyOutlinedIcon from "@mui/icons-material/LocalPharmacyOutlined";
@@ -53,13 +57,29 @@ export interface MenuLinkItem {
   pageKey: string;
 }
 
-/** Collapsible group of links (e.g. Patient care). */
+/** Leaf row under a nav group (no `kind`; same shape as `MenuLinkItem` minus kind). */
+export type MenuGroupChildLeaf = Omit<MenuLinkItem, "kind">;
+
+/** Second-level collapsible under Settings (e.g. Laboratory). */
+export interface MenuNestedGroupItem {
+  kind: "subgroup";
+  id: string;
+  label: string;
+  icon: React.ReactElement;
+  children: MenuGroupChildLeaf[];
+}
+
+function isMenuNestedGroup(c: MenuGroupChildLeaf | MenuNestedGroupItem): c is MenuNestedGroupItem {
+  return "kind" in c && (c as MenuNestedGroupItem).kind === "subgroup";
+}
+
+/** Collapsible group of links (e.g. Patient care); Settings adds optional nested groups. */
 export interface MenuGroupItem {
   kind: "group";
   id: string;
   label: string;
   icon: React.ReactElement;
-  children: Omit<MenuLinkItem, "kind">[];
+  children: (MenuGroupChildLeaf | MenuNestedGroupItem)[];
 }
 
 export type NavItem = MenuLinkItem | MenuGroupItem;
@@ -193,11 +213,44 @@ const menuSections: MenuSection[] = [
         ],
       },
       {
-        kind: "link",
-        label: "settings",
+        kind: "group",
+        id: "settings",
+        label: "Settings",
         icon: <SettingsOutlinedIcon />,
-        href: "/settings",
-        pageKey: "settings",
+        children: [
+          {
+            kind: "subgroup",
+            id: "settings-laboratory",
+            label: "Laboratory",
+            icon: <ScienceOutlinedIcon />,
+            children: [
+              {
+                label: "Lab Categories",
+                icon: <CategoryOutlinedIcon />,
+                href: "/settings/laboratory/categories",
+                pageKey: "settings/laboratory/categories",
+              },
+              {
+                label: "Lab Tests",
+                icon: <AssignmentOutlinedIcon />,
+                href: "/settings/laboratory/lab-tests",
+                pageKey: "settings/laboratory/lab-tests",
+              },
+              {
+                label: "Imaging",
+                icon: <CameraAltOutlinedIcon />,
+                href: "/settings/laboratory/imaging",
+                pageKey: "settings/laboratory/imaging",
+              },
+              {
+                label: "Lab Packages",
+                icon: <Inventory2OutlinedIcon />,
+                href: "/settings/laboratory/packages",
+                pageKey: "settings/laboratory/packages",
+              },
+            ],
+          },
+        ],
       },
     ],
   },
@@ -220,9 +273,25 @@ function filterMenuSectionsByRbac(
           items.push(item);
         }
       } else {
-        const kids = item.children.filter((c) => allowed.has(c.pageKey));
-        if (kids.length > 0) {
-          items.push({ ...item, children: kids });
+        const g = item;
+        if (g.id === "settings") {
+          if (allowed.has("settings")) {
+            items.push({ ...g, children: [...g.children] });
+          } else {
+            const nextChildren: (MenuGroupChildLeaf | MenuNestedGroupItem)[] = [];
+            for (const c of g.children) {
+              if (isMenuNestedGroup(c)) {
+                const leaves = c.children.filter((leaf) => allowed.has(leaf.pageKey));
+                if (leaves.length > 0) nextChildren.push({ ...c, children: leaves });
+              } else if (allowed.has(c.pageKey)) {
+                nextChildren.push(c);
+              }
+            }
+            if (nextChildren.length > 0) items.push({ ...g, children: nextChildren });
+          }
+        } else {
+          const kids = g.children.filter((c): c is MenuGroupChildLeaf => !isMenuNestedGroup(c)).filter((c) => allowed.has(c.pageKey));
+          if (kids.length > 0) items.push({ ...g, children: kids });
         }
       }
     }
@@ -233,10 +302,19 @@ function filterMenuSectionsByRbac(
   return out;
 }
 
+function groupContainsPath(group: MenuGroupItem, path: string): boolean {
+  for (const c of group.children) {
+    if (isMenuNestedGroup(c)) {
+      if (c.children.some((leaf) => navLeafMatchesHref(leaf.href, path))) return true;
+    } else if (navLeafMatchesHref(c.href, path)) return true;
+  }
+  return false;
+}
+
 function sectionContainsPath(section: MenuSection, path: string): boolean {
   for (const item of section.items) {
     if (item.kind === "link" && navLeafMatchesHref(item.href, path)) return true;
-    if (item.kind === "group" && item.children.some((c) => navLeafMatchesHref(c.href, path))) return true;
+    if (item.kind === "group" && groupContainsPath(item, path)) return true;
   }
   return false;
 }
@@ -251,12 +329,27 @@ function navLeafMatchesHref(href: string, pathname: string): boolean {
 function findGroupIdForPath(sections: MenuSection[], path: string): string | null {
   for (const section of sections) {
     for (const item of section.items) {
-      if (item.kind === "group" && item.children.some((c) => c.href === path)) {
+      if (item.kind === "group" && groupContainsPath(item, path)) {
         return item.id;
       }
     }
   }
   return null;
+}
+
+function findNestedGroupIdsForPath(sections: MenuSection[], path: string): string[] {
+  const out: string[] = [];
+  for (const section of sections) {
+    for (const item of section.items) {
+      if (item.kind !== "group") continue;
+      for (const c of item.children) {
+        if (isMenuNestedGroup(c) && c.children.some((leaf) => leaf.href === path)) {
+          out.push(c.id);
+        }
+      }
+    }
+  }
+  return out;
 }
 
 const defaultOpenSections = Object.fromEntries(
@@ -269,6 +362,8 @@ const emptyNavMessage =
 const defaultOpenGroups: Record<string, boolean> = {
   "patient-care": true,
   "user-management": true,
+  settings: true,
+  "settings-laboratory": true,
 };
 
 interface SidebarProps {
@@ -310,6 +405,22 @@ function SidebarContent() {
       setOpenGroups((prev) => (prev[activeGroupId] ? prev : { ...prev, [activeGroupId]: true }));
     }
   }, [activeGroupId]);
+
+  useEffect(() => {
+    const ids = findNestedGroupIdsForPath(visibleSections, pathname);
+    if (ids.length === 0) return;
+    setOpenGroups((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const id of ids) {
+        if (!next[id]) {
+          next[id] = true;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [pathname, visibleSections]);
 
   const toggleSection = useCallback((heading: string) => {
     setOpenSections((prev) => ({ ...prev, [heading]: !prev[heading] }));
@@ -368,7 +479,7 @@ function SidebarContent() {
 
   /** Nested row under Patient care: tree connectors + pill active (screenshot). */
   const renderNestedTreeLink = (
-    child: Omit<MenuLinkItem, "kind">,
+    child: MenuGroupChildLeaf,
     index: number,
     total: number,
   ) => {
@@ -462,7 +573,10 @@ function SidebarContent() {
   const renderGroup = (group: MenuGroupItem) => {
     const isOpen = openGroups[group.id] ?? true;
     const panelId = `sidebar-group-${group.id}`;
-    const childActive = group.children.some((c) => c.href === pathname);
+    const childActive = group.children.some((c) => {
+      if (isMenuNestedGroup(c)) return c.children.some((leaf) => leaf.href === pathname);
+      return c.href === pathname;
+    });
 
     return (
       <Box sx={{ mb: 0.75 }}>
@@ -509,9 +623,100 @@ function SidebarContent() {
               position: "relative",
             }}
           >
-            {group.children.map((child, index) =>
-              renderNestedTreeLink(child, index, group.children.length),
-            )}
+            {group.children.map((child, index) => {
+              if (isMenuNestedGroup(child)) {
+                const nOpen = openGroups[child.id] ?? true;
+                const nPanelId = `sidebar-nested-${child.id}`;
+                const nestedActive = child.children.some((leaf) => leaf.href === pathname);
+                const isLast = index === group.children.length - 1;
+                return (
+                  <Box
+                    key={child.id}
+                    sx={{
+                      position: "relative",
+                      zIndex: 0,
+                      mb: 0.35,
+                      "&::before": {
+                        content: '""',
+                        position: "absolute",
+                        left: "-14px",
+                        top: "22px",
+                        width: "12px",
+                        height: "1px",
+                        bgcolor: TREE_LINE,
+                        zIndex: 0,
+                        pointerEvents: "none",
+                      },
+                      ...(!isLast
+                        ? {
+                            "&::after": {
+                              content: '""',
+                              position: "absolute",
+                              left: "-14px",
+                              top: "22px",
+                              bottom: "-4px",
+                              width: "1px",
+                              bgcolor: TREE_LINE,
+                              zIndex: 0,
+                              pointerEvents: "none",
+                            },
+                          }
+                        : {}),
+                    }}
+                  >
+                    <ListItemButton
+                      onClick={() => toggleGroup(child.id)}
+                      aria-expanded={nOpen}
+                      aria-controls={nPanelId}
+                      sx={{
+                        minHeight: 40,
+                        pl: "10px",
+                        pr: 1,
+                        py: 0.75,
+                        mb: 0.35,
+                        borderRadius: 999,
+                        color: nestedActive || nOpen ? "info.main" : "text.secondary",
+                        transition: motion,
+                        "& .MuiListItemIcon-root": { color: "inherit", minWidth: 0, mr: 1.25 },
+                        "&:hover": { bgcolor: "action.hover" },
+                      }}
+                    >
+                      <ListItemIcon sx={{ fontSize: 20 }}>{child.icon}</ListItemIcon>
+                      <ListItemText
+                        primary={child.label}
+                        primaryTypographyProps={{
+                          fontSize: "0.8125rem",
+                          fontWeight: 600,
+                          textTransform: "capitalize",
+                        }}
+                      />
+                      {nOpen ? (
+                        <ExpandLess sx={{ fontSize: 18, color: "info.main", opacity: 0.75 }} />
+                      ) : (
+                        <ExpandMore sx={{ fontSize: 18, color: "text.secondary", opacity: 0.75 }} />
+                      )}
+                    </ListItemButton>
+                    <Collapse in={nOpen} timeout="auto" unmountOnExit id={nPanelId}>
+                      <Box
+                        sx={{
+                          ml: "10px",
+                          pl: "14px",
+                          mt: 0.15,
+                          mb: 0.35,
+                          borderLeft: `1px solid ${TREE_LINE}`,
+                          position: "relative",
+                        }}
+                      >
+                        {child.children.map((leaf, i) =>
+                          renderNestedTreeLink(leaf, i, child.children.length),
+                        )}
+                      </Box>
+                    </Collapse>
+                  </Box>
+                );
+              }
+              return renderNestedTreeLink(child, index, group.children.length);
+            })}
           </Box>
         </Collapse>
       </Box>

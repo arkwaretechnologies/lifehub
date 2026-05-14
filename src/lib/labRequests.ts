@@ -438,8 +438,19 @@ export function labRequestPackagePriceTotal(req: LabRequestPackagePricing): numb
   return s;
 }
 
+/** True when summed `package_price` on linked packages is positive (bundle has a list price). */
 export function isBillingAsLabPackage(req: LabRequestPackagePricing): boolean {
   return labRequestPackagePriceTotal(req) > 0;
+}
+
+/**
+ * True when member tests should not be priced à la carte: either the bundle has a positive package price,
+ * or the request has package coverage rows (e.g. follow bundle even at ₱0 — do not require catalog prices on covered tests).
+ */
+export function labRequestUsesPackageBundling(req: LabRequestPackagePricing): boolean {
+  if ((req.lab_packages?.length ?? 0) === 0) return false;
+  if (labRequestPackagePriceTotal(req) > 0) return true;
+  return (req.package_covered_test_ids?.length ?? 0) > 0;
 }
 
 /** Amount due for one lab request: sum of bundle list prices plus any à la carte lines not covered by those packages. */
@@ -449,7 +460,7 @@ export function labRequestCheckoutSubtotal(
   unitPriceByTestId: Map<string, number>,
 ): number {
   const pkgTotal = labRequestPackagePriceTotal(req);
-  if (pkgTotal > 0) {
+  if (labRequestUsesPackageBundling(req)) {
     const cov = new Set(req.package_covered_test_ids ?? []);
     let extra = 0;
     for (const it of items) {
@@ -472,7 +483,7 @@ export function labLineCheckoutUnitFee(
   unitPriceByTestId: Map<string, number>,
 ): number {
   const pkgTotal = labRequestPackagePriceTotal(req);
-  if (pkgTotal <= 0) {
+  if (!labRequestUsesPackageBundling(req)) {
     return unitPriceByTestId.get(item.lab_test_id) ?? 0;
   }
   const cov = new Set(req.package_covered_test_ids ?? []);
@@ -495,7 +506,7 @@ export function hasUnpricedNonPackageLabLines(
 ): boolean {
   for (const req of requests) {
     const items = labItemsByRequestId.get(req.id) ?? [];
-    if (isBillingAsLabPackage(req)) {
+    if (labRequestUsesPackageBundling(req)) {
       const cov = new Set(req.package_covered_test_ids ?? []);
       for (const it of items) {
         if (cov.has(it.lab_test_id)) continue;

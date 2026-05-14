@@ -138,8 +138,8 @@ export async function openCashierAcknowledgementReceiptPrint(args: CashierAcknow
     <div class="rule"></div>
 
     <div class="kv muted">${escapeHtml(when)}</div>
-    ${orNumber ? `<div class="kv"><strong>OR No.:</strong> <span class="mono">${escapeHtml(orNumber)}</span></div>` : ""}
-    ${method ? `<div class="kv"><strong>Payment method:</strong> ${escapeHtml(method)}</div>` : ""}
+    ${orNumber ? `<div class="kv"><strong>Receipt No.:</strong> <span class="mono">${escapeHtml(orNumber)}</span></div>` : ""}
+    ${method ? `<div class="kv"><strong>Payment Method:</strong> ${escapeHtml(method)}</div>` : ""}
 
     ${paymentLinesHtml ? `<div class="rule"></div>${paymentLinesHtml}` : ""}
 

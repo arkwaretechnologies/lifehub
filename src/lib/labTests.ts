@@ -316,6 +316,169 @@ export const LAB_RESULTS_BLOODCHEM_TEMPLATE_ORDER = [
   "BLOODCHEM11",
 ] as const;
 
+/** Fixed merge/print order for lab result PDF templates (must match on-disk stems). */
+export const LAB_RESULTS_PRINT_TEMPLATE_CODES_ORDER: readonly string[] = [
+  "HEMA",
+  ...LAB_RESULTS_BLOODCHEM_TEMPLATE_ORDER,
+  "URINALYSIS",
+  "ART",
+];
+
+const LAB_RESULTS_PRINT_ALLOWLIST = new Set(LAB_RESULTS_PRINT_TEMPLATE_CODES_ORDER);
+
+/** True when `code` maps to `LIFEHUB-MEDICAL-Results-<code>.pdf` under {@link LAB_RESULTS_TEMPLATES_RELATIVE_DIR}. */
+export function isAllowedLabResultsTemplateCode(code: string): boolean {
+  const c = String(code ?? "").trim().toUpperCase();
+  return c !== "" && LAB_RESULTS_PRINT_ALLOWLIST.has(c);
+}
+
+/** Split comma-separated `results_template_code`; keep only allowlisted stems, preserve order. */
+export function splitAllowlistedResultsTemplateCodes(csv: string | null | undefined): string[] {
+  const out: string[] = [];
+  for (const part of String(csv ?? "").split(",")) {
+    const c = part.trim().toUpperCase();
+    if (c && isAllowedLabResultsTemplateCode(c)) out.push(c);
+  }
+  return out;
+}
+
+/** Deduplicates and sorts template codes for merged printing (unknown codes sort after known, alphabetically). */
+export function sortResultsTemplateCodes(codes: Iterable<string>): string[] {
+  const uniq = [
+    ...new Set(
+      [...codes]
+        .map((c) => String(c ?? "").trim().toUpperCase())
+        .filter((c) => c !== ""),
+    ),
+  ];
+  const idx = new Map(LAB_RESULTS_PRINT_TEMPLATE_CODES_ORDER.map((c, i) => [c, i]));
+  uniq.sort((a, b) => {
+    const ia = idx.has(a) ? (idx.get(a) as number) : 1000;
+    const ib = idx.has(b) ? (idx.get(b) as number) : 1000;
+    if (ia !== ib) return ia - ib;
+    return a.localeCompare(b, undefined, { sensitivity: "base" });
+  });
+  return uniq;
+}
+
+/**
+ * When `lab_tests.results_template_code` is null in the DB, infer the blank PDF stem from stable
+ * `lab_tests.code`. Keys mirror `supabase/migrations/20260510140000_lab_catalog_results_templates.sql`.
+ */
+const LAB_RESULTS_TEMPLATE_CODE_BY_TEST_CODE: Record<string, string> = {
+  HEMA_HGB: "HEMA",
+  HEMA_HCT: "HEMA",
+  HEMA_RBC: "HEMA",
+  HEMA_WBC: "HEMA",
+  HEMA_PLT: "HEMA",
+  HEMA_MCV: "HEMA",
+  HEMA_MCH: "HEMA",
+  HEMA_MCHC: "HEMA",
+  HEMA_RDW: "HEMA",
+  HEMA_NEUT: "HEMA",
+  HEMA_LYMPH: "HEMA",
+  HEMA_MONO: "HEMA",
+  HEMA_EOS: "HEMA",
+  HEMA_BASO: "HEMA",
+  ART_PH_ART: "ART",
+  ART_PH_VEN: "ART",
+  ART_PAO2: "ART",
+  ART_PACO2: "ART",
+  ART_HCO3_ACT: "ART",
+  ART_HCO3_STD: "ART",
+  ART_SAO2: "ART",
+  ART_BASE_EXCESS: "ART",
+  ART_PO2_FIO2: "ART",
+  CHEM_FBS: "BLOODCHEM1",
+  CHEM_2HRPP: "BLOODCHEM1",
+  CHEM_RBS: "BLOODCHEM1",
+  CHEM_HBA1C: "BLOODCHEM1",
+  CHEM_FASTING_INSULIN: "BLOODCHEM1",
+  CHEM_BUN: "BLOODCHEM2",
+  CHEM_SERUM_UREA: "BLOODCHEM2",
+  CHEM_CREATININE: "BLOODCHEM2",
+  CHEM_UA: "BLOODCHEM2",
+  CHEM_TC: "BLOODCHEM3",
+  CHEM_HDL: "BLOODCHEM3",
+  CHEM_LDL: "BLOODCHEM3",
+  CHEM_VLDL: "BLOODCHEM3",
+  CHEM_TG: "BLOODCHEM3",
+  CHEM_AST: "BLOODCHEM4",
+  CHEM_ALT: "BLOODCHEM4",
+  CHEM_ALP: "BLOODCHEM4",
+  CHEM_GGT: "BLOODCHEM4",
+  CHEM_LDH: "BLOODCHEM4",
+  CHEM_TBIL: "BLOODCHEM4",
+  CHEM_DBIL: "BLOODCHEM4",
+  CHEM_IBIL: "BLOODCHEM4",
+  CHEM_AMYLASE: "BLOODCHEM4",
+  CHEM_LIPASE: "BLOODCHEM4",
+  CHEM_CK: "BLOODCHEM5",
+  CHEM_CKMB: "BLOODCHEM5",
+  CHEM_TROP_I: "BLOODCHEM5",
+  CHEM_HSCRP: "BLOODCHEM5",
+  CHEM_NA: "BLOODCHEM6",
+  CHEM_K: "BLOODCHEM6",
+  CHEM_CL: "BLOODCHEM6",
+  CHEM_CA: "BLOODCHEM6",
+  CHEM_CA_ION: "BLOODCHEM6",
+  CHEM_PHOS: "BLOODCHEM6",
+  CHEM_MG: "BLOODCHEM6",
+  CHEM_FE: "BLOODCHEM7",
+  CHEM_TIBC: "BLOODCHEM7",
+  CHEM_TSAT: "BLOODCHEM7",
+  CHEM_FERRITIN: "BLOODCHEM7",
+  CHEM_TSH: "BLOODCHEM8",
+  CHEM_FT4: "BLOODCHEM8",
+  CHEM_FT3: "BLOODCHEM8",
+  CHEM_TT4: "BLOODCHEM8",
+  CHEM_TT3: "BLOODCHEM8",
+  CHEM_PT: "BLOODCHEM9",
+  CHEM_INR: "BLOODCHEM9",
+  CHEM_APTT: "BLOODCHEM9",
+  CHEM_BT: "BLOODCHEM9",
+  CHEM_PROLACTIN: "BLOODCHEM10",
+  CHEM_FSH: "BLOODCHEM10",
+  CHEM_LH: "BLOODCHEM10",
+  CHEM_E2: "BLOODCHEM10",
+  CHEM_PROG: "BLOODCHEM10",
+  CHEM_TESTO: "BLOODCHEM10",
+  CHEM_CORTISOL: "BLOODCHEM10",
+  CHEM_PSA: "BLOODCHEM10",
+  CHEM_BHCG: "BLOODCHEM10",
+  CHEM_AFP: "BLOODCHEM11",
+  CHEM_CEA: "BLOODCHEM11",
+  CHEM_CA199: "BLOODCHEM11",
+  CHEM_CA125: "BLOODCHEM11",
+  CHEM_CA153: "BLOODCHEM11",
+  UA_COLOR: "URINALYSIS",
+  UA_CLARITY: "URINALYSIS",
+  UA_SG: "URINALYSIS",
+  UA_PH: "URINALYSIS",
+  UA_PROTEIN: "URINALYSIS",
+  UA_GLUCOSE: "URINALYSIS",
+  UA_BLOOD: "URINALYSIS",
+  UA_KETONE: "URINALYSIS",
+  UA_NITRITE: "URINALYSIS",
+  UA_BILI: "URINALYSIS",
+  UA_URO: "URINALYSIS",
+  UA_LEU: "URINALYSIS",
+  UA_WBC: "URINALYSIS",
+  UA_RBC: "URINALYSIS",
+  UA_EPITH: "URINALYSIS",
+  UA_CASTS: "URINALYSIS",
+  UA_BACTERIA: "URINALYSIS",
+  UA_COMMENT: "URINALYSIS",
+};
+
+/** Printable `results_template_code` from catalog `lab_tests.code` when the DB column is unset. */
+export function labResultsTemplateCodeFromCatalogTestCode(testCode: string | null | undefined): string | null {
+  const c = String(testCode ?? "").trim().toUpperCase();
+  if (!c) return null;
+  const tpl = LAB_RESULTS_TEMPLATE_CODE_BY_TEST_CODE[c];
+  return tpl != null && tpl !== "" ? tpl : null;
+}
+
 export const LAB_RESULTS_BLOODCHEM_HEADINGS: Record<string, string> = {
   BLOODCHEM1: "Panel 1 — Glucose & diabetes",
   BLOODCHEM2: "Panel 2 — Renal function",
@@ -349,7 +512,7 @@ export function groupLabTestsByBloodChemTemplate(tests: LabTestCatalogItem[]): {
 
   const byTpl = new Map<string, LabTestCatalogItem[]>();
   for (const t of withTpl) {
-    const k = (t.results_template_code ?? "").trim();
+    const k = (t.results_template_code ?? "").split(",")[0]?.trim() ?? "";
     const list = byTpl.get(k) ?? [];
     list.push(t);
     byTpl.set(k, list);

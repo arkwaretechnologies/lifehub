@@ -20,10 +20,16 @@ import type { ConsultationPatient } from "@/components/consultation/consultation
 import { useConsultationSave } from "@/components/consultation/consultationSaveContext";
 import { fetchActivePhysicianServices, type PhysicianServiceRow } from "@/lib/physicianServices";
 import { fetchActiveDiscountTypes, type DiscountTypeRow } from "@/lib/discountTypes";
-import { fetchLabRequestsForEncounter, isBillingAsLabPackage } from "@/lib/labRequests";
+import { fetchLabRequestsForEncounter, labRequestUsesPackageBundling } from "@/lib/labRequests";
 import { fetchActiveLabPricesByTestIds } from "@/lib/labServicePrices";
 import { fetchLabTestsByIds } from "@/lib/labTests";
 import { fetchEncounterPlansTreatment } from "@/lib/consultationData";
+import {
+  fetchActiveImagingCatalog,
+  IMAGING_NOTES_END,
+  IMAGING_NOTES_START,
+  priceForImagingLineLabel,
+} from "@/lib/imagingCatalog";
 import {
   fetchLatestPhysicianFeeSaleForEncounter,
   replacePhysicianFeeSaleItems,
@@ -46,9 +52,6 @@ function pctNum(v: number | string | null | undefined): number {
   const n = typeof v === "number" ? v : Number(String(v ?? ""));
   return Number.isFinite(n) ? n : 0;
 }
-
-const IMAGING_NOTES_START = "[IMAGING_REQUEST]";
-const IMAGING_NOTES_END = "[/IMAGING_REQUEST]";
 
 type PricedItem = { name: string; price: number };
 
@@ -203,7 +206,7 @@ export default function ChargesServicesPanel({ transId, patient }: { transId: st
 
     for (const req of sortedReqs) {
       const cov = new Set(req.package_covered_test_ids ?? []);
-      if (isBillingAsLabPackage(req) && req.lab_packages.length > 0) {
+      if (labRequestUsesPackageBundling(req)) {
         for (const pkg of req.lab_packages) {
           const p = Number.isFinite(pkg.package_price) ? pkg.package_price : 0;
           sum += p;
@@ -273,23 +276,17 @@ export default function ChargesServicesPanel({ transId, patient }: { transId: st
 
     if (lines.length === 0) return;
 
-    // Use physician_services (already fetched for combobox) as a price source for imaging.
-    const svcByName = new Map<string, number>();
-    for (const s of services) {
-      if (String(s.service_type ?? "").trim().toLowerCase() !== "imaging") continue;
-      const n = typeof s.default_fee === "number" ? s.default_fee : Number(String(s.default_fee ?? ""));
-      svcByName.set(String(s.name ?? "").trim().toLowerCase(), Number.isFinite(n) ? n : 0);
-    }
+    const cat = await fetchActiveImagingCatalog();
+    if (cat.error) return;
 
     const normalized: PricedItem[] = lines.map((raw) => {
       const label = raw.replace(/^-+\s*/, "").trim();
-      const base = label.replace(/\s*\(View:.*\)\s*$/i, "").trim();
-      const price = svcByName.get(base.toLowerCase()) ?? 0;
+      const price = cat.rows.length > 0 ? priceForImagingLineLabel(label, cat.rows) : 0;
       return { name: label, price };
     });
     normalized.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     setImagingItems(normalized);
-  }, [services, transId]);
+  }, [transId]);
 
   useEffect(() => {
     void refreshImagingItems();

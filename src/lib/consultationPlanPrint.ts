@@ -5,8 +5,7 @@ import {
   type LabRequestItemDetailRow,
 } from "@/lib/labRequests";
 
-const IMAGING_NOTES_START = "[IMAGING_REQUEST]";
-const IMAGING_NOTES_END = "[/IMAGING_REQUEST]";
+import { IMAGING_NOTES_END, IMAGING_NOTES_START } from "@/lib/imagingCatalog";
 
 /** Remove embedded imaging request block so it is not duplicated when IMAGING is printed separately. */
 export function stripImagingRequestBlock(planNotes: string): string {

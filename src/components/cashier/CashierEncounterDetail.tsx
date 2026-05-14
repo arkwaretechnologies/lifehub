@@ -26,7 +26,7 @@ import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
 import {
   fetchLabRequestItemDetailsForRequestIds,
   hasUnpricedNonPackageLabLines,
-  isBillingAsLabPackage,
+  labRequestUsesPackageBundling,
   labLineCheckoutUnitFee,
   labRequestCheckoutSubtotal,
   labRequestPackagesDisplayNames,
@@ -802,7 +802,7 @@ export default function CashierEncounterDetail() {
                     </ConsultationSectionTitle>
                     <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
                       {labOrdersForDisplay.map(({ req, lines, subtotal }) => {
-                        const isPkg = isBillingAsLabPackage(req);
+                        const isPkg = labRequestUsesPackageBundling(req);
                         const pkgNames = labRequestPackagesDisplayNames(req);
                         const cov = new Set(req.package_covered_test_ids ?? []);
                         const uncoveredLines = lines.filter((row) => !cov.has(row.item.lab_test_id));
@@ -1052,7 +1052,7 @@ export default function CashierEncounterDetail() {
                             return (
                               <TableRow key={`visit-total-lab-${req.id}`}>
                                 <TableCell sx={consultTableBodyCellSx}>
-                                  {isBillingAsLabPackage(req) ? (
+                                  {labRequestUsesPackageBundling(req) ? (
                                     <>
                                       Laboratory · package{labPkgNames ? ` · ${labPkgNames}` : ""}
                                     </>

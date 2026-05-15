@@ -7,6 +7,14 @@ import {
   resolveThermalReceiptLogoSrc,
 } from "@/lib/thermalReceiptFontCss";
 
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 export type ReceptionQueueReceiptArgs = {
   patientName: string;
   destinationLabel: string;
@@ -14,6 +22,12 @@ export type ReceptionQueueReceiptArgs = {
   transId: string;
   /** When set, QR encodes the queue ticket id for cashier reprint via `/api/cashier/lab-queue-ticket/reprint`. */
   queueTicketId?: string | null;
+  /** Overrides QR payload (e.g. `lab_request_id` for cashier payment scan). */
+  qrPayload?: string | null;
+  /** Omit “Proceed to: …” (e.g. reception lab — patient pays at cashier first). */
+  hideProceedTo?: boolean;
+  /** Optional line below transaction id (e.g. pay at cashier). */
+  footerNote?: string | null;
 };
 
 /**
@@ -21,7 +35,8 @@ export type ReceptionQueueReceiptArgs = {
  */
 export async function openReceptionQueueReceiptPrint(args: ReceptionQueueReceiptArgs): Promise<void> {
   const QRCode = (await import("qrcode")).default;
-  const qrPayload = (args.queueTicketId ?? "").trim() || args.transId.trim();
+  const qrPayload =
+    (args.qrPayload ?? "").trim() || (args.queueTicketId ?? "").trim() || args.transId.trim();
   const qrDataUrl = await QRCode.toDataURL(qrPayload, {
     width: 140,
     margin: 1,
@@ -87,11 +102,12 @@ export async function openReceptionQueueReceiptPrint(args: ReceptionQueueReceipt
   <h1>LifeHub — Queue receipt</h1>
   <div class="row muted">${when}</div>
   <div class="row"><strong>Patient:</strong> ${escapeHtml(args.patientName)}</div>
-  <div class="row"><strong>Proceed to:</strong> ${escapeHtml(args.destinationLabel)}</div>
+  ${args.hideProceedTo ? "" : `<div class="row"><strong>Proceed to:</strong> ${escapeHtml(args.destinationLabel)}</div>`}
   <div class="queue">${escapeHtml(args.queueDisplay)}</div>
   <div class="row muted" style="text-align:center">Your queue number</div>
   <div class="row" style="margin-top:16px"><strong>Transaction ID</strong></div>
   <div class="tid">${escapeHtml(args.transId.trim())}</div>
+  ${(args.footerNote ?? "").trim() ? `<div class="row muted" style="margin-top:8px;text-align:center">${escapeHtml((args.footerNote ?? "").trim())}</div>` : ""}
   <img class="qr" src="${qrDataUrl}" alt="QR" />
 </body>
 </html>`;
@@ -120,12 +136,127 @@ export async function openReceptionQueueReceiptPrint(args: ReceptionQueueReceipt
   };
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+export type ReceptionLabOrderSlipArgs = {
+  patientName: string;
+  entranceQueueDisplay: string;
+  transId: string;
+  labRequestId: string;
+  /** Display lines (e.g. package names, test names). */
+  lineItems: string[];
+};
+
+/**
+ * Reception walk-in lab: order list + entrance reference + visit id + QR (lab request id for cashier scan).
+ */
+export async function openReceptionLabOrderSlipPrint(args: ReceptionLabOrderSlipArgs): Promise<void> {
+  const QRCode = (await import("qrcode")).default;
+  const qrPayload = args.labRequestId.trim();
+  const qrDataUrl = await QRCode.toDataURL(qrPayload, {
+    width: 140,
+    margin: 1,
+    errorCorrectionLevel: "M",
+  });
+
+  const when = new Date().toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+
+  const logoSrc = resolveThermalReceiptLogoSrc();
+
+  const itemsHtml = args.lineItems
+    .map((line) => `<div class="item">${escapeHtml(line)}</div>`)
+    .join("");
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title></title>
+  <style>
+    ${THERMAL_RECEIPT_FONT_FACE_CSS}
+    ${THERMAL_RECEIPT_HEADER_LOGO_CSS}
+    @page { size: 80mm auto; margin: 4mm; }
+    html, body { padding: 0; margin: 0; }
+    body {
+      box-sizing: border-box;
+      width: 80mm;
+      max-width: 80mm;
+      font-family: ${THERMAL_RECEIPT_FONT_FAMILY};
+      padding: 3mm 4mm;
+      margin: 0 auto;
+      color: #1a1a2e;
+      font-size: 11px;
+      line-height: 1.25;
+    }
+    h1 {
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #1f4e79;
+      margin: 0 0 6px;
+      text-align: center;
+      font-weight: 800;
+    }
+    .queue {
+      font-size: 1.35rem;
+      font-weight: 800;
+      text-align: center;
+      margin: 6px 0;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.1;
+    }
+    .muted { color: #666; font-size: 10px; }
+    .row { margin: 4px 0; }
+    .tid { font-family: ${THERMAL_RECEIPT_FONT_FAMILY}; font-size: 8px; word-break: break-all; line-height: 1.2; }
+    .qr { display: block; margin: 8px auto 0; width: 120px; height: 120px; }
+    .items { margin: 8px 0; max-height: 45vh; overflow: hidden; }
+    .item { margin: 2px 0; padding-left: 2px; border-left: 2px solid #4cc9c0; }
+    .banner { background: #e8f4f8; padding: 6px; border-radius: 4px; margin-top: 8px; font-size: 10px; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="receipt-logo-wrap">
+    <img class="receipt-logo" src="${escapeHtml(logoSrc)}" alt="" />
+  </div>
+  <h1>LifeHub — Laboratory order</h1>
+  <div class="row muted">${when}</div>
+  <div class="row"><strong>Patient:</strong> ${escapeHtml(args.patientName)}</div>
+  <div class="row"><strong>Reception reference:</strong></div>
+  <div class="queue">${escapeHtml(args.entranceQueueDisplay.trim())}</div>
+  <div class="row muted" style="text-align:center">Your entrance / priority number</div>
+  <div class="row" style="margin-top:10px"><strong>Requested tests &amp; packages</strong></div>
+  <div class="items">${itemsHtml || `<div class="muted">(no lines)</div>`}</div>
+  <div class="row" style="margin-top:10px"><strong>Visit (transaction) ID</strong></div>
+  <div class="tid">${escapeHtml(args.transId.trim())}</div>
+  <div class="row" style="margin-top:8px"><strong>Lab order ID</strong> <span class="muted">(cashier scan)</span></div>
+  <div class="tid">${escapeHtml(args.labRequestId.trim())}</div>
+  <img class="qr" src="${qrDataUrl}" alt="QR" />
+  <div class="banner">Pay at <strong>cashier</strong>. Your laboratory queue number will appear on the lab queue <strong>after payment</strong>.</div>
+</body>
+</html>`;
+
+  const iframe = document.createElement("iframe");
+  iframe.setAttribute("title", "Laboratory order slip print");
+  iframe.style.position = "fixed";
+  iframe.style.right = "0";
+  iframe.style.bottom = "0";
+  iframe.style.width = "0";
+  iframe.style.height = "0";
+  iframe.style.border = "none";
+  iframe.style.visibility = "hidden";
+  iframe.srcdoc = html;
+  document.body.appendChild(iframe);
+  iframe.onload = () => {
+    const win = iframe.contentWindow;
+    if (win != null) {
+      win.focus();
+      win.print();
+    }
+    window.setTimeout(() => {
+      iframe.remove();
+    }, 120_000);
+  };
 }
 
 /** Loads queue slip fields by ticket id (cashier reprint). */

@@ -20,6 +20,7 @@ import {
   LAB_REQUESTS_TABLE,
   normalizeLabRequestPackageIdList,
 } from "@/lib/labRequests";
+import { LAB_SALES_TABLE } from "@/lib/cashierPayments";
 
 const ACTIVE_STATUSES: QueueTicketStatus[] = ["Waiting", "Called", "Serving"];
 
@@ -1235,18 +1236,19 @@ export async function adminPrepareLaboratoryCheckin(
     priorNotes: string | null;
     patient: { id: number; name: string; contact_no: string | null };
     labTestIds: string[];
+    packageIds?: number[] | null;
   },
 ): Promise<{ error: string | null; result?: ReceptionPrepareLabResult }> {
   const admin = queueAdminClient();
   if (!admin) return { error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." };
 
   const ids = [...new Set(input.labTestIds.map((x) => x.trim()).filter(Boolean))];
-  if (ids.length === 0) return { error: "Select at least one lab test." };
+  if (ids.length === 0) return { error: "Select at least one lab test or package." };
 
   const now = new Date().toISOString();
   const triageBlock = buildTriageNotesBlock("laboratory", input.triageNotes);
   const prior = input.priorNotes?.trim();
-  const pendingLine = "Status: pending payment — laboratory queue ticket will be issued after payment.";
+  const pendingLine = "Status: pending payment — laboratory queue number reserved; pay at cashier before lab queue display.";
   const notes = prior ? `${prior}\n\n${triageBlock}\n${pendingLine}` : `${triageBlock}\n${pendingLine}`;
 
   const { encounterId, error: encErr } = await adminEnsureEncounterForEntranceTicket(admin, ticketId, input.patient.id, now);
@@ -1261,6 +1263,7 @@ export async function adminPrepareLaboratoryCheckin(
     clinicalDiagnosis: null,
     remarks: "Reception lab-only (pending payment)",
     labTestIds: ids,
+    packageIds: input.packageIds ?? [],
   });
   if (labErr || !labRequestId) return { error: labErr ?? "Could not create lab request." };
 
@@ -1280,6 +1283,205 @@ export async function adminPrepareLaboratoryCheckin(
   if (upErr) return { error: upErr.message };
 
   return { error: null, result: { transId: encounterId, labRequestId } };
+}
+
+export type ReceptionCompleteLabIntakeResult = {
+  transId: string;
+  labQueueDisplay: string;
+  labQueueTicketId: string;
+};
+
+/** `lab_request_id` values that have at least one `lab_sales` row (visible on Laboratory queue). */
+export async function adminLabRequestIdsWithLabSales(
+  admin: SupabaseClient,
+  labRequestIds: string[],
+): Promise<{ ids: Set<string>; error: string | null }> {
+  const unique = [...new Set(labRequestIds.map((x) => String(x).trim()).filter(Boolean))];
+  const ids = new Set<string>();
+  if (unique.length === 0) return { ids, error: null };
+
+  for (let i = 0; i < unique.length; i += 120) {
+    const chunk = unique.slice(i, i + 120);
+    const { data, error } = await admin.from(LAB_SALES_TABLE).select("lab_request_id").in("lab_request_id", chunk);
+    if (error) return { ids: new Set(), error: error.message };
+    for (const row of (data ?? []) as Array<{ lab_request_id?: string | null }>) {
+      const id = String(row.lab_request_id ?? "").trim();
+      if (id) ids.add(id);
+    }
+  }
+  return { ids, error: null };
+}
+
+/**
+ * Laboratory queue UI: hide LAB tickets for visit-linked lab orders until `lab_sales` exists.
+ */
+export async function adminFilterLabQueueTicketsForLabDisplay<
+  T extends { lab_request_id?: string | null },
+>(admin: SupabaseClient, rows: T[]): Promise<{ rows: T[]; error: string | null }> {
+  const withReq = rows.filter((r) => {
+    const id = String(r.lab_request_id ?? "").trim();
+    return id.length > 0;
+  });
+  const withoutReq = rows.filter((r) => !String(r.lab_request_id ?? "").trim());
+  if (withReq.length === 0) return { rows: withoutReq, error: null };
+
+  const { ids: paidIds, error } = await adminLabRequestIdsWithLabSales(
+    admin,
+    withReq.map((r) => String(r.lab_request_id ?? "").trim()),
+  );
+  if (error) return { rows: [], error };
+
+  const visible = withReq.filter((r) => paidIds.has(String(r.lab_request_id ?? "").trim()));
+  return { rows: [...withoutReq, ...visible], error: null };
+}
+
+/**
+ * After `prepare_lab_checkin`: reserve a **LAB** queue number (ticket row exists but hidden on `/laboratory` until paid),
+ * set `encounters.queue_no`, and complete the entrance ticket.
+ */
+export async function adminCompleteEntranceAfterLabIntake(input: {
+  entranceTicketId: string;
+  transId: string;
+  labRequestId: string;
+  patient: { id: number; name: string; contact_no: string | null };
+}): Promise<{ error: string | null; result?: ReceptionCompleteLabIntakeResult }> {
+  const admin = queueAdminClient();
+  if (!admin) return { error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." };
+
+  const entranceTicketId = input.entranceTicketId.trim();
+  const transId = input.transId.trim();
+  const labRequestId = input.labRequestId.trim();
+  if (!entranceTicketId || !transId || !labRequestId) {
+    return { error: "entranceTicketId, transId, and labRequestId are required." };
+  }
+
+  const { data: sale, error: saleErr } = await admin
+    .from(LAB_SALES_TABLE)
+    .select("id")
+    .eq("lab_request_id", labRequestId)
+    .limit(1)
+    .maybeSingle();
+  if (saleErr) return { error: saleErr.message };
+  if (sale) return { error: "This lab order is already paid. Use cashier to print the lab queue slip if needed." };
+
+  const { data: entT, error: entTErr } = await admin
+    .from("queue_tickets")
+    .select("id, encounter_id, status, notes, patient_id, patient_name, contact_no")
+    .eq("id", entranceTicketId)
+    .maybeSingle();
+  if (entTErr) return { error: entTErr.message };
+  if (!entT) return { error: "Entrance queue ticket not found." };
+
+  const entRow = entT as {
+    encounter_id?: string | null;
+    status?: string | null;
+    notes?: string | null;
+    patient_id?: number | null;
+    patient_name?: string | null;
+    contact_no?: string | null;
+  };
+  const ticketEncounter = (entRow.encounter_id ?? "").trim();
+  if (ticketEncounter !== transId) {
+    return { error: "Entrance ticket is not linked to this visit (trans_id)." };
+  }
+
+  const { data: labRow, error: labErr } = await admin
+    .from(LAB_REQUESTS_TABLE)
+    .select("id, encounter_id")
+    .eq("id", labRequestId)
+    .maybeSingle();
+  if (labErr) return { error: labErr.message };
+  const lab = labRow as { encounter_id?: string | null } | null;
+  if (!lab) return { error: "Lab request not found." };
+  const labEnc = (lab.encounter_id ?? "").trim();
+  if (labEnc !== transId) {
+    return { error: "Lab request does not belong to this visit." };
+  }
+
+  const patient = {
+    id: input.patient.id,
+    name: input.patient.name.trim() || (entRow.patient_name ?? "").trim() || "Patient",
+    contact_no: input.patient.contact_no ?? entRow.contact_no ?? null,
+  };
+
+  const ticketDate = queueTicketTodayIsoDate();
+  const { row: labCounterRow, numericId: labCounterId, error: labCntErr } = await adminResolveCounterByCode(
+    admin,
+    labQueueCode(),
+  );
+  if (labCntErr || labCounterId == null || !labCounterRow) {
+    return { error: labCntErr ?? "Laboratory queue counter not found." };
+  }
+
+  const { id: priorityId, code: priorityCode, name: priorityName, error: pErr } = await adminPriorityForEntranceTicket(
+    admin,
+    entranceTicketId,
+  );
+  if (pErr) return { error: pErr };
+
+  let labQueueDisplay = "";
+  let labQueueTicketId = "";
+
+  const existingLab = await adminFindExistingActiveLabTicketForRequest(admin, {
+    encounterTransId: transId,
+    ticketDate,
+    labRequestId,
+    labCounterNumericId: labCounterId,
+  });
+  if (existingLab) {
+    labQueueDisplay = existingLab.queueDisplay;
+    labQueueTicketId = existingLab.queueTicketId;
+  } else {
+    const issued = await adminIssueDestinationQueueTicket({
+      counterCode: labQueueCode(),
+      ticketDate,
+      patient,
+      encounterId: transId,
+      labRequestId,
+      priorityId,
+      priorityCode,
+      priorityName,
+      registrationType: "Walk-in",
+      reason: "Laboratory",
+      notesTail: `Reception lab intake · reserved until cashier payment · Lab request ${labRequestId} · trans_id ${transId}`,
+      counterRowResolved: labCounterRow,
+    });
+    if (issued.error || !issued.result) {
+      return { error: issued.error ?? "Could not reserve laboratory queue number." };
+    }
+    labQueueDisplay = issued.result.queueDisplay;
+    labQueueTicketId = issued.result.queueTicketId;
+  }
+
+  const now = new Date().toISOString();
+  const { error: qnErr } = await admin
+    .from("encounters")
+    .update({ queue_no: labQueueDisplay, updated_at: now })
+    .eq("trans_id", transId);
+  if (qnErr) return { error: qnErr.message };
+
+  const status = (entRow.status ?? "").trim();
+  if (status !== "Completed") {
+    const prevNotes = (entRow.notes ?? "").trim();
+    const tail = `---\nAwaiting cashier payment · Laboratory queue ${labQueueDisplay} (hidden on lab screen until paid).\nLab request id: ${labRequestId}\nRecorded: ${now}`;
+    const notes = prevNotes ? `${prevNotes}\n\n${tail}` : tail;
+
+    const { error: upErr } = await admin
+      .from("queue_tickets")
+      .update({
+        status: "Completed",
+        completed_at: now,
+        updated_at: now,
+        notes,
+      })
+      .eq("id", entranceTicketId);
+    if (upErr) return { error: upErr.message };
+  }
+
+  return {
+    error: null,
+    result: { transId, labQueueDisplay, labQueueTicketId },
+  };
 }
 
 /** Lab-only phase C: after lab_sales exists — LAB queue ticket, encounter.queue_no, complete entrance. */

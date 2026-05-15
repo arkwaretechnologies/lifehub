@@ -27,6 +27,8 @@ import {
   Radio,
   RadioGroup,
   Stack,
+  Tab,
+  Tabs,
   TextField,
   Tooltip,
   Typography,
@@ -42,9 +44,9 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 import SearchIcon from "@mui/icons-material/Search";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import {
+  completeEntranceAfterLabIntakeFromApi,
   createPatientFromApi,
   fetchReceptionQueueStateFromApi,
-  finalizeReceptionLabCheckinFromApi,
   getEntranceCounterCode,
   parseReceptionRouteFromNotes,
   patchReceptionQueueTicket,
@@ -59,16 +61,17 @@ import {
   type ReceptionTriageRoute,
 } from "@/lib/queueReception";
 import PatientAddDialog from "@/components/patient/PatientAddDialog";
+import { fetchLabCatalogGrouped, type LabCatalogSection } from "@/lib/labTests";
+import { fetchActiveLabPackagesWithTests, type LabPackageWithTests } from "@/lib/labPackages";
 import {
-  fetchLabCatalogGrouped,
-  fetchLabTestCheckoutPricesByIds,
-  fetchLabTestsByIds,
-  type LabCatalogSection,
-} from "@/lib/labTests";
-import { PaymentModal, type PaymentModalSummaryRow } from "@/components/cashier/PaymentModal";
-import { createLabSaleWithItems, generateNextDailyOrNumber } from "@/lib/cashierPayments";
-import { fetchActivePaymentMethods, type PaymentMethodRow } from "@/lib/paymentMethods";
-import { fetchActiveDiscountTypes, type DiscountTypeRow } from "@/lib/discountTypes";
+  buildImagingRequestLinesFromCatalog,
+  emptyImagingSelection,
+  fetchActiveImagingCatalog,
+  IMAGING_NOTES_END,
+  IMAGING_NOTES_START,
+  type ImagingCatalogRow,
+  type ImagingLineSelection,
+} from "@/lib/imagingCatalog";
 import { openReceptionQueueReceiptPrint } from "@/lib/receptionQueueReceiptPrint";
 import { sanitizePatientSearchQuery } from "@/lib/patientsCatalog";
 import { BpSplitInput } from "@/components/BpSplitInput";
@@ -91,16 +94,11 @@ function parseReceptionDoctorQueueOptions(): { code: string; label: string }[] {
   return out.length > 0 ? out : [{ code: "CLINIC 1", label: "Dr. Mark Loid Anlap" }];
 }
 
-type LabCheckoutPending = {
-  entranceTicketId: string;
-  transId: string;
-  labRequestId: string;
-  patient: { id: number; name: string; contact_no: string | null };
-  patientDisplayName: string;
-  labTestIds: string[];
-  /** Line items for PaymentModal (matches consultation lab_service_prices). */
-  paymentSummaryRows: PaymentModalSummaryRow[];
-};
+function formatMoney2(n: number): string {
+  return new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(
+    Number.isFinite(n) ? n : 0,
+  );
+}
 
 function TicketDetails({
   t,
@@ -454,17 +452,15 @@ export default function ReceptionDesk() {
   const [labSections, setLabSections] = useState<LabCatalogSection[]>([]);
   const [labLoading, setLabLoading] = useState(false);
   const [selectedLabTestIds, setSelectedLabTestIds] = useState<Set<string>>(new Set());
+  const [labSubTab, setLabSubTab] = useState(0);
+  const [labPackages, setLabPackages] = useState<LabPackageWithTests[]>([]);
+  const [selectedLabPackageIds, setSelectedLabPackageIds] = useState<Set<string>>(() => new Set());
+  const [imagingCatalog, setImagingCatalog] = useState<ImagingCatalogRow[]>([]);
+  const [imagingForm, setImagingForm] = useState<Record<string, ImagingLineSelection>>({});
+  const [imagingCatalogError, setImagingCatalogError] = useState("");
+  const labDataLoadedTicketIdRef = useRef<string | null>(null);
   const doctorQueueOptions = useMemo(() => parseReceptionDoctorQueueOptions(), []);
   const [doctorCounterCode, setDoctorCounterCode] = useState(() => doctorQueueOptions[0]?.code ?? "CLINIC 1");
-  const [paymentMethods, setPaymentMethods] = useState<PaymentMethodRow[]>([]);
-  const [discountTypes, setDiscountTypes] = useState<DiscountTypeRow[]>([]);
-  const [labCheckout, setLabCheckout] = useState<LabCheckoutPending | null>(null);
-  const [labPayOpen, setLabPayOpen] = useState(false);
-  const [labPayModalKey, setLabPayModalKey] = useState(0);
-  const [labPayBusy, setLabPayBusy] = useState(false);
-  const [labPayError, setLabPayError] = useState("");
-  const [labTotalDue, setLabTotalDue] = useState(0);
-  const [labTotalLoading, setLabTotalLoading] = useState(false);
   const patientSearchAnchorRef = useRef<HTMLDivElement | null>(null);
   const [patientSearchDropdownWidth, setPatientSearchDropdownWidth] = useState(0);
 
@@ -507,19 +503,6 @@ export default function ReceptionDesk() {
       cancelled = true;
     };
   }, [refresh]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const [pm, dt] = await Promise.all([fetchActivePaymentMethods(), fetchActiveDiscountTypes()]);
-      if (cancelled) return;
-      if (!pm.error) setPaymentMethods(pm.methods);
-      if (!dt.error) setDiscountTypes(dt.discounts);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     const ids = new Set<string>(counters.map((c) => String(c.id)));
@@ -600,6 +583,14 @@ export default function ReceptionDesk() {
       bmi: "",
     });
     setSelectedLabTestIds(new Set());
+    setLabSubTab(0);
+    setLabPackages([]);
+    setSelectedLabPackageIds(new Set());
+    setImagingCatalog([]);
+    setImagingForm({});
+    setImagingCatalogError("");
+    labDataLoadedTicketIdRef.current = null;
+    setLabSections([]);
     setDoctorCounterCode(doctorQueueOptions[0]?.code ?? "CLINIC 1");
   };
 
@@ -609,15 +600,40 @@ export default function ReceptionDesk() {
   };
 
   useEffect(() => {
-    if (triageTicket && triageRoute === "laboratory" && labSections.length === 0) {
-      void (async () => {
-        setLabLoading(true);
-        const { sections, error } = await fetchLabCatalogGrouped();
-        if (!error) setLabSections(sections);
-        setLabLoading(false);
-      })();
-    }
-  }, [triageTicket, triageRoute, labSections.length]);
+    if (!triageTicket || triageRoute !== "laboratory") return;
+    if (labDataLoadedTicketIdRef.current === triageTicket.id) return;
+    let cancelled = false;
+    void (async () => {
+      setLabLoading(true);
+      setImagingCatalogError("");
+      try {
+        const [catRes, pkgRes, imgRes] = await Promise.all([
+          fetchLabCatalogGrouped(),
+          fetchActiveLabPackagesWithTests(),
+          fetchActiveImagingCatalog(),
+        ]);
+        if (cancelled) return;
+        if (!catRes.error) setLabSections(catRes.sections);
+        if (!pkgRes.error) setLabPackages(pkgRes.packages);
+        else setLabPackages([]);
+        if (!imgRes.error) {
+          setImagingCatalog(imgRes.rows);
+          setImagingForm(emptyImagingSelection(imgRes.rows));
+        } else {
+          setImagingCatalog([]);
+          setImagingForm({});
+          setImagingCatalogError(imgRes.error);
+        }
+        labDataLoadedTicketIdRef.current = triageTicket.id;
+      } finally {
+        if (!cancelled) setLabLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      setLabLoading(false);
+    };
+  }, [triageTicket, triageRoute]);
 
   useEffect(() => {
     if (!triageTicket) return;
@@ -673,14 +689,32 @@ export default function ReceptionDesk() {
       setPatientError(null);
       try {
         if (triageRoute === "laboratory") {
-          if (selectedLabTestIds.size === 0) {
-            setPatientError("Select at least one laboratory test.");
+          const merged = new Set<string>([...selectedLabTestIds]);
+          for (const pkgId of selectedLabPackageIds) {
+            const pkg = labPackages.find((p) => p.id === pkgId);
+            if (pkg) for (const tid of pkg.labTestIds) merged.add(tid);
+          }
+          if (merged.size === 0) {
+            setPatientError("Select at least one laboratory test or package.");
             return;
           }
-          const labTestIds = [...selectedLabTestIds];
+          const labTestIds = [...merged].sort((a, b) => a.localeCompare(b));
+          const labPackageIds = [...selectedLabPackageIds]
+            .map((sid) => Number.parseInt(sid, 10))
+            .filter((n) => Number.isFinite(n) && n > 0);
+
+          const imagingLines = buildImagingRequestLinesFromCatalog(imagingCatalog, imagingForm);
+          const imagingBlock =
+            imagingLines.length > 0
+              ? [IMAGING_NOTES_START, "IMAGING REQUEST:", ...imagingLines, IMAGING_NOTES_END].join("\n")
+              : "";
+          const complaint = triageComplaint.trim();
+          const triageNotesCombined =
+            complaint && imagingBlock ? `${complaint}\n\n${imagingBlock}\n` : imagingBlock ? `${imagingBlock}\n` : complaint;
+
           const prep = await prepareReceptionLabCheckinFromApi({
             ticketId: triageTicket.id,
-            triageNotes: triageComplaint.trim(),
+            triageNotes: triageNotesCombined,
             priorNotes: triageTicket.notes,
             patient: {
               id: selectedPatient.id,
@@ -688,6 +722,7 @@ export default function ReceptionDesk() {
               contact_no: selectedPatient.contact_no,
             },
             labTestIds,
+            labPackageIds,
           });
           if (prep.error) {
             setLoadError(prep.error);
@@ -697,26 +732,11 @@ export default function ReceptionDesk() {
             setLoadError("Server did not return lab checkout identifiers.");
             return;
           }
-          setLabTotalLoading(true);
-          const pr = await fetchLabTestCheckoutPricesByIds(labTestIds);
-          setLabTotalLoading(false);
-          if (pr.error) {
-            setLoadError(pr.error);
-            return;
-          }
-          let sum = 0;
-          for (const id of labTestIds) {
-            sum += pr.unitPriceById.get(id) ?? 0;
-          }
-          setLabTotalDue(sum);
-          setLabPayError("");
-          const namesRes = await fetchLabTestsByIds(labTestIds);
-          const paymentSummaryRows: PaymentModalSummaryRow[] = labTestIds.map((id) => ({
-            label: namesRes.error ? `Lab test (${id.slice(0, 8)}…)` : (namesRes.testsById.get(id)?.name ?? "Lab test"),
-            amount: pr.unitPriceById.get(id) ?? 0,
-          }));
-          setLabCheckout({
-            entranceTicketId: triageTicket.id,
+
+          const entranceTicketId = triageTicket.id;
+
+          const completeRes = await completeEntranceAfterLabIntakeFromApi({
+            entranceTicketId,
             transId: prep.transId,
             labRequestId: prep.labRequestId,
             patient: {
@@ -724,12 +744,25 @@ export default function ReceptionDesk() {
               name: selectedPatient.name ?? "",
               contact_no: selectedPatient.contact_no,
             },
-            patientDisplayName: selectedPatient.name ?? "Patient",
-            labTestIds,
-            paymentSummaryRows,
           });
-          setLabPayModalKey((k) => k + 1);
-          setLabPayOpen(true);
+          if (completeRes.error) {
+            setLoadError(completeRes.error);
+            return;
+          }
+
+          const labQueueDisplay = (completeRes.labQueueDisplay ?? "").trim();
+          if (labQueueDisplay) {
+            await openReceptionQueueReceiptPrint({
+              patientName: selectedPatient.name ?? "Patient",
+              destinationLabel: "Laboratory",
+              queueDisplay: labQueueDisplay,
+              transId: prep.transId,
+              qrPayload: prep.labRequestId,
+              hideProceedTo: true,
+              footerNote: "Pay at cashier before laboratory queue display.",
+            });
+          }
+
           setTriageTicket(null);
           await refresh();
           return;
@@ -777,80 +810,6 @@ export default function ReceptionDesk() {
         setBusyId(null);
       }
     })();
-  };
-
-  const handleLabPaymentConfirm = async (args: {
-    paymentMethod: PaymentMethodRow;
-    orNumber: string;
-    discountType: DiscountTypeRow | null;
-    discountMode: "pct" | "amount";
-    discountPct: number;
-    discountAmount: number;
-    amountTendered: number | null;
-    changeAmount: number | null;
-    labQueuePriorityId: number | null;
-  }) => {
-    void args.labQueuePriorityId;
-    const pending = labCheckout;
-    if (!pending) return;
-    setLabPayBusy(true);
-    setLabPayError("");
-    try {
-      const priceRes = await fetchLabTestCheckoutPricesByIds(pending.labTestIds);
-      if (priceRes.error) throw new Error(priceRes.error);
-      const items = pending.labTestIds.map((id) => ({
-        lab_test_id: id,
-        quantity: 1,
-        unit_price: priceRes.unitPriceById.get(id) ?? 0,
-        discount: 0,
-        notes: null as string | null,
-      }));
-      const grandSubtotal = items.reduce((s, it) => s + it.quantity * it.unit_price - it.discount, 0);
-      const totalDiscount =
-        args.discountMode === "amount"
-          ? Math.min(Math.max(0, args.discountAmount), grandSubtotal)
-          : Math.min(Math.max(0, (grandSubtotal * Math.max(0, args.discountPct)) / 100), grandSubtotal);
-
-      const saleRes = await createLabSaleWithItems({
-        labRequestId: pending.labRequestId,
-        patientId: pending.patient.id,
-        orNumber: args.orNumber.trim(),
-        paymentMethodId: args.paymentMethod.id,
-        amountTendered: args.amountTendered,
-        changeAmount: args.changeAmount,
-        discountTypeId: args.discountMode === "pct" ? args.discountType?.id ?? null : null,
-        discountAmount: totalDiscount,
-        items,
-      });
-      if (saleRes.error) throw new Error(saleRes.error);
-
-      const fin = await finalizeReceptionLabCheckinFromApi({
-        entranceTicketId: pending.entranceTicketId,
-        transId: pending.transId,
-        labRequestId: pending.labRequestId,
-        patient: pending.patient,
-      });
-      if (fin.error) throw new Error(fin.error);
-
-      const tid = fin.transId ?? pending.transId;
-      const qd = fin.destinationQueueDisplay ?? "";
-      if (tid && qd) {
-        await openReceptionQueueReceiptPrint({
-          patientName: pending.patientDisplayName,
-          destinationLabel: fin.destinationCounterCode ?? "Laboratory",
-          queueDisplay: qd,
-          transId: tid,
-        });
-      }
-
-      setLabPayOpen(false);
-      setLabCheckout(null);
-      await refresh();
-    } catch (e) {
-      setLabPayError(e instanceof Error ? e.message : "Payment or finalize failed.");
-    } finally {
-      setLabPayBusy(false);
-    }
   };
 
   const handleComplete = (t: QueueTicketRow) => {
@@ -961,53 +920,6 @@ export default function ReceptionDesk() {
             </Alert>
           ))
         : null}
-
-      {labCheckout && !labPayOpen ? (
-        <Alert
-          severity="warning"
-          sx={{ mb: 2 }}
-          action={
-            <Button
-              color="inherit"
-              size="small"
-              disabled={paymentMethods.length === 0 || labTotalLoading}
-              onClick={() => {
-                setLabPayError("");
-                setLabPayModalKey((k) => k + 1);
-                setLabPayOpen(true);
-              }}
-            >
-              Pay now
-            </Button>
-          }
-        >
-          Laboratory order is saved for this visit. Complete payment to issue the lab queue ticket and close the entrance
-          ticket.
-        </Alert>
-      ) : null}
-
-      <PaymentModal
-        key={labPayModalKey}
-        open={labPayOpen}
-        title="Pay — laboratory check-in"
-        paymentMethods={paymentMethods}
-        discountTypes={discountTypes}
-        busy={labPayBusy || labTotalLoading}
-        errorText={labPayError}
-        onGenerateOrNumber={async () => {
-          const res = await generateNextDailyOrNumber();
-          if (res.error || !res.orNumber) throw new Error(res.error ?? "Could not generate OR number.");
-          return res.orNumber;
-        }}
-        onClose={() => setLabPayOpen(false)}
-        totalDue={labTotalDue}
-        summaryRows={
-          labCheckout && labCheckout.paymentSummaryRows.length > 0
-            ? labCheckout.paymentSummaryRows
-            : [{ label: "Laboratory tests", amount: labTotalDue }]
-        }
-        onConfirm={(args) => handleLabPaymentConfirm(args)}
-      />
 
       <Dialog open={triageTicket !== null} onClose={closeTriage} fullWidth maxWidth="sm" disableEscapeKeyDown={triageSaving}>
         <DialogTitle>Mini triage &amp; routing</DialogTitle>
@@ -1365,44 +1277,197 @@ export default function ReceptionDesk() {
               {triageRoute === "laboratory" ? (
                 <Box sx={{ mt: 1 }}>
                   <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 1 }}>
-                    Laboratory tests
+                    Laboratory &amp; imaging
                   </Typography>
+                  <TextField
+                    label="Notes (optional)"
+                    value={triageComplaint}
+                    onChange={(e) => setTriageComplaint(e.target.value)}
+                    fullWidth
+                    InputLabelProps={{ shrink: true }}
+                    multiline
+                    minRows={2}
+                    placeholder="e.g. fasting lipid panel, doctor request"
+                    sx={{ mb: 1.5 }}
+                  />
                   {labLoading ? (
                     <CircularProgress size={24} />
                   ) : (
-                    <Box sx={{ maxHeight: 300, overflow: "auto", border: "1px solid", borderColor: "divider", borderRadius: 1, p: 1 }}>
-                      {labSections.map((section) => (
-                        <Box key={String(section.category.id)} sx={{ mb: 2 }}>
-                          <Typography variant="caption" fontWeight={700} color="primary" sx={{ display: "block", mb: 0.5, textTransform: "uppercase" }}>
-                            {section.category.name}
-                          </Typography>
-                          <Grid container spacing={1}>
-                            {section.tests.map((test) => (
-                              <Grid size={{ xs: 12, sm: 6 }} key={test.id}>
-                                <FormControlLabel
-                                  control={
-                                    <Checkbox
-                                      size="small"
-                                      checked={selectedLabTestIds.has(test.id)}
-                                      onChange={() => {
-                                        setSelectedLabTestIds((prev) => {
-                                          const next = new Set(prev);
-                                          if (next.has(test.id)) next.delete(test.id);
-                                          else next.add(test.id);
-                                          return next;
-                                        });
-                                      }}
-                                    />
-                                  }
-                                  label={<Typography variant="body2">{test.name}</Typography>}
-                                  sx={{ ml: 0 }}
-                                />
-                              </Grid>
+                    <>
+                      <Tabs
+                        value={labSubTab}
+                        onChange={(_, v) => setLabSubTab(v)}
+                        variant="scrollable"
+                        scrollButtons="auto"
+                        sx={{ minHeight: 40, borderBottom: 1, borderColor: "divider" }}
+                      >
+                        <Tab label="Individual tests" sx={{ textTransform: "none", fontWeight: 700 }} />
+                        <Tab label="Packages" sx={{ textTransform: "none", fontWeight: 700 }} />
+                        <Tab label="Imaging" sx={{ textTransform: "none", fontWeight: 700 }} />
+                      </Tabs>
+                      <Box
+                        sx={{
+                          maxHeight: 300,
+                          overflow: "auto",
+                          border: "1px solid",
+                          borderColor: "divider",
+                          borderTop: "none",
+                          borderRadius: "0 0 8px 8px",
+                          p: 1,
+                        }}
+                      >
+                        {labSubTab === 0 ? (
+                          <>
+                            {labSections.map((section) => (
+                              <Box key={String(section.category.id)} sx={{ mb: 2 }}>
+                                <Typography
+                                  variant="caption"
+                                  fontWeight={700}
+                                  color="primary"
+                                  sx={{ display: "block", mb: 0.5, textTransform: "uppercase" }}
+                                >
+                                  {section.category.name}
+                                </Typography>
+                                <Grid container spacing={1}>
+                                  {section.tests.map((test) => (
+                                    <Grid size={{ xs: 12, sm: 6 }} key={test.id}>
+                                      <FormControlLabel
+                                        control={
+                                          <Checkbox
+                                            size="small"
+                                            checked={selectedLabTestIds.has(test.id)}
+                                            onChange={() => {
+                                              setSelectedLabTestIds((prev) => {
+                                                const next = new Set(prev);
+                                                if (next.has(test.id)) next.delete(test.id);
+                                                else next.add(test.id);
+                                                return next;
+                                              });
+                                            }}
+                                          />
+                                        }
+                                        label={<Typography variant="body2">{test.name}</Typography>}
+                                        sx={{ ml: 0 }}
+                                      />
+                                    </Grid>
+                                  ))}
+                                </Grid>
+                              </Box>
                             ))}
-                          </Grid>
-                        </Box>
-                      ))}
-                    </Box>
+                          </>
+                        ) : null}
+                        {labSubTab === 1 ? (
+                          <>
+                            {labPackages.length === 0 ? (
+                              <Typography variant="body2" color="text.secondary">
+                                No active laboratory packages. Configure them under Settings → Laboratory → Packages.
+                              </Typography>
+                            ) : (
+                              <Grid container spacing={1}>
+                                {labPackages.map((pkg) => (
+                                  <Grid size={{ xs: 12 }} key={pkg.id}>
+                                    <FormControlLabel
+                                      control={
+                                        <Checkbox
+                                          size="small"
+                                          checked={selectedLabPackageIds.has(pkg.id)}
+                                          onChange={() => {
+                                            setSelectedLabPackageIds((prev) => {
+                                              const next = new Set(prev);
+                                              if (next.has(pkg.id)) next.delete(pkg.id);
+                                              else next.add(pkg.id);
+                                              return next;
+                                            });
+                                          }}
+                                        />
+                                      }
+                                      label={
+                                        <Stack direction="row" alignItems="baseline" justifyContent="space-between" spacing={1} sx={{ width: "100%", pr: 1 }}>
+                                          <Typography variant="body2" fontWeight={600}>
+                                            {pkg.name}
+                                          </Typography>
+                                          <Typography variant="caption" fontWeight={800} color="text.secondary" sx={{ whiteSpace: "nowrap" }}>
+                                            {formatMoney2(pkg.package_price)}
+                                          </Typography>
+                                        </Stack>
+                                      }
+                                      sx={{ ml: 0, alignItems: "flex-start", width: "100%", mr: 0 }}
+                                    />
+                                  </Grid>
+                                ))}
+                              </Grid>
+                            )}
+                          </>
+                        ) : null}
+                        {labSubTab === 2 ? (
+                          <>
+                            {imagingCatalogError ? (
+                              <Alert severity="warning">{imagingCatalogError}</Alert>
+                            ) : imagingCatalog.length === 0 ? (
+                              <Typography variant="body2" color="text.secondary">
+                                No imaging studies in the catalog. Add them under Settings → Laboratory → Imaging.
+                              </Typography>
+                            ) : (
+                              <Stack spacing={1.5}>
+                                {imagingCatalog.map((c) => {
+                                  const row = imagingForm[c.code] ?? { checked: false, view: "" };
+                                  const label = (c.view_field_label ?? "VIEW").trim() || "VIEW";
+                                  return (
+                                    <Box key={c.code}>
+                                      <FormControlLabel
+                                        control={
+                                          <Checkbox
+                                            size="small"
+                                            checked={row.checked}
+                                            onChange={(_, checked) =>
+                                              setImagingForm((prev) => ({
+                                                ...prev,
+                                                [c.code]: { ...(prev[c.code] ?? { checked: false, view: "" }), checked },
+                                              }))
+                                            }
+                                          />
+                                        }
+                                        label={
+                                          <Stack direction="row" alignItems="baseline" justifyContent="space-between" spacing={1} sx={{ flex: 1, pr: 0.5 }}>
+                                            <Typography variant="body2" sx={{ textTransform: "uppercase" }}>
+                                              {c.name}
+                                            </Typography>
+                                            <Typography variant="caption" fontWeight={800} color="text.secondary" sx={{ whiteSpace: "nowrap" }}>
+                                              {formatMoney2(c.default_price)}
+                                            </Typography>
+                                          </Stack>
+                                        }
+                                        sx={{ ml: 0, alignItems: "flex-start", width: "100%", mr: 0 }}
+                                      />
+                                      {c.requires_view_field ? (
+                                        <TextField
+                                          size="small"
+                                          label={label}
+                                          value={row.view}
+                                          onChange={(e) =>
+                                            setImagingForm((prev) => ({
+                                              ...prev,
+                                              [c.code]: { ...(prev[c.code] ?? { checked: false, view: "" }), view: e.target.value },
+                                            }))
+                                          }
+                                          fullWidth
+                                          sx={{ mt: 0.5, pl: { xs: 0, sm: 4 } }}
+                                          InputLabelProps={{ shrink: true }}
+                                        />
+                                      ) : null}
+                                    </Box>
+                                  );
+                                })}
+                              </Stack>
+                            )}
+                          </>
+                        ) : null}
+                      </Box>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+                        Imaging requests are stored with this check-in. You still need at least one test or package to bill
+                        laboratory services.
+                      </Typography>
+                    </>
                   )}
                 </Box>
               ) : null}
@@ -1420,6 +1485,17 @@ export default function ReceptionDesk() {
                 <Link href="/laboratory" style={{ fontSize: "0.75rem" }}>
                   Open Laboratory
                 </Link>
+                <Typography variant="caption" color="text.disabled">
+                  ·
+                </Typography>
+                <Link href="/cashier" style={{ fontSize: "0.75rem" }}>
+                  Cashier
+                </Link>
+                {triageRoute === "laboratory" ? (
+                  <Typography variant="caption" color="text.secondary" sx={{ width: "100%", mt: 0.5 }}>
+                    Laboratory walk-in: patient pays at cashier (scan slip QR). Lab queue shows after payment.
+                  </Typography>
+                ) : null}
               </Stack>
             </Stack>
           ) : null}

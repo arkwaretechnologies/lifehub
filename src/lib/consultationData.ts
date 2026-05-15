@@ -6,6 +6,7 @@ import {
 } from "@/components/consultation/consultationTypes";
 import {
   fetchCashierUnpaidPhysicianFeeEncounterCounts,
+  fetchEncounterTransIdsWithUnpaidLabRequests,
   isCashierHiddenEncounterDisposition,
 } from "@/lib/cashierLabQueue";
 import { buildPatientSearchOrFilter, PATIENT_DIRECTORY_SELECT, sanitizePatientSearchQuery } from "@/lib/patientsCatalog";
@@ -722,7 +723,8 @@ export async function fetchConsultationPatientsPage(
 /**
  * Cashier: paginated encounter search by keywords (space-separated tokens are AND-ed).
  * Each token matches if it appears in patient name (matched uppercase), encounter `trans_id` (partial, lowercase), full UUID equality, or numeric `patient_id`.
- * Only encounters with at least one `physician_fee_sales` row whose `status` is not Paid or Completed (or null) are returned — same scope as the cashier unpaid queue.
+ * Returns encounters that either have unpaid `physician_fee_sales` (same as before) **or** have at least one
+ * visit-linked `lab_requests` row not yet on `lab_sales` (e.g. reception laboratory intake awaiting cashier payment).
  * Encounters whose `disposition` is Paid or Completed are excluded.
  */
 export async function fetchCashierEncountersSearchPage(
@@ -742,9 +744,10 @@ export async function fetchCashierEncountersSearchPage(
   const from = pageIndex * pageSize;
   const to = from + pageSize - 1;
 
-  const [patientMatches, unpaidQueueRes] = await Promise.all([
+  const [patientMatches, unpaidQueueRes, labPendingRes] = await Promise.all([
     Promise.all(tokens.map((tok) => fetchPatientIdsForCashierSearchToken(tok))),
     fetchCashierUnpaidPhysicianFeeEncounterCounts(),
+    fetchEncounterTransIdsWithUnpaidLabRequests(),
   ]);
   const patientLookupError = patientMatches.find((m) => m.error)?.error;
   if (patientLookupError) {
@@ -753,10 +756,15 @@ export async function fetchCashierEncountersSearchPage(
   if (unpaidQueueRes.error) {
     return { rows: [], count: 0, error: unpaidQueueRes.error };
   }
+  if (labPendingRes.error) {
+    return { rows: [], count: 0, error: labPendingRes.error };
+  }
+
   const unpaidEncounterIds = new Set(
     [...unpaidQueueRes.pendingByEncounterId.keys()].map((k) => String(k).trim().toLowerCase()),
   );
-  if (unpaidEncounterIds.size === 0) {
+  const eligibleEncounterIds = new Set<string>([...unpaidEncounterIds, ...labPendingRes.ids]);
+  if (eligibleEncounterIds.size === 0) {
     return { rows: [], count: 0, error: null };
   }
 
@@ -782,7 +790,7 @@ export async function fetchCashierEncountersSearchPage(
   }
 
   const allIdsRaw = intersection ? [...intersection] : [];
-  const allIds = allIdsRaw.filter((id) => unpaidEncounterIds.has(String(id).trim().toLowerCase()));
+  const allIds = allIdsRaw.filter((id) => eligibleEncounterIds.has(String(id).trim().toLowerCase()));
   if (allIds.length === 0) {
     return { rows: [], count: 0, error: null };
   }

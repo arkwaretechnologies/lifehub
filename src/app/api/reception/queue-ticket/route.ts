@@ -5,6 +5,7 @@ import {
   adminUpdateTicketStatus,
   type ReceptionTriageRoute,
 } from "@/lib/receptionQueueServer";
+import { normalizeLabRequestPackageIdList } from "@/lib/labRequests";
 import type { QueueTicketStatus } from "@/lib/queueReception";
 
 type Body = {
@@ -27,6 +28,7 @@ type Body = {
     bmi?: string;
   } | null;
   labTestIds?: string[] | null;
+  labPackageIds?: number[] | null;
 };
 
 export async function PATCH(req: Request) {
@@ -97,11 +99,15 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: "patient id and name are required." }, { status: 400 });
     }
     const labTestIds = Array.isArray(body.labTestIds) ? body.labTestIds.filter((x): x is string => typeof x === "string") : [];
+    const packageIds = normalizeLabRequestPackageIdList(
+      Array.isArray(body.labPackageIds) ? body.labPackageIds : [],
+    );
     const { error, result } = await adminPrepareLaboratoryCheckin(ticketId, {
       triageNotes: typeof body.triageNotes === "string" ? body.triageNotes : null,
       priorNotes: typeof body.priorNotes === "string" ? body.priorNotes : null,
       patient,
       labTestIds,
+      packageIds,
     });
     if (error) {
       return NextResponse.json({ error }, { status: 500 });

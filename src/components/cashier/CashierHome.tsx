@@ -56,6 +56,7 @@ import {
 import type { EncounterLabRequestSummary } from "@/lib/labRequests";
 import {
   fetchCashierUnpaidPhysicianFeeEncounterCounts,
+  fetchEncounterTransIdsWithUnpaidLabRequests,
   fetchLabRequestsWithoutLabSaleForEncounters,
   fetchStandaloneLabRequestsWithoutLabSaleForPatient,
 } from "@/lib/cashierLabQueue";
@@ -83,6 +84,23 @@ function isFullEncounterTransIdQuery(s: string): boolean {
 }
 
 const CASHIER_AUTONAV_SUPPRESS_KEY = "cashier_autonav_suppress";
+
+async function tryNavigateFromScannedUuid(qRaw: string, router: ReturnType<typeof useRouter>): Promise<void> {
+  const q = qRaw.trim();
+  const ql = q.toLowerCase();
+  const res = await fetch(`/api/cashier/lab-request-exists?id=${encodeURIComponent(q)}`, { cache: "no-store" });
+  if (!res.ok) return;
+  const j = (await res.json().catch(() => ({}))) as { ok?: boolean };
+  if (!j.ok) return;
+  try {
+    const suppress = sessionStorage.getItem(CASHIER_AUTONAV_SUPPRESS_KEY);
+    if (suppress === ql) return;
+    sessionStorage.setItem(CASHIER_AUTONAV_SUPPRESS_KEY, ql);
+  } catch {
+    /* still navigate */
+  }
+  router.push(`/cashier/lab-request/${encodeURIComponent(q)}`);
+}
 
 export default function CashierHome() {
   const searchParams = useSearchParams();
@@ -147,7 +165,21 @@ export default function CashierHome() {
       return;
     }
     setPendingByEncounterId(res.pendingByEncounterId);
-    const encKeys = [...res.pendingByEncounterId.keys()];
+
+    const labEncRes = await fetchEncounterTransIdsWithUnpaidLabRequests();
+    if (labEncRes.error) {
+      setQueueLoading(false);
+      setQueueError(labEncRes.error);
+      setOpenLabRequestsByEncounter(new Map());
+      return;
+    }
+
+    const encKeys = [
+      ...new Set<string>([
+        ...res.pendingByEncounterId.keys(),
+        ...[...labEncRes.ids].map((k) => String(k).trim()).filter(Boolean),
+      ]),
+    ];
     const labRes = await fetchLabRequestsWithoutLabSaleForEncounters(encKeys);
     setQueueLoading(false);
     if (labRes.error) {
@@ -276,15 +308,18 @@ export default function CashierHome() {
     if (!isFullEncounterTransIdQuery(q)) return;
     const ql = q.toLowerCase();
     const hit = searchRows.find((r) => r.encounter.id.toLowerCase() === ql);
-    if (!hit) return;
-    try {
-      const suppress = sessionStorage.getItem(CASHIER_AUTONAV_SUPPRESS_KEY);
-      if (suppress === ql) return;
-      sessionStorage.setItem(CASHIER_AUTONAV_SUPPRESS_KEY, ql);
-    } catch {
-      /* still navigate */
+    if (hit) {
+      try {
+        const suppress = sessionStorage.getItem(CASHIER_AUTONAV_SUPPRESS_KEY);
+        if (suppress === ql) return;
+        sessionStorage.setItem(CASHIER_AUTONAV_SUPPRESS_KEY, ql);
+      } catch {
+        /* still navigate */
+      }
+      router.push(`/cashier/${hit.encounter.id}`);
+      return;
     }
-    router.push(`/cashier/${hit.encounter.id}`);
+    void tryNavigateFromScannedUuid(q, router);
   }, [debouncedSearch, searchRows, listLoading, listError, router]);
 
   const loadEncounterSearch = useCallback(
@@ -602,7 +637,8 @@ export default function CashierHome() {
           <ConsultationSectionTitle>Find visit</ConsultationSectionTitle>
           <Typography variant="body2" color="text.primary" sx={{ ...consultBodyTypoSx, mb: 2, display: "block" }}>
             Search by encounter id and patient name (keywords). Select a row to load that patient for visit checkout or
-            walk-in laboratory orders below.
+            walk-in laboratory orders below. Paste or scan a full UUID: if it matches a visit you will jump to that visit;
+            if it matches a laboratory order id (from the reception slip QR) you will open payment for that order.
           </Typography>
 
           <Box
@@ -618,7 +654,7 @@ export default function CashierHome() {
               id="cashier-patient-search"
               name="cashier_visit_search"
               hiddenLabel
-              placeholder="Encounter ID or patient name keywords…"
+              placeholder="Encounter ID, lab order QR (UUID), or patient name…"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               {...commonFieldProps}
@@ -1028,7 +1064,8 @@ export default function CashierHome() {
           <CardContent sx={{ p: 3 }} id="cashier-panel-walkin" role="tabpanel">
             <ConsultationSectionTitle>Walk-in laboratory orders</ConsultationSectionTitle>
             <Typography variant="body2" color="text.primary" sx={{ ...consultBodyTypoSx, mb: 2, display: "block" }}>
-              Orders placed without a consultation visit, still waiting to be paid at the register.
+              Orders with no linked visit, still waiting to be paid. Reception laboratory intake creates a visit — use{" "}
+              <strong>Visit checkout</strong> after searching the patient, or scan the slip QR.
             </Typography>
 
             {selectedPatient ? (

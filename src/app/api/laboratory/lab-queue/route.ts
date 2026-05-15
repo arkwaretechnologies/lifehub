@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
-import { queueAdminClient } from "@/lib/receptionQueueServer";
+import { adminLabRequestIdsWithLabSales, queueAdminClient } from "@/lib/receptionQueueServer";
 import type { QueueTicketStatus } from "@/lib/queueReception";
 
 const ACTIVE_STATUSES: QueueTicketStatus[] = ["Waiting", "Called", "Serving"];
@@ -77,6 +77,8 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Invalid LAB counter id." }, { status: 500 });
   }
 
+  const todayIso = queueTicketTodayIsoDate();
+
   let base = admin
     .from("queue_tickets")
     .select(
@@ -90,10 +92,41 @@ export async function GET(req: Request) {
   if (scope === "all") {
     base = base.gte("ticket_date", isoDateDaysAgo(days));
   } else if (scope === "today_all") {
-    base = base.eq("ticket_date", queueTicketTodayIsoDate());
+    base = base.eq("ticket_date", todayIso);
   } else {
     // active_today (default)
-    base = base.eq("ticket_date", queueTicketTodayIsoDate()).in("status", ACTIVE_STATUSES);
+    base = base.eq("ticket_date", todayIso).in("status", ACTIVE_STATUSES);
+  }
+
+  /** Hide LAB tickets linked to unpaid visit lab orders (reserved at reception until cashier payment). */
+  const ticketDateForPaidFilter = scope === "all" ? null : todayIso;
+  if (ticketDateForPaidFilter) {
+    const { data: pendingRows, error: pendingErr } = await admin
+      .from("queue_tickets")
+      .select("lab_request_id")
+      .eq("counter_id", counterId)
+      .eq("ticket_date", ticketDateForPaidFilter)
+      .not("lab_request_id", "is", null);
+    if (pendingErr) {
+      return NextResponse.json({ error: pendingErr.message }, { status: 500 });
+    }
+    const linkedIds = [
+      ...new Set(
+        ((pendingRows ?? []) as Array<{ lab_request_id?: string | null }>)
+          .map((r) => String(r.lab_request_id ?? "").trim())
+          .filter(Boolean),
+      ),
+    ];
+    if (linkedIds.length > 0) {
+      const { ids: paidIds, error: paidErr } = await adminLabRequestIdsWithLabSales(admin, linkedIds);
+      if (paidErr) {
+        return NextResponse.json({ error: paidErr }, { status: 500 });
+      }
+      const unpaidIds = linkedIds.filter((id) => !paidIds.has(id));
+      if (unpaidIds.length > 0) {
+        base = base.not("lab_request_id", "in", `(${unpaidIds.join(",")})`);
+      }
+    }
   }
 
   const q = qRaw.replace(/\s+/g, " ").trim();

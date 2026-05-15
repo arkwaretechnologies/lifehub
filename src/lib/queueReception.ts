@@ -475,6 +475,7 @@ export async function prepareReceptionLabCheckinFromApi(body: {
   priorNotes: string | null;
   patient: { id: number; name: string; contact_no: string | null };
   labTestIds: string[];
+  labPackageIds?: number[];
 }): Promise<ReceptionPrepareLabApiResult> {
   const res = await fetch("/api/reception/queue-ticket", {
     method: "PATCH",
@@ -486,6 +487,7 @@ export async function prepareReceptionLabCheckinFromApi(body: {
       priorNotes: body.priorNotes,
       patient: body.patient,
       labTestIds: body.labTestIds,
+      labPackageIds: body.labPackageIds ?? [],
     }),
   });
   const json = (await res.json().catch(() => ({}))) as {
@@ -500,6 +502,44 @@ export async function prepareReceptionLabCheckinFromApi(body: {
     error: null,
     transId: json.transId,
     labRequestId: json.labRequestId,
+  };
+}
+
+export async function completeEntranceAfterLabIntakeFromApi(body: {
+  entranceTicketId: string;
+  transId: string;
+  labRequestId: string;
+  patient: { id: number; name: string; contact_no: string | null };
+}): Promise<{
+  error: string | null;
+  transId?: string;
+  labQueueDisplay?: string;
+  labQueueTicketId?: string;
+}> {
+  const res = await fetch("/api/reception/lab-intake-complete-entrance", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      entranceTicketId: body.entranceTicketId,
+      transId: body.transId,
+      labRequestId: body.labRequestId,
+      patient: body.patient,
+    }),
+  });
+  const json = (await res.json().catch(() => ({}))) as {
+    error?: string;
+    transId?: string;
+    labQueueDisplay?: string;
+    labQueueTicketId?: string;
+  };
+  if (!res.ok) {
+    return { error: json.error ?? `Request failed (${res.status})` };
+  }
+  return {
+    error: null,
+    transId: json.transId,
+    labQueueDisplay: json.labQueueDisplay,
+    labQueueTicketId: json.labQueueTicketId,
   };
 }
 

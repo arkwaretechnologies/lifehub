@@ -188,6 +188,48 @@ export async function fetchLabRequestsWithoutLabSaleForEncounters(
 }
 
 /**
+ * Visit-linked lab orders (`lab_requests.encounter_id` set) that have no `lab_sales` row yet
+ * (e.g. reception “laboratory only” intake pending cashier payment).
+ */
+export async function fetchEncounterTransIdsWithUnpaidLabRequests(): Promise<{
+  ids: Set<string>;
+  error: string | null;
+}> {
+  const sold = await fetchLabRequestIdsReferencedInLabSales();
+  if (sold.error) {
+    return { ids: new Set(), error: sold.error };
+  }
+
+  const out = new Set<string>();
+  let from = 0;
+  for (;;) {
+    const { data, error } = await supabase
+      .from(LAB_REQUESTS_TABLE)
+      .select("id, encounter_id")
+      .not("encounter_id", "is", null)
+      .range(from, from + PAGE_SIZE - 1);
+
+    if (error) {
+      return { ids: new Set(), error: error.message };
+    }
+
+    const rows = (data ?? []) as Array<{ id?: string; encounter_id?: string | null }>;
+    for (const r of rows) {
+      const rid = String(r.id ?? "").trim();
+      const enc = String(r.encounter_id ?? "").trim();
+      if (!rid || !enc) continue;
+      if (sold.set.has(rid)) continue;
+      out.add(enc.toLowerCase());
+    }
+
+    if (rows.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+
+  return { ids: out, error: null };
+}
+
+/**
  * Walk-in lab orders: `lab_requests` with no visit (`encounter_id` null), not yet on `lab_sales`.
  */
 export async function fetchStandaloneLabRequestsWithoutLabSaleForPatient(patientId: number): Promise<{

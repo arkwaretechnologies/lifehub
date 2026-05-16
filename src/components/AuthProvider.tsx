@@ -15,6 +15,8 @@ import {
   type MenuAccessState,
 } from "@/lib/menuAccess";
 
+const SESSION_KEY = "lifehub_session";
+
 interface AuthContextType {
   user: any | null;
   profile: UserProfile | null;
@@ -35,11 +37,40 @@ const AuthContext = createContext<AuthContextType>({
   refreshMenuAccess: async () => {},
 });
 
-function persistSession(user: any, profile: any, menuAccess: MenuAccessState) {
-  localStorage.setItem(
-    "lifehub_session",
-    JSON.stringify({ user, profile, menuAccess }),
-  );
+type PersistedSession = {
+  token: string;
+  user?: unknown;
+  profile?: unknown;
+  menuAccess?: MenuAccessState;
+};
+
+function persistSession(payload: PersistedSession) {
+  localStorage.setItem(SESSION_KEY, JSON.stringify(payload));
+}
+
+async function fetchSessionWithToken(token: string): Promise<{
+  user: unknown;
+  profile: UserProfile;
+  menuAccess: MenuAccessState;
+} | null> {
+  const res = await fetch("/api/auth/session", {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  if (!res.ok) return null;
+  const json = (await res.json().catch(() => null)) as {
+    user?: unknown;
+    profile?: UserProfile;
+    menuAccess?: MenuAccessState;
+    error?: string;
+  } | null;
+  if (!json || json.error || !json.profile) return null;
+  return {
+    user: json.user ?? null,
+    profile: json.profile,
+    menuAccess: json.menuAccess ?? defaultMenuAccess,
+  };
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -50,26 +81,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const init = async () => {
-      const savedSession = localStorage.getItem("lifehub_session");
+      const savedSession = localStorage.getItem(SESSION_KEY);
       if (!savedSession) {
         setLoading(false);
         return;
       }
       try {
-        const data = JSON.parse(savedSession);
-        setUser(data.user);
-        setProfile(data.profile);
-        if (data.menuAccess) {
-          setMenuAccess(data.menuAccess);
-        } else if (data.profile?.role) {
-          const access = await fetchMenuAccessForRole(String(data.profile.role));
-          setMenuAccess(access);
-          persistSession(data.user, data.profile, access);
-        } else {
-          setMenuAccess(defaultMenuAccess);
+        const data = JSON.parse(savedSession) as PersistedSession & Record<string, unknown>;
+        if (!data.token || typeof data.token !== "string") {
+          localStorage.removeItem(SESSION_KEY);
+          setLoading(false);
+          return;
         }
+
+        const fresh = await fetchSessionWithToken(data.token);
+        if (!fresh) {
+          localStorage.removeItem(SESSION_KEY);
+          setUser(null);
+          setProfile(null);
+          setMenuAccess(defaultMenuAccess);
+          setLoading(false);
+          return;
+        }
+
+        setUser(fresh.user);
+        setProfile(fresh.profile);
+        setMenuAccess(fresh.menuAccess);
+        persistSession({
+          token: data.token,
+          user: fresh.user,
+          profile: fresh.profile,
+          menuAccess: fresh.menuAccess,
+        });
       } catch {
-        localStorage.removeItem("lifehub_session");
+        localStorage.removeItem(SESSION_KEY);
       } finally {
         setLoading(false);
       }
@@ -78,34 +123,70 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = async (userData: any) => {
+    const token = typeof userData?.token === "string" ? userData.token : "";
+    if (!token) {
+      throw new Error("Missing session token from login response.");
+    }
     setUser(userData.user);
     setProfile(userData.profile);
-    const access = userData.profile?.role
-      ? await fetchMenuAccessForRole(String(userData.profile.role))
-      : defaultMenuAccess;
+    const access =
+      userData.menuAccess != null
+        ? (userData.menuAccess as MenuAccessState)
+        : userData.profile?.role
+          ? await fetchMenuAccessForRole(String(userData.profile.role))
+          : defaultMenuAccess;
     setMenuAccess(access);
-    persistSession(userData.user, userData.profile, access);
+    persistSession({
+      token,
+      user: userData.user,
+      profile: userData.profile,
+      menuAccess: access,
+    });
   };
 
   const signOut = () => {
     setUser(null);
     setProfile(null);
     setMenuAccess(defaultMenuAccess);
-    localStorage.removeItem("lifehub_session");
+    localStorage.removeItem(SESSION_KEY);
   };
 
   const refreshMenuAccess = useCallback(async () => {
-    const role = profile?.role;
-    if (!role) {
+    const raw = typeof window !== "undefined" ? localStorage.getItem(SESSION_KEY) : null;
+    if (!raw) {
       setMenuAccess(defaultMenuAccess);
       return;
     }
-    const access = await fetchMenuAccessForRole(String(role));
-    setMenuAccess(access);
-    if (user && profile) {
-      persistSession(user, profile, access);
+    let token: string;
+    try {
+      token = (JSON.parse(raw) as PersistedSession).token;
+    } catch {
+      setMenuAccess(defaultMenuAccess);
+      return;
     }
-  }, [profile?.role, user, profile]);
+    if (!token) {
+      setMenuAccess(defaultMenuAccess);
+      return;
+    }
+
+    const fresh = await fetchSessionWithToken(token);
+    if (!fresh) {
+      setUser(null);
+      setProfile(null);
+      setMenuAccess(defaultMenuAccess);
+      localStorage.removeItem(SESSION_KEY);
+      return;
+    }
+    setUser(fresh.user);
+    setProfile(fresh.profile);
+    setMenuAccess(fresh.menuAccess);
+    persistSession({
+      token,
+      user: fresh.user,
+      profile: fresh.profile,
+      menuAccess: fresh.menuAccess,
+    });
+  }, []);
 
   return (
     <AuthContext.Provider

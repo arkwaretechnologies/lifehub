@@ -13,7 +13,6 @@ import {
   alpha,
 } from "@mui/material";
 import { keyframes } from "@mui/system";
-import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/components/AuthProvider";
 import { firstAllowedHref } from "@/lib/navPermissionCatalog";
 import { LIFEHUB_LOGO_SRC } from "@/lib/lifehubLogo";
@@ -67,38 +66,41 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const { data, error: rpcError } = await supabase.rpc("authenticate_user", {
-        identifier: identifier.trim(),
-        input_password: password,
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          identifier: identifier.trim(),
+          input_password: password,
+        }),
       });
+      const json = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        token?: string;
+        user?: unknown;
+        profile?: unknown;
+        menuAccess?: { rbac?: boolean; pageKeys?: string[] };
+      };
 
-      if (rpcError) {
-        setError(rpcError.message);
+      if (!res.ok) {
+        setError(json.error ?? `Request failed (${res.status})`);
         return;
       }
 
-      if (!data) {
+      if (!json.token || !json.profile) {
         setError("Invalid username or password.");
         return;
       }
 
-      await login(data);
+      await login(json);
       let dest = "/dashboard";
-      try {
-        const raw = localStorage.getItem("lifehub_session");
-        if (raw) {
-          const { menuAccess } = JSON.parse(raw) as { menuAccess?: { rbac?: boolean; pageKeys?: string[] } };
-          if (menuAccess?.rbac && menuAccess.pageKeys?.length) {
-            const href = firstAllowedHref(menuAccess.pageKeys);
-            if (href) dest = href;
-          }
-        }
-      } catch {
-        /* keep /dashboard */
+      if (json.menuAccess?.rbac && json.menuAccess.pageKeys?.length) {
+        const href = firstAllowedHref(json.menuAccess.pageKeys);
+        if (href) dest = href;
       }
       router.push(dest);
-    } catch {
-      setError("An unexpected error occurred.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An unexpected error occurred.");
     } finally {
       setLoading(false);
     }

@@ -16,6 +16,7 @@
     "@mui/material-nextjs": "^7.3.9",
     "@supabase/supabase-js": "^2.101.1",
     "bcryptjs": "^3.0.3",
+    "jose": "^6.2.3",
     "next": "16.2.2",
     "pdf-lib": "^1.17.1",
     "qrcode": "^1.5.4",

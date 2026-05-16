@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { getMenuAccessForRoleName } from "@/lib/roleMenuAccessServer";
 
 function adminClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -26,29 +27,9 @@ export async function GET(req: Request) {
     );
   }
 
-  const { data: role, error: roleError } = await supabase
-    .from("roles")
-    .select("role_id")
-    .ilike("name", roleName)
-    .maybeSingle();
-
-  if (roleError) {
-    return NextResponse.json({ error: roleError.message }, { status: 400 });
+  const menuAccess = await getMenuAccessForRoleName(supabase, roleName);
+  if (menuAccess.rbac) {
+    return NextResponse.json({ rbac: true, pageKeys: menuAccess.pageKeys });
   }
-
-  if (!role) {
-    return NextResponse.json({ rbac: false, pageKeys: [] as string[] });
-  }
-
-  const { data: pages, error: pagesError } = await supabase
-    .from("role_pages")
-    .select("page_key")
-    .eq("role_id", role.role_id);
-
-  if (pagesError) {
-    return NextResponse.json({ error: pagesError.message }, { status: 400 });
-  }
-
-  const pageKeys = [...new Set((pages ?? []).map((p) => String(p.page_key)))];
-  return NextResponse.json({ rbac: true, pageKeys });
+  return NextResponse.json({ rbac: false, pageKeys: [] as string[] });
 }

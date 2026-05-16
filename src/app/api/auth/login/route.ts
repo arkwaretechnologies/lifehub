@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { signSessionToken } from "@/lib/authJwt";
+import { allowRateLimit, clientIpFromRequest } from "@/lib/loginRateLimit";
 import { getMenuAccessForRoleName } from "@/lib/roleMenuAccessServer";
 import { numericSessionUserId, numericUserIdFromRecord } from "@/lib/sessionUserId";
 
@@ -92,6 +93,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "identifier and input_password are required." }, { status: 400 });
   }
 
+  const ip = clientIpFromRequest(req);
+  const idLower = identifier.toLowerCase();
+  if (
+    !allowRateLimit(`login:ip:${ip}`, 80) ||
+    !allowRateLimit(`login:user:${ip}:${idLower}`, 25)
+  ) {
+    return NextResponse.json({ error: "Too many login attempts. Try again later." }, { status: 429 });
+  }
+
   const admin = adminClient();
   if (!admin) {
     return NextResponse.json({ error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." }, { status: 500 });
@@ -142,7 +152,10 @@ export async function POST(req: Request) {
   try {
     signed = await signSessionToken(userId);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "JWT signing failed (check JWT_SECRET).";
+    let msg = e instanceof Error ? e.message : "JWT signing failed.";
+    if (process.env.NODE_ENV === "production" && /jwt_secret/i.test(msg)) {
+      msg = "Server configuration error.";
+    }
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 

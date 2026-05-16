@@ -37,6 +37,7 @@ import {
   isNavSubgroup,
   type PermissionModule,
 } from "@/lib/navPermissionCatalog";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 
 type RoleRow = {
   role_id: number;
@@ -96,7 +97,7 @@ export default function RolesPage() {
     setListError("");
     setListLoading(true);
     try {
-      const res = await fetch("/api/roles");
+      const res = await authenticatedFetch("/api/roles");
       const json = (await res.json().catch(() => null)) as
         | { roles?: RoleRow[]; error?: string }
         | null;
@@ -119,7 +120,7 @@ export default function RolesPage() {
     setPagesLoading(true);
     setPagesDirty(false);
     try {
-      const res = await fetch(`/api/roles/${roleId}/pages`);
+      const res = await authenticatedFetch(`/api/roles/${roleId}/pages`);
       const json = (await res.json().catch(() => null)) as
         | { pageKeys?: string[]; error?: string }
         | null;
@@ -181,7 +182,7 @@ export default function RolesPage() {
     setPagesSaving(true);
     setPagesError("");
     try {
-      const res = await fetch(`/api/roles/${selectedId}/pages`, {
+      const res = await authenticatedFetch(`/api/roles/${selectedId}/pages`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pageKeys: Array.from(pageKeysDraft) }),
@@ -219,7 +220,7 @@ export default function RolesPage() {
     setAddSaving(true);
     setAddError("");
     try {
-      const res = await fetch("/api/roles", {
+      const res = await authenticatedFetch("/api/roles", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -264,7 +265,7 @@ export default function RolesPage() {
     setEditSaving(true);
     setEditError("");
     try {
-      const res = await fetch(`/api/roles/${editingRole.role_id}`, {
+      const res = await authenticatedFetch(`/api/roles/${editingRole.role_id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -300,7 +301,7 @@ export default function RolesPage() {
     setDeleteLoading(true);
     setDeleteError("");
     try {
-      const res = await fetch(`/api/roles/${deleteTarget.role_id}`, { method: "DELETE" });
+      const res = await authenticatedFetch(`/api/roles/${deleteTarget.role_id}`, { method: "DELETE" });
       const json = (await res.json().catch(() => null)) as { error?: string } | null;
       if (!res.ok || json?.error) {
         setDeleteError(json?.error || "Failed to delete role.");

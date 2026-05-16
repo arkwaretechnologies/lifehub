@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { assertAdminSession } from "@/lib/adminRole";
 import { hashPasswordForUsersTable } from "@/lib/userPasswordHash";
 
 function adminClient() {
@@ -22,6 +23,9 @@ export async function POST(req: Request) {
       { status: 500 },
     );
   }
+
+  const forbidden = await assertAdminSession(req, supabase);
+  if (forbidden) return forbidden;
 
   const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
   if (!body?.username || !body?.fullname || !body?.role) {

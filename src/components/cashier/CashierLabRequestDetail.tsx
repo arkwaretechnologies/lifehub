@@ -28,6 +28,7 @@ import {
   consultTableSx,
 } from "@/components/consultation/consultListTableStyles";
 import { fetchEncounterSummaryByTransId, fetchPatientListRowById } from "@/lib/consultationData";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
 import {
   fetchLabRequestHeaderById,
@@ -296,7 +297,7 @@ export default function CashierLabRequestDetail() {
         const pid = Number.parseInt(pidStr, 10);
         const encSnap = await fetchEncounterSummaryByTransId(encId);
         const receptionQueueNoBeforePay = (encSnap.encounter?.queueNo ?? "").trim();
-        const queueRes = await fetch("/api/cashier/lab-queue-ticket", {
+        const queueRes = await authenticatedFetch("/api/cashier/lab-queue-ticket", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({

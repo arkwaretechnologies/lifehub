@@ -39,6 +39,7 @@ import {
   Typography,
 } from "@mui/material";
 import { useAuth } from "@/components/AuthProvider";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import type { ConsultationPatient } from "@/components/consultation/consultationTypes";
 import MedicationProductAutocomplete from "@/components/consultation/MedicationProductAutocomplete";
 import { consultFormControlLabelSx } from "@/components/consultation/ConsultationSectionTitle";
@@ -1052,7 +1053,7 @@ export default function PlansTreatmentPanel({
     setLabResultsError("");
     void (async () => {
       try {
-        const res = await fetch(`/api/laboratory/lab-request?labRequestId=${encodeURIComponent(id)}`, { cache: "no-store" });
+        const res = await authenticatedFetch(`/api/laboratory/lab-request?labRequestId=${encodeURIComponent(id)}`, { cache: "no-store" });
         const json = (await res.json().catch(() => ({}))) as { error?: string; items?: LabRequestItemView[] };
         if (cancelled) return;
         if (!res.ok) {

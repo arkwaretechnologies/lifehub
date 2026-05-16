@@ -6,11 +6,13 @@ export type MenuAccessState = {
 
 export const defaultMenuAccess: MenuAccessState = { rbac: false, pageKeys: [] };
 
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
+
 export async function fetchMenuAccessForRole(roleName: string): Promise<MenuAccessState> {
   const trimmed = roleName.trim();
   if (!trimmed) return defaultMenuAccess;
   try {
-    const res = await fetch(
+    const res = await authenticatedFetch(
       `/api/role-menu-access?roleName=${encodeURIComponent(trimmed)}`,
       { cache: "no-store" },
     );

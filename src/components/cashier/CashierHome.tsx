@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { LIFEHUB_LOGO_SRC } from "@/lib/lifehubLogo";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -88,7 +89,7 @@ const CASHIER_AUTONAV_SUPPRESS_KEY = "cashier_autonav_suppress";
 async function tryNavigateFromScannedUuid(qRaw: string, router: ReturnType<typeof useRouter>): Promise<void> {
   const q = qRaw.trim();
   const ql = q.toLowerCase();
-  const res = await fetch(`/api/cashier/lab-request-exists?id=${encodeURIComponent(q)}`, { cache: "no-store" });
+  const res = await authenticatedFetch(`/api/cashier/lab-request-exists?id=${encodeURIComponent(q)}`, { cache: "no-store" });
   if (!res.ok) return;
   const j = (await res.json().catch(() => ({}))) as { ok?: boolean };
   if (!j.ok) return;

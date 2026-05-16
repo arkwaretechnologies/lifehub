@@ -23,6 +23,7 @@ import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
 import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
 import type { QueueTicketStatus } from "@/lib/queueReception";
 import type { LabQueueRow } from "@/app/api/laboratory/lab-queue/route";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 
 const statusColor: Record<
   QueueTicketStatus,
@@ -48,7 +49,7 @@ export default function LaboratoryPage() {
     setError("");
     setLoading(true);
     try {
-      const res = await fetch("/api/laboratory/lab-queue", { cache: "no-store" });
+      const res = await authenticatedFetch("/api/laboratory/lab-queue", { cache: "no-store" });
       const json = (await res.json().catch(() => ({}))) as {
         error?: string;
         rows?: LabQueueRow[];
@@ -82,7 +83,7 @@ export default function LaboratoryPage() {
     setError("");
     setActionBusyId(id);
     try {
-      const res = await fetch("/api/reception/queue-ticket", {
+      const res = await authenticatedFetch("/api/reception/queue-ticket", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticketId: id, action: "call" }),

@@ -34,6 +34,7 @@ import SearchIcon from "@mui/icons-material/Search";
 import MailOutlineIcon from "@mui/icons-material/MailOutline";
 import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
 import { useAuth } from "@/components/AuthProvider";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { DRAWER_WIDTH } from "@/components/Sidebar";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -76,7 +77,7 @@ export default function TopBar({ onMenuToggle }: TopBarProps) {
     setProfileLoading(true);
     setProfileError("");
     try {
-      const res = await fetch("/api/user-profile", {
+      const res = await authenticatedFetch("/api/user-profile", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId }),

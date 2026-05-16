@@ -34,6 +34,7 @@ import SearchIcon from "@mui/icons-material/Search";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import type { ImagingCatalogRow } from "@/lib/imagingCatalog";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 
 type ImagingForm = {
   code: string;
@@ -158,7 +159,7 @@ export default function SettingsLaboratoryImagingPage() {
     setListError("");
     setLoading(true);
     try {
-      const res = await fetch("/api/settings/laboratory/imaging");
+      const res = await authenticatedFetch("/api/settings/laboratory/imaging");
       const json = (await res.json().catch(() => null)) as
         | { imaging?: ImagingCatalogRow[]; error?: string }
         | null;
@@ -240,7 +241,7 @@ export default function SettingsLaboratoryImagingPage() {
     setAddSaving(true);
     setAddError("");
     try {
-      const res = await fetch("/api/settings/laboratory/imaging", {
+      const res = await authenticatedFetch("/api/settings/laboratory/imaging", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(v.body),
@@ -269,7 +270,7 @@ export default function SettingsLaboratoryImagingPage() {
     setEditSaving(true);
     setEditError("");
     try {
-      const res = await fetch(`/api/settings/laboratory/imaging/${encodeURIComponent(editingId)}`, {
+      const res = await authenticatedFetch(`/api/settings/laboratory/imaging/${encodeURIComponent(editingId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(v.body),
@@ -294,7 +295,7 @@ export default function SettingsLaboratoryImagingPage() {
     setDeleteLoading(true);
     setDeleteError("");
     try {
-      const res = await fetch(`/api/settings/laboratory/imaging/${encodeURIComponent(deleteTarget.id)}`, {
+      const res = await authenticatedFetch(`/api/settings/laboratory/imaging/${encodeURIComponent(deleteTarget.id)}`, {
         method: "DELETE",
       });
       const json = (await res.json().catch(() => null)) as { error?: string } | null;

@@ -39,6 +39,7 @@ import SearchIcon from "@mui/icons-material/Search";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import type { LabCategoryRow, LabTestCatalogItem } from "@/lib/labTests";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 
 type TestForm = {
   category_id: string;
@@ -149,8 +150,8 @@ export default function SettingsLabTestsPage() {
     setLoading(true);
     try {
       const [cRes, tRes] = await Promise.all([
-        fetch("/api/settings/laboratory/categories"),
-        fetch("/api/settings/laboratory/lab-tests"),
+        authenticatedFetch("/api/settings/laboratory/categories"),
+        authenticatedFetch("/api/settings/laboratory/lab-tests"),
       ]);
       const cJson = (await cRes.json().catch(() => null)) as
         | { categories?: LabCategoryRow[]; error?: string }
@@ -304,7 +305,7 @@ export default function SettingsLabTestsPage() {
     setAddSaving(true);
     setAddError("");
     try {
-      const res = await fetch("/api/settings/laboratory/lab-tests", {
+      const res = await authenticatedFetch("/api/settings/laboratory/lab-tests", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(built.body),
@@ -333,7 +334,7 @@ export default function SettingsLabTestsPage() {
     setEditSaving(true);
     setEditError("");
     try {
-      const res = await fetch(`/api/settings/laboratory/lab-tests/${encodeURIComponent(editingId)}`, {
+      const res = await authenticatedFetch(`/api/settings/laboratory/lab-tests/${encodeURIComponent(editingId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(built.body),
@@ -360,7 +361,7 @@ export default function SettingsLabTestsPage() {
     setDeleteLoading(true);
     setDeleteError("");
     try {
-      const res = await fetch(`/api/settings/laboratory/lab-tests/${encodeURIComponent(id)}`, {
+      const res = await authenticatedFetch(`/api/settings/laboratory/lab-tests/${encodeURIComponent(id)}`, {
         method: "DELETE",
       });
       const json = (await res.json().catch(() => null)) as { error?: string } | null;

@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { userHasAdminRole } from "@/lib/adminRole";
+import { getBearerSessionUserId } from "@/lib/requireSession";
 
 export async function POST(req: Request) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -12,16 +14,32 @@ export async function POST(req: Request) {
     );
   }
 
-  const body = (await req.json().catch(() => null)) as { userId?: number } | null;
-  const userId = body?.userId;
+  const body = (await req.json().catch(() => null)) as { userId?: unknown } | null;
+  const rawUserId = body?.userId;
+  const userId =
+    typeof rawUserId === "number" && Number.isFinite(rawUserId)
+      ? Math.trunc(rawUserId)
+      : typeof rawUserId === "string"
+        ? Number.parseInt(rawUserId.trim(), 10)
+        : NaN;
 
-  if (!userId || typeof userId !== "number") {
+  if (!Number.isFinite(userId) || userId <= 0) {
     return NextResponse.json({ error: "Missing userId." }, { status: 400 });
   }
 
   const supabaseAdmin = createClient(url, serviceRoleKey, {
     auth: { persistSession: false },
   });
+
+  const sessionUserId = await getBearerSessionUserId(req);
+  if (sessionUserId == null) {
+    return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+  }
+  const adminOk =
+    sessionUserId === userId || (await userHasAdminRole(supabaseAdmin, sessionUserId));
+  if (!adminOk) {
+    return NextResponse.json({ error: "Forbidden." }, { status: 403 });
+  }
 
   const { data, error } = await supabaseAdmin
     .from("users")

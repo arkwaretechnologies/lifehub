@@ -34,6 +34,7 @@ import SearchIcon from "@mui/icons-material/Search";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import type { LabCategoryRow } from "@/lib/labTests";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 
 type CategoryForm = {
   code: string;
@@ -130,7 +131,7 @@ export default function SettingsLabCategoriesPage() {
     setListError("");
     setLoading(true);
     try {
-      const res = await fetch("/api/settings/laboratory/categories");
+      const res = await authenticatedFetch("/api/settings/laboratory/categories");
       const json = (await res.json().catch(() => null)) as
         | { categories?: LabCategoryRow[]; error?: string }
         | null;
@@ -190,7 +191,7 @@ export default function SettingsLabCategoriesPage() {
     setAddSaving(true);
     setAddError("");
     try {
-      const res = await fetch("/api/settings/laboratory/categories", {
+      const res = await authenticatedFetch("/api/settings/laboratory/categories", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -233,7 +234,7 @@ export default function SettingsLabCategoriesPage() {
     setEditSaving(true);
     setEditError("");
     try {
-      const res = await fetch(`/api/settings/laboratory/categories/${editingId}`, {
+      const res = await authenticatedFetch(`/api/settings/laboratory/categories/${editingId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -266,7 +267,7 @@ export default function SettingsLabCategoriesPage() {
     setDeleteLoading(true);
     setDeleteError("");
     try {
-      const res = await fetch(`/api/settings/laboratory/categories/${id}`, { method: "DELETE" });
+      const res = await authenticatedFetch(`/api/settings/laboratory/categories/${id}`, { method: "DELETE" });
       const json = (await res.json().catch(() => null)) as { error?: string } | null;
       if (!res.ok || json?.error) {
         setDeleteError(json?.error ?? "Could not delete category.");

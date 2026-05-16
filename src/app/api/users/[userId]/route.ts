@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { userHasAdminRole } from "@/lib/adminRole";
 import { hashPasswordForUsersTable } from "@/lib/userPasswordHash";
+import { getBearerSessionUserId } from "@/lib/requireSession";
 
 function adminClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -22,10 +24,21 @@ export async function PATCH(
     );
   }
 
+  const sessionUserId = await getBearerSessionUserId(req);
+  if (sessionUserId == null) {
+    return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+  }
+
   const { userId } = await context.params;
   const id = Number.parseInt(userId, 10);
   if (!Number.isFinite(id)) {
     return NextResponse.json({ error: "Invalid user id." }, { status: 400 });
+  }
+
+  const isSelf = sessionUserId === id;
+  const isAdmin = await userHasAdminRole(supabase, sessionUserId);
+  if (!isSelf && !isAdmin) {
+    return NextResponse.json({ error: "Forbidden." }, { status: 403 });
   }
 
   const body = (await req.json().catch(() => null)) as { password?: string } | null;

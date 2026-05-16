@@ -1,4 +1,5 @@
 import type { LabRequestHeaderView, LabRequestItemView } from "@/app/api/laboratory/lab-request/route";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { formatDateMMDDYYYY, formatLabTime } from "@/lib/dateDisplay";
 import {
   isAllowedLabResultsTemplateCode,
@@ -243,7 +244,7 @@ function drawGroupResultsForTemplate(
 }
 
 async function fetchLabResultTemplateBytes(code: string): Promise<Uint8Array | null> {
-  const res = await fetch(`/api/laboratory/lab-result-template?code=${encodeURIComponent(code)}`, {
+  const res = await authenticatedFetch(`/api/laboratory/lab-result-template?code=${encodeURIComponent(code)}`, {
     cache: "no-store",
   });
   if (!res.ok) return null;

@@ -21,6 +21,7 @@ import {
   Typography,
 } from "@mui/material";
 import { fetchEncounterSummaryByTransId, fetchEncounterWorkspacePatient } from "@/lib/consultationData";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import type { ConsultationPatient } from "@/components/consultation/consultationTypes";
 import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
 import {
@@ -494,7 +495,7 @@ export default function CashierEncounterDetail() {
         if (pid == null) throw new Error("Patient id missing for laboratory queue ticket.");
         const encSnap = await fetchEncounterSummaryByTransId(encounterId);
         const receptionQueueNoBeforePay = (encSnap.encounter?.queueNo ?? "").trim();
-        const queueRes = await fetch("/api/cashier/lab-queue-ticket", {
+        const queueRes = await authenticatedFetch("/api/cashier/lab-queue-ticket", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({

@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabaseClient";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { sanitizePatientSearchQuery } from "@/lib/patientsCatalog";
 import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
 
@@ -197,7 +198,7 @@ export async function announceQueueNumber(
 
   if (typeof window !== "undefined") {
     try {
-      const res = await fetch("/api/tts/elevenlabs", {
+      const res = await authenticatedFetch("/api/tts/elevenlabs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
@@ -275,7 +276,7 @@ export async function fetchReceptionQueueStateFromApi(): Promise<ReceptionQueueA
     tickets: [],
   };
 
-  const res = await fetch("/api/reception/queue-state", { cache: "no-store" });
+  const res = await authenticatedFetch("/api/reception/queue-state", { cache: "no-store" });
   const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
 
   if (!res.ok) {
@@ -311,7 +312,7 @@ export type ReceptionPatientSearchRow = {
 export async function searchPatientsFromApi(q: string): Promise<{ rows: ReceptionPatientSearchRow[]; error: string | null }> {
   const safe = sanitizePatientSearchQuery(q);
   if (safe.length < 2) return { rows: [], error: null };
-  const res = await fetch(`/api/reception/patient-search?q=${encodeURIComponent(safe)}`, { cache: "no-store" });
+  const res = await authenticatedFetch(`/api/reception/patient-search?q=${encodeURIComponent(safe)}`, { cache: "no-store" });
   const json = (await res.json().catch(() => ({}))) as { error?: string; rows?: ReceptionPatientSearchRow[] };
   if (!res.ok) return { rows: [], error: json.error ?? `Request failed (${res.status})` };
   return { rows: json.rows ?? [], error: null };
@@ -326,7 +327,7 @@ export async function createPatientFromApi(input: {
   email_address?: string | null;
   occupation?: string | null;
 }): Promise<{ patient: ReceptionPatientSearchRow | null; error: string | null }> {
-  const res = await fetch("/api/reception/patient-create", {
+  const res = await authenticatedFetch("/api/reception/patient-create", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
@@ -410,7 +411,7 @@ export async function patchReceptionQueueTicket(
     body.doctorCounterCode = triage.doctorCounterCode;
   }
 
-  const res = await fetch("/api/reception/queue-ticket", {
+  const res = await authenticatedFetch("/api/reception/queue-ticket", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -447,7 +448,7 @@ export async function callQueueForEncounterFromApi(
   transId: string,
   physicianUserId: number,
 ): Promise<CallQueueForEncounterApiResult> {
-  const res = await fetch("/api/reception/queue-call-by-encounter", {
+  const res = await authenticatedFetch("/api/reception/queue-call-by-encounter", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ transId: transId.trim(), physicianUserId }),
@@ -477,7 +478,7 @@ export async function prepareReceptionLabCheckinFromApi(body: {
   labTestIds: string[];
   labPackageIds?: number[];
 }): Promise<ReceptionPrepareLabApiResult> {
-  const res = await fetch("/api/reception/queue-ticket", {
+  const res = await authenticatedFetch("/api/reception/queue-ticket", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -516,7 +517,7 @@ export async function completeEntranceAfterLabIntakeFromApi(body: {
   labQueueDisplay?: string;
   labQueueTicketId?: string;
 }> {
-  const res = await fetch("/api/reception/lab-intake-complete-entrance", {
+  const res = await authenticatedFetch("/api/reception/lab-intake-complete-entrance", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -554,7 +555,7 @@ export async function finalizeReceptionLabCheckinFromApi(body: {
   destinationQueueDisplay?: string;
   destinationCounterCode?: string;
 }> {
-  const res = await fetch("/api/reception/lab-checkin-finalize", {
+  const res = await authenticatedFetch("/api/reception/lab-checkin-finalize", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

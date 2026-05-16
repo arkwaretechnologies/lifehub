@@ -27,6 +27,7 @@ import AccessTimeIcon from "@mui/icons-material/AccessTime";
 import BadgeOutlinedIcon from "@mui/icons-material/BadgeOutlined";
 import LocalHospitalOutlinedIcon from "@mui/icons-material/LocalHospitalOutlined";
 import { useAuth } from "@/components/AuthProvider";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import type { DashboardSummary } from "@/lib/dashboardSummary";
 
 const monthDays = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
@@ -154,7 +155,7 @@ export default function DashboardPage() {
     setLoadError("");
     setLoading(true);
     try {
-      const res = await fetch("/api/dashboard/summary", { cache: "no-store" });
+      const res = await authenticatedFetch("/api/dashboard/summary", { cache: "no-store" });
       const json = (await res.json().catch(() => ({}))) as DashboardSummary & { error?: string };
       if (!res.ok) {
         setData(null);

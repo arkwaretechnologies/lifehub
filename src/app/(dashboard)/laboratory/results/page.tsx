@@ -42,6 +42,7 @@ import type { QueueTicketStatus } from "@/lib/queueReception";
 import type { LabQueueRow } from "@/app/api/laboratory/lab-queue/route";
 import type { LabRequestHeaderView, LabRequestItemView } from "@/app/api/laboratory/lab-request/route";
 import { formatDateMMDDYYYY, formatLabTime } from "@/lib/dateDisplay";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { mergeAutoFlagIntoLabResultRow } from "@/lib/labResultAutoFlag";
 import { openLabResultsPrintWindow } from "@/lib/labResultsPrint";
 
@@ -88,7 +89,7 @@ export default function LabResultsPage() {
     setError("");
     setLoading(true);
     try {
-      const res = await fetch("/api/laboratory/lab-queue", { cache: "no-store" });
+      const res = await authenticatedFetch("/api/laboratory/lab-queue", { cache: "no-store" });
       const json = (await res.json().catch(() => ({}))) as { error?: string; rows?: LabQueueRow[] };
       if (!res.ok) {
         setError(json.error ?? `Request failed (${res.status})`);
@@ -113,7 +114,7 @@ export default function LabResultsPage() {
     if (!labRequestId) return;
     setReqLoading(true);
     try {
-      const res = await fetch(`/api/laboratory/lab-request?labRequestId=${encodeURIComponent(labRequestId)}`, {
+      const res = await authenticatedFetch(`/api/laboratory/lab-request?labRequestId=${encodeURIComponent(labRequestId)}`, {
         cache: "no-store",
       });
       const json = (await res.json().catch(() => ({}))) as {
@@ -175,7 +176,7 @@ export default function LabResultsPage() {
       setQueueSearchLoading(true);
       try {
         const url = `/api/laboratory/lab-queue?q=${encodeURIComponent(q)}&scope=all&days=90&page=${queueSearchPage}&pageSize=${queueSearchPageSize}`;
-        const res = await fetch(url, { cache: "no-store" });
+        const res = await authenticatedFetch(url, { cache: "no-store" });
         const json = (await res.json().catch(() => ({}))) as { error?: string; rows?: LabQueueRow[]; count?: number };
         if (cancelled) return;
         if (!res.ok) {
@@ -227,7 +228,7 @@ export default function LabResultsPage() {
     setError("");
     setActionBusyId(id);
     try {
-      const res = await fetch("/api/reception/queue-ticket", {
+      const res = await authenticatedFetch("/api/reception/queue-ticket", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticketId: id, action: "call" }),
@@ -251,7 +252,7 @@ export default function LabResultsPage() {
     setReqError("");
     setItemSavingId(id);
     try {
-      const res = await fetch("/api/laboratory/specimen-item", {
+      const res = await authenticatedFetch("/api/laboratory/specimen-item", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ labRequestItemId: id, collected }),
@@ -279,7 +280,7 @@ export default function LabResultsPage() {
     setReqError("");
     setItemSavingId(id);
     try {
-      const res = await fetch("/api/laboratory/lab-results", {
+      const res = await authenticatedFetch("/api/laboratory/lab-results", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

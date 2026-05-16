@@ -14,8 +14,7 @@ import {
   fetchMenuAccessForRole,
   type MenuAccessState,
 } from "@/lib/menuAccess";
-
-const SESSION_KEY = "lifehub_session";
+import { LIFEHUB_SESSION_STORAGE_KEY } from "@/lib/lifehubSessionStorage";
 
 interface AuthContextType {
   user: any | null;
@@ -45,7 +44,7 @@ type PersistedSession = {
 };
 
 function persistSession(payload: PersistedSession) {
-  localStorage.setItem(SESSION_KEY, JSON.stringify(payload));
+  localStorage.setItem(LIFEHUB_SESSION_STORAGE_KEY, JSON.stringify(payload));
 }
 
 async function fetchSessionWithToken(token: string): Promise<{
@@ -81,7 +80,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const init = async () => {
-      const savedSession = localStorage.getItem(SESSION_KEY);
+      const savedSession = localStorage.getItem(LIFEHUB_SESSION_STORAGE_KEY);
       if (!savedSession) {
         setLoading(false);
         return;
@@ -89,14 +88,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         const data = JSON.parse(savedSession) as PersistedSession & Record<string, unknown>;
         if (!data.token || typeof data.token !== "string") {
-          localStorage.removeItem(SESSION_KEY);
+          localStorage.removeItem(LIFEHUB_SESSION_STORAGE_KEY);
           setLoading(false);
           return;
         }
 
         const fresh = await fetchSessionWithToken(data.token);
         if (!fresh) {
-          localStorage.removeItem(SESSION_KEY);
+          localStorage.removeItem(LIFEHUB_SESSION_STORAGE_KEY);
           setUser(null);
           setProfile(null);
           setMenuAccess(defaultMenuAccess);
@@ -114,7 +113,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           menuAccess: fresh.menuAccess,
         });
       } catch {
-        localStorage.removeItem(SESSION_KEY);
+        localStorage.removeItem(LIFEHUB_SESSION_STORAGE_KEY);
       } finally {
         setLoading(false);
       }
@@ -148,11 +147,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setProfile(null);
     setMenuAccess(defaultMenuAccess);
-    localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(LIFEHUB_SESSION_STORAGE_KEY);
   };
 
   const refreshMenuAccess = useCallback(async () => {
-    const raw = typeof window !== "undefined" ? localStorage.getItem(SESSION_KEY) : null;
+    const raw = typeof window !== "undefined" ? localStorage.getItem(LIFEHUB_SESSION_STORAGE_KEY) : null;
     if (!raw) {
       setMenuAccess(defaultMenuAccess);
       return;
@@ -174,7 +173,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(null);
       setProfile(null);
       setMenuAccess(defaultMenuAccess);
-      localStorage.removeItem(SESSION_KEY);
+      localStorage.removeItem(LIFEHUB_SESSION_STORAGE_KEY);
       return;
     }
     setUser(fresh.user);

@@ -1,4 +1,5 @@
 import type { ConsultationPatient } from "@/components/consultation/consultationTypes";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
 import type { PDFFont, PDFPage } from "pdf-lib";
 
@@ -279,7 +280,7 @@ export async function openPrescriptionPrintWindow(args: {
     return y;
   }
 
-  const res = await fetch("/api/prescription-template", { cache: "no-store" });
+  const res = await authenticatedFetch("/api/prescription-template", { cache: "no-store" });
   if (!res.ok) {
     return false;
   }

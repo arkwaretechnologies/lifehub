@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const ELEVEN_BASE = "https://api.elevenlabs.io/v1";
+/** Prevent abuse / oversized payloads (middleware already requires login). */
+const MAX_TEXT_CHARS = 8000;
 
 /**
  * Server-only proxy: generates speech with ElevenLabs so the API key never reaches the browser.
@@ -31,6 +33,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "text is required" }, { status: 400 });
   }
 
+  if (text.length > MAX_TEXT_CHARS) {
+    return NextResponse.json(
+      { error: `text must be at most ${MAX_TEXT_CHARS} characters.` },
+      { status: 400 },
+    );
+  }
+
   const voiceId =
     process.env.ELEVENLABS_VOICE_ID?.trim() || "21m00Tcm4TlvDq8ikWAM";
   const modelId =
@@ -54,8 +63,12 @@ export async function POST(req: NextRequest) {
 
   if (!upstream.ok) {
     const errText = await upstream.text().catch(() => upstream.statusText);
+    const isDev = process.env.NODE_ENV === "development";
     return NextResponse.json(
-      { error: errText || `ElevenLabs HTTP ${upstream.status}` },
+      {
+        error: "Speech synthesis failed.",
+        ...(isDev ? { detail: errText || `HTTP ${upstream.status}` } : {}),
+      },
       { status: 502 },
     );
   }

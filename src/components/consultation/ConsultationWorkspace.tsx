@@ -20,6 +20,7 @@ import PlansTreatmentPanel from "./PlansTreatmentPanel";
 import ReviewOfSystemsPanel from "./ReviewOfSystemsPanel";
 import ChargesServicesPanel from "./ChargesServicesPanel";
 import { useAuth } from "@/components/AuthProvider";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { fetchEncounterClinicalDiagnosis, fetchEncounterPhysicianRecord, fetchEncounterPlansTreatment } from "@/lib/consultationData";
 import {
   emptyPhysicalExaminationForm,
@@ -472,7 +473,7 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
             void (async () => {
               const r = await runSaveAll();
               if (r.ok) {
-                await fetch("/api/consultation/complete-queue-ticket", {
+                await authenticatedFetch("/api/consultation/complete-queue-ticket", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ transId }),

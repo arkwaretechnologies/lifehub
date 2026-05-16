@@ -6,6 +6,7 @@ import {
   THERMAL_RECEIPT_HEADER_LOGO_CSS,
   resolveThermalReceiptLogoSrc,
 } from "@/lib/thermalReceiptFontCss";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 
 function escapeHtml(s: string): string {
   return s
@@ -263,7 +264,7 @@ export async function openReceptionLabOrderSlipPrint(args: ReceptionLabOrderSlip
 export async function openCashierQueueReceiptReprintByTicketId(ticketId: string): Promise<{ ok: boolean; error?: string }> {
   const id = ticketId.trim();
   if (!id) return { ok: false, error: "Missing ticket id." };
-  const res = await fetch(`/api/cashier/lab-queue-ticket/reprint?ticketId=${encodeURIComponent(id)}`, { cache: "no-store" });
+  const res = await authenticatedFetch(`/api/cashier/lab-queue-ticket/reprint?ticketId=${encodeURIComponent(id)}`, { cache: "no-store" });
   const j = (await res.json().catch(() => ({}))) as {
     ok?: boolean;
     error?: string;

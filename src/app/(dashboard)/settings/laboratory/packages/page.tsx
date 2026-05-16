@@ -46,6 +46,7 @@ import KeyboardDoubleArrowRight from "@mui/icons-material/KeyboardDoubleArrowRig
 import SearchIcon from "@mui/icons-material/Search";
 import type { LabPackageWithTests } from "@/lib/labPackages";
 import type { LabTestCatalogItem } from "@/lib/labTests";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 
 type TestOption = { id: string; label: string };
 
@@ -447,8 +448,8 @@ export default function SettingsLabPackagesPage() {
     setLoading(true);
     try {
       const [pRes, tRes] = await Promise.all([
-        fetch("/api/settings/laboratory/packages"),
-        fetch("/api/settings/laboratory/lab-tests"),
+        authenticatedFetch("/api/settings/laboratory/packages"),
+        authenticatedFetch("/api/settings/laboratory/lab-tests"),
       ]);
       const pJson = (await pRes.json().catch(() => null)) as
         | { packages?: LabPackageWithTests[]; error?: string }
@@ -534,7 +535,7 @@ export default function SettingsLabPackagesPage() {
     setAddSaving(true);
     setAddError("");
     try {
-      const res = await fetch("/api/settings/laboratory/packages", {
+      const res = await authenticatedFetch("/api/settings/laboratory/packages", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(v.body),
@@ -568,7 +569,7 @@ export default function SettingsLabPackagesPage() {
     setEditSaving(true);
     setEditError("");
     try {
-      const res = await fetch(`/api/settings/laboratory/packages/${pkgId}`, {
+      const res = await authenticatedFetch(`/api/settings/laboratory/packages/${pkgId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(v.body),
@@ -595,7 +596,7 @@ export default function SettingsLabPackagesPage() {
     setDeleteLoading(true);
     setDeleteError("");
     try {
-      const res = await fetch(`/api/settings/laboratory/packages/${pkgId}`, { method: "DELETE" });
+      const res = await authenticatedFetch(`/api/settings/laboratory/packages/${pkgId}`, { method: "DELETE" });
       const json = (await res.json().catch(() => null)) as { error?: string } | null;
       if (!res.ok || json?.error) {
         setDeleteError(json?.error ?? "Could not delete package.");

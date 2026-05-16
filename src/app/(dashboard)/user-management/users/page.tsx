@@ -30,6 +30,7 @@ import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/components/AuthProvider";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 
 type AppUserRow = {
   user_id: number | string;
@@ -180,7 +181,7 @@ export default function UsersPage() {
   const loadRolesForSelect = useCallback(async () => {
     setRolesLoading(true);
     try {
-      const res = await fetch("/api/roles");
+      const res = await authenticatedFetch("/api/roles");
       const json = (await res.json().catch(() => null)) as
         | { roles?: RoleOptionRow[]; error?: string }
         | null;
@@ -225,7 +226,7 @@ export default function UsersPage() {
     setAddSaving(true);
     setAddError("");
     try {
-      const res = await fetch("/api/users", {
+      const res = await authenticatedFetch("/api/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -280,7 +281,7 @@ export default function UsersPage() {
         setEditSaving(false);
         return;
       }
-      const res = await fetch(`/api/users/${editingId}`, {
+      const res = await authenticatedFetch(`/api/users/${editingId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password: editForm.password }),

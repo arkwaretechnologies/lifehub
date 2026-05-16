@@ -1,4 +1,5 @@
 import type { ConsultationPatient } from "@/components/consultation/consultationTypes";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import type { AllergiesForm } from "@/lib/allergies";
 import type { FamilyHistoryForm } from "@/lib/familyHistory";
 import type { ObstetricHistoryForm } from "@/lib/obstetricHistory";
@@ -389,7 +390,7 @@ export async function openConsultationPrintWindow(args: {
 }): Promise<boolean> {
   const { patient, physician, details } = args;
   const { PDFDocument, StandardFonts } = await import("pdf-lib");
-  const res = await fetch("/api/consultation-template", { cache: "no-store" });
+  const res = await authenticatedFetch("/api/consultation-template", { cache: "no-store" });
   if (!res.ok) return false;
 
   const templateBytes = await res.arrayBuffer();

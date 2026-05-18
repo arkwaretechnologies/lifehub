@@ -1,7 +1,40 @@
 import { NextResponse } from "next/server";
-import { LAB_CATEGORIES_TABLE, LAB_TESTS_TABLE, type LabTestCatalogItem } from "@/lib/labTests";
-import { LAB_SERVICE_PRICES_TABLE } from "@/lib/labServicePrices";
+import { parseResultsPrintLayoutInput } from "@/lib/labResultsPrintLayout";
+import {
+  isAllowedLabResultsTemplateCode,
+  LAB_CATEGORIES_TABLE,
+  LAB_TEST_CATALOG_SELECT,
+  LAB_TESTS_TABLE,
+  mapLabTestCatalogItem,
+  normalizeResultsTemplateCodeForStorage,
+  validateLabTestOrderablePanel,
+  type LabTestCatalogItem,
+} from "@/lib/labTests";
+import {
+  applyServicePricesToCatalogItems,
+  fetchLabServicePricesMapAdmin,
+  parseLabTestPriceInput,
+  syncLabTestServicePrice,
+} from "@/lib/labServicePrices";
+import { attachPanelLinksToCatalogItems, syncLabTestPanelLinks } from "@/lib/labTestPanelLinks";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
+
+async function loadPanelTargets(
+  db: NonNullable<ReturnType<typeof supabaseAdminClient>>,
+  panelIds: string[],
+): Promise<{ targets: LabTestCatalogItem[]; error: string | null }> {
+  const ids = [...new Set(panelIds.map((x) => String(x).trim()).filter(Boolean))];
+  if (ids.length === 0) return { targets: [], error: null };
+  const { data, error } = await db
+    .from(LAB_TESTS_TABLE)
+    .select(LAB_TEST_CATALOG_SELECT)
+    .in("id", ids);
+  if (error) return { targets: [], error: error.message };
+  const targets = ((data ?? []) as Record<string, unknown>[]).map((raw) =>
+    mapLabTestCatalogItem(raw),
+  );
+  return { targets, error: null };
+}
 
 function adminOr500() {
   const db = supabaseAdminClient();
@@ -31,9 +64,7 @@ export async function GET(req: Request) {
 
   let q = db
     .from(LAB_TESTS_TABLE)
-    .select(
-      "id, category_id, code, name, description, specimen_type, unit, reference_range, results_template_code, turnaround_hours, price, requires_fasting, sort_order, is_active",
-    )
+    .select(LAB_TEST_CATALOG_SELECT)
     .order("sort_order", { ascending: true, nullsFirst: false })
     .order("name", { ascending: true });
 
@@ -43,29 +74,18 @@ export async function GET(req: Request) {
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
   const rawTests = (data ?? []) as Record<string, unknown>[];
-  const tests: LabTestCatalogItem[] = rawTests.map((raw) => ({
-    id: String(raw.id ?? ""),
-    category_id: raw.category_id as number | string,
-    code: String(raw.code ?? ""),
-    name: String(raw.name ?? ""),
-    description: (raw.description as string | null) ?? null,
-    specimen_type: (raw.specimen_type as string | null) ?? null,
-    unit: (raw.unit as string | null) ?? null,
-    reference_range: (raw.reference_range as string | null) ?? null,
-    results_template_code: (raw.results_template_code as string | null) ?? null,
-    turnaround_hours: (() => {
-      if (raw.turnaround_hours == null || raw.turnaround_hours === "") return null;
-      const n = Number(raw.turnaround_hours);
-      return Number.isFinite(n) ? Math.trunc(n) : null;
-    })(),
-    price: (raw.price as string | number | null) ?? null,
-    requires_fasting: (raw.requires_fasting as boolean | null) ?? null,
-    sort_order:
-      raw.sort_order == null || raw.sort_order === ""
-        ? null
-        : Number(raw.sort_order),
-    is_active: (raw.is_active as boolean | null) ?? null,
-  }));
+  let tests: LabTestCatalogItem[] = rawTests.map((raw) => mapLabTestCatalogItem(raw));
+
+  const { pricesByTestId, error: priceErr } = await fetchLabServicePricesMapAdmin(
+    db,
+    tests.map((t) => t.id),
+  );
+  if (priceErr) return NextResponse.json({ error: priceErr }, { status: 400 });
+  tests = applyServicePricesToCatalogItems(tests, pricesByTestId);
+
+  const attached = await attachPanelLinksToCatalogItems(db, tests);
+  if (attached.error) return NextResponse.json({ error: attached.error }, { status: 400 });
+  tests = attached.tests;
 
   return NextResponse.json({ tests });
 }
@@ -83,11 +103,14 @@ export async function POST(req: Request) {
     unit?: string | null;
     reference_range?: string | null;
     results_template_code?: string | null;
+    results_print_layout?: unknown | null;
     turnaround_hours?: number | null;
     price?: number | string | null;
     requires_fasting?: boolean | null;
     sort_order?: number | null;
     is_active?: boolean;
+    is_orderable?: boolean;
+    panel_lab_test_ids?: string[] | null;
   } | null;
 
   const catRaw = body?.category_id;
@@ -125,10 +148,15 @@ export async function POST(req: Request) {
     body?.reference_range === undefined || body?.reference_range === null
       ? null
       : String(body.reference_range).trim() || null;
-  const results_template_code =
-    body?.results_template_code === undefined || body?.results_template_code === null
-      ? null
-      : String(body.results_template_code).trim() || null;
+  const results_template_code = normalizeResultsTemplateCodeForStorage(body?.results_template_code);
+  if (results_template_code && !isAllowedLabResultsTemplateCode(results_template_code)) {
+    return NextResponse.json({ error: "Unsupported results template code." }, { status: 400 });
+  }
+
+  const layoutParsed = parseResultsPrintLayoutInput(body?.results_print_layout ?? null);
+  if (!layoutParsed.ok) {
+    return NextResponse.json({ error: layoutParsed.error }, { status: 400 });
+  }
 
   let turnaround_hours: number | null = null;
   if (body?.turnaround_hours != null && body.turnaround_hours !== ("" as unknown)) {
@@ -136,13 +164,9 @@ export async function POST(req: Request) {
     turnaround_hours = Number.isFinite(th) ? Math.trunc(th) : null;
   }
 
-  let price: number | string | null = null;
-  if (body?.price != null && body.price !== ("" as unknown)) {
-    if (typeof body.price === "number" && Number.isFinite(body.price)) price = body.price;
-    else {
-      const p = Number(String(body.price));
-      price = Number.isFinite(p) ? p : null;
-    }
+  const priceParsed = parseLabTestPriceInput(body?.price);
+  if (!priceParsed.ok) {
+    return NextResponse.json({ error: priceParsed.error }, { status: 400 });
   }
 
   const requires_fasting = body?.requires_fasting === true;
@@ -151,6 +175,22 @@ export async function POST(req: Request) {
       ? null
       : Number(body.sort_order);
   const is_active = body?.is_active !== false;
+
+  const panelIdsRaw = Array.isArray(body?.panel_lab_test_ids) ? body.panel_lab_test_ids : [];
+  const { targets: panelTargets, error: panelLoadErr } = await loadPanelTargets(db, panelIdsRaw);
+  if (panelLoadErr) return NextResponse.json({ error: panelLoadErr }, { status: 400 });
+
+  const orderableCheck = validateLabTestOrderablePanel(
+    {
+      is_orderable: body?.is_orderable,
+      panel_lab_test_ids: panelIdsRaw,
+      category_id,
+    },
+    { panelTargets },
+  );
+  if (!orderableCheck.ok) {
+    return NextResponse.json({ error: orderableCheck.error }, { status: 400 });
+  }
 
   const insertRow: Record<string, unknown> = {
     category_id,
@@ -161,46 +201,40 @@ export async function POST(req: Request) {
     unit,
     reference_range,
     results_template_code,
+    results_print_layout: layoutParsed.value,
     turnaround_hours,
-    price,
     requires_fasting,
     sort_order: Number.isFinite(sort_order as number) ? sort_order : null,
     is_active,
+    is_orderable: orderableCheck.is_orderable,
   };
 
   const { data, error } = await db
     .from(LAB_TESTS_TABLE)
     .insert(insertRow)
-    .select(
-      "id, category_id, code, name, description, specimen_type, unit, reference_range, results_template_code, turnaround_hours, price, requires_fasting, sort_order, is_active",
-    )
+    .select(LAB_TEST_CATALOG_SELECT)
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
-  const raw = data as Record<string, unknown>;
-  const test: LabTestCatalogItem = {
-    id: String(raw.id ?? ""),
-    category_id: raw.category_id as number | string,
-    code: String(raw.code ?? ""),
-    name: String(raw.name ?? ""),
-    description: (raw.description as string | null) ?? null,
-    specimen_type: (raw.specimen_type as string | null) ?? null,
-    unit: (raw.unit as string | null) ?? null,
-    reference_range: (raw.reference_range as string | null) ?? null,
-    results_template_code: (raw.results_template_code as string | null) ?? null,
-    turnaround_hours: (() => {
-      if (raw.turnaround_hours == null || raw.turnaround_hours === "") return null;
-      const n = Number(raw.turnaround_hours);
-      return Number.isFinite(n) ? Math.trunc(n) : null;
-    })(),
-    price: (raw.price as string | number | null) ?? null,
-    requires_fasting: (raw.requires_fasting as boolean | null) ?? null,
-    sort_order:
-      raw.sort_order == null || raw.sort_order === ""
-        ? null
-        : Number(raw.sort_order),
-    is_active: (raw.is_active as boolean | null) ?? null,
+  const testId = String((data as Record<string, unknown>).id ?? "");
+  const priceSync = await syncLabTestServicePrice(db, testId, priceParsed.value);
+  if (priceSync.error) {
+    return NextResponse.json({ error: priceSync.error }, { status: 400 });
+  }
+
+  const linkSync = await syncLabTestPanelLinks(db, testId, orderableCheck.panel_lab_test_ids);
+  if (linkSync.error) {
+    return NextResponse.json({ error: linkSync.error }, { status: 400 });
+  }
+
+  let test = mapLabTestCatalogItem(data as Record<string, unknown>);
+  if (priceParsed.value != null) {
+    test = { ...test, price: priceParsed.value };
+  }
+  test = {
+    ...test,
+    panel_lab_test_ids: orderableCheck.panel_lab_test_ids,
   };
 
   return NextResponse.json({ test });

@@ -57,6 +57,7 @@ import {
 } from "@/components/consultation/consultListTableStyles";
 import { fetchQueuePriorities, type QueuePriorityRow } from "@/lib/queueReception";
 import { openCashierAcknowledgementReceiptPrint } from "@/lib/cashierAcknowledgementReceiptPrint";
+import { scheduleCashierHomeNavigation } from "@/lib/thermalPrintIframe";
 import {
   openReceptionQueueReceiptPrint,
   storeCashierLabQueueReprintOffer,
@@ -563,8 +564,7 @@ export default function CashierEncounterDetail() {
         });
       }
       setPaySuccess(`Payment saved.${labQueueLine}`);
-      await reloadAll();
-      router.replace("/cashier?tab=visit");
+      scheduleCashierHomeNavigation(() => router.replace("/cashier?tab=visit"));
     } catch (e) {
       setPayError(e instanceof Error ? e.message : "Could not save payment.");
     } finally {

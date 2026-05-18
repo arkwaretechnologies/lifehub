@@ -1,8 +1,15 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchActiveLabPricesByTestIds } from "@/lib/labServicePrices";
+import {
+  attachPanelLinksToCatalogItems,
+  fetchPanelLinksForPanelIds,
+  LAB_TEST_PANEL_LINKS_TABLE,
+} from "@/lib/labTestPanelLinks";
 
 export const LAB_TESTS_TABLE = "lab_tests" as const;
 export const LAB_CATEGORIES_TABLE = "lab_categories" as const;
+export { LAB_TEST_PANEL_LINKS_TABLE };
 
 export type LabCategoryRow = {
   id: number | string;
@@ -27,12 +34,89 @@ export type LabTestCatalogItem = {
    * (e.g. BLOODCHEM3, HEMA, URINALYSIS, ART).
    */
   results_template_code: string | null;
+  /** PDF overlay position(s) for lab result printing (jsonb). */
+  results_print_layout?: unknown | null;
   turnaround_hours: number | null;
   price: string | number | null;
   requires_fasting: boolean | null;
   sort_order: number | null;
   is_active: boolean | null;
+  /** When false, row is a results-form line only (not shown in catalog ordering UIs). */
+  is_orderable?: boolean | null;
+  /** When non-orderable: orderable panel tests in the same category (from lab_test_panel_links). */
+  panel_lab_test_ids?: string[];
 };
+
+export const URINALYSIS_PANEL_CODE = "UA_PANEL" as const;
+
+export const LAB_TEST_CATALOG_SELECT =
+  "id, category_id, code, name, description, specimen_type, unit, reference_range, results_template_code, results_print_layout, turnaround_hours, price, requires_fasting, sort_order, is_active, is_orderable";
+
+/** Catalog select without `is_orderable` when that migration is not applied yet. */
+export const LAB_TEST_CATALOG_SELECT_LEGACY =
+  "id, category_id, code, name, description, specimen_type, unit, reference_range, results_template_code, results_print_layout, turnaround_hours, price, requires_fasting, sort_order, is_active";
+
+export function isMissingDbColumnError(message: string | undefined, column: string): boolean {
+  return Boolean(message && new RegExp(column.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i").test(message));
+}
+
+/** Load lab_tests rows; retries without `is_orderable` when the column is missing. */
+export async function fetchLabTestCatalogRows(
+  db: SupabaseClient,
+  options?: { testIds?: string[]; ordered?: boolean },
+): Promise<{ rows: Record<string, unknown>[]; error: string | null }> {
+  const run = (select: string) => {
+    let q = db.from(LAB_TESTS_TABLE).select(select);
+    const ids = options?.testIds?.map((x) => String(x).trim()).filter(Boolean) ?? [];
+    if (ids.length > 0) q = q.in("id", ids);
+    if (options?.ordered) {
+      q = q.order("sort_order", { ascending: true }).order("name", { ascending: true });
+    }
+    return q;
+  };
+
+  const first = await run(LAB_TEST_CATALOG_SELECT);
+  if (!first.error) {
+    return { rows: (first.data ?? []) as unknown as Record<string, unknown>[], error: null };
+  }
+
+  if (isMissingDbColumnError(first.error.message, "is_orderable")) {
+    const retry = await run(LAB_TEST_CATALOG_SELECT_LEGACY);
+    if (retry.error) return { rows: [], error: retry.error.message };
+    return { rows: (retry.data ?? []) as unknown as Record<string, unknown>[], error: null };
+  }
+
+  return { rows: [], error: first.error.message };
+}
+
+export function mapLabTestCatalogItem(raw: Record<string, unknown>): LabTestCatalogItem {
+  return {
+    id: String(raw.id ?? ""),
+    category_id: raw.category_id as number | string,
+    code: String(raw.code ?? ""),
+    name: String(raw.name ?? ""),
+    description: (raw.description as string | null) ?? null,
+    specimen_type: (raw.specimen_type as string | null) ?? null,
+    unit: (raw.unit as string | null) ?? null,
+    reference_range: (raw.reference_range as string | null) ?? null,
+    results_template_code: (raw.results_template_code as string | null) ?? null,
+    results_print_layout: raw.results_print_layout ?? null,
+    turnaround_hours: (() => {
+      if (raw.turnaround_hours == null || raw.turnaround_hours === "") return null;
+      const n = Number(raw.turnaround_hours);
+      return Number.isFinite(n) ? Math.trunc(n) : null;
+    })(),
+    price: (raw.price as string | number | null) ?? null,
+    requires_fasting: (raw.requires_fasting as boolean | null) ?? null,
+    sort_order:
+      raw.sort_order == null || raw.sort_order === ""
+        ? null
+        : Number(raw.sort_order),
+    is_active: (raw.is_active as boolean | null) ?? null,
+    is_orderable: raw.is_orderable === false ? false : true,
+    panel_lab_test_ids: [],
+  };
+}
 
 export type LabCatalogSection = {
   category: LabCategoryRow;
@@ -186,51 +270,26 @@ export async function fetchLabCatalogGrouped(): Promise<{
       .select("id, code, name, description, sort_order, is_active")
       .order("sort_order", { ascending: true })
       .order("name", { ascending: true }),
-    supabase
-      .from(LAB_TESTS_TABLE)
-      .select(
-        "id, category_id, code, name, description, specimen_type, unit, reference_range, results_template_code, turnaround_hours, price, requires_fasting, sort_order, is_active",
-      )
-      .order("sort_order", { ascending: true })
-      .order("name", { ascending: true }),
+    fetchLabTestCatalogRows(supabase, { ordered: true }),
   ]);
 
   if (catsRes.error) {
     return { sections: [], error: catsRes.error.message };
   }
   if (testsRes.error) {
-    return { sections: [], error: testsRes.error.message };
+    return { sections: [], error: testsRes.error };
   }
 
   const categories = (catsRes.data ?? []) as LabCategoryRow[];
   const activeCategories = categories.filter((c) => isActiveRow(c.is_active)).sort(sortCategories);
   const activeCatIdSet = new Set(activeCategories.map((c) => idStr(c.id)));
 
-  const rawTests = (testsRes.data ?? []) as Record<string, unknown>[];
-  const tests: LabTestCatalogItem[] = rawTests.map((raw) => ({
-    id: String(raw.id ?? ""),
-    category_id: raw.category_id as number | string,
-    code: String(raw.code ?? ""),
-    name: String(raw.name ?? ""),
-    description: (raw.description as string | null) ?? null,
-    specimen_type: (raw.specimen_type as string | null) ?? null,
-    unit: (raw.unit as string | null) ?? null,
-    reference_range: (raw.reference_range as string | null) ?? null,
-    results_template_code: (raw.results_template_code as string | null) ?? null,
-    turnaround_hours: (() => {
-      if (raw.turnaround_hours == null || raw.turnaround_hours === "") return null;
-      const n = Number(raw.turnaround_hours);
-      return Number.isFinite(n) ? Math.trunc(n) : null;
-    })(),
-    price: (raw.price as string | number | null) ?? null,
-    requires_fasting: (raw.requires_fasting as boolean | null) ?? null,
-    sort_order:
-      raw.sort_order == null || raw.sort_order === ""
-        ? null
-        : Number(raw.sort_order),
-    is_active: (raw.is_active as boolean | null) ?? null,
-  }));
-  const activeTests = tests.filter((t) => isActiveRow(t.is_active));
+  const rawTests = testsRes.rows;
+  const tests: LabTestCatalogItem[] = rawTests.map((raw) => mapLabTestCatalogItem(raw));
+  let activeTests = tests.filter((t) => isActiveRow(t.is_active));
+
+  const attached = await attachPanelLinksToCatalogItems(supabase, activeTests);
+  if (!attached.error) activeTests = attached.tests;
 
   const byCat = new Map<string, LabTestCatalogItem[]>();
   for (const t of activeTests) {
@@ -279,6 +338,432 @@ export function labTestRowLabel(row: Pick<LabTestCatalogItem, "id" | "name" | "c
   const c = row.code?.trim();
   if (c) return c;
   return row.id ? `Test #${row.id}` : "—";
+}
+
+/** Label for package picker / transfer lists: `Category Name - Lab test name`. */
+export function labTestCategoryPickerLabel(
+  test: Pick<LabTestCatalogItem, "name" | "category_id">,
+  categoryNameById: ReadonlyMap<string, string>,
+): string {
+  const name = test.name?.trim() || "—";
+  const cat = categoryNameById.get(String(test.category_id))?.trim();
+  return cat ? `${cat} - ${name}` : name;
+}
+
+export function isNonOrderableResultLine(
+  test: Pick<LabTestCatalogItem, "is_orderable">,
+): boolean {
+  return test.is_orderable === false;
+}
+
+/** @deprecated Use {@link isNonOrderableResultLine}. */
+export function isUrinalysisResultLine(
+  test: Pick<LabTestCatalogItem, "code" | "is_orderable">,
+): boolean {
+  return isNonOrderableResultLine(test);
+}
+
+export function filterOrderableLabTests(tests: LabTestCatalogItem[]): LabTestCatalogItem[] {
+  return tests.filter((t) => t.is_orderable !== false);
+}
+
+export function componentHasPanelLink(
+  test: Pick<LabTestCatalogItem, "panel_lab_test_ids">,
+  panelId: string,
+): boolean {
+  const pid = String(panelId).trim();
+  return (test.panel_lab_test_ids ?? []).some((id) => String(id).trim() === pid);
+}
+
+export function getComponentTestIds(
+  catalog: LabTestCatalogItem[],
+  panelId: string,
+): string[] {
+  const pid = String(panelId).trim();
+  if (!pid) return [];
+  return catalog.filter((t) => componentHasPanelLink(t, pid)).map((t) => t.id);
+}
+
+export function getPanelIdsForComponent(
+  catalog: LabTestCatalogItem[],
+  componentId: string,
+): string[] {
+  const cid = String(componentId).trim();
+  const row = catalog.find((t) => t.id === cid);
+  return row?.panel_lab_test_ids ?? [];
+}
+
+export function getPanelTestIds(catalog: LabTestCatalogItem[]): string[] {
+  const panelIds = new Set<string>();
+  for (const t of catalog) {
+    for (const pid of t.panel_lab_test_ids ?? []) {
+      const id = String(pid).trim();
+      if (id) panelIds.add(id);
+    }
+    if (testHasPanelComponents(catalog, t.id)) {
+      panelIds.add(t.id);
+    }
+  }
+  return [...panelIds];
+}
+
+export function getPanelTest(
+  catalog: LabTestCatalogItem[],
+  panelId: string,
+): LabTestCatalogItem | null {
+  const pid = String(panelId).trim();
+  return catalog.find((t) => t.id === pid) ?? null;
+}
+
+export function testHasPanelComponents(
+  catalog: LabTestCatalogItem[],
+  panelId: string,
+): boolean {
+  return getComponentTestIds(catalog, panelId).length > 0;
+}
+
+/**
+ * True when this request line should appear on Lab Results for data entry.
+ * Hides orderable panel shells (e.g. URINALYSIS). Shows panel component rows and standalone
+ * orderable tests (e.g. Total Cholesterol). Hybrid tests (orderable + linked to panels) show
+ * on both billable standalone rows and non-billable component rows when both are ordered.
+ */
+export function isLabResultEntryItem(
+  test: Pick<LabTestCatalogItem, "id" | "is_orderable">,
+  catalog: LabTestCatalogItem[],
+): boolean {
+  const isOrderablePanelShell =
+    test.is_orderable !== false && testHasPanelComponents(catalog, test.id);
+  if (isOrderablePanelShell) return false;
+  return true;
+}
+
+/** Filter request items to result-entry lines using catalog panel links. */
+export function filterLabRequestItemsForResultEntry<T extends { lab_test_id: string; is_billable?: boolean }>(
+  items: T[],
+  catalog: LabTestCatalogItem[],
+): T[] {
+  if (items.length === 0) return [];
+  const byId = new Map(catalog.map((t) => [t.id, t]));
+
+  const primary = items.filter((item) => {
+    const test = byId.get(item.lab_test_id);
+    if (!test) return item.is_billable === false;
+    return isLabResultEntryItem(test, catalog);
+  });
+  if (primary.length > 0) return primary;
+
+  // Legacy: pre-migration orders with only expanded component rows (all non-orderable).
+  return items.filter((item) => {
+    const test = byId.get(item.lab_test_id);
+    if (!test) return item.is_billable === false;
+    return test.is_orderable === false && isLabResultEntryItem(test, catalog);
+  });
+}
+
+/**
+ * Consultation UI: whether an orderable panel checkbox should appear checked.
+ * Uses the panel test id in selection (not shared component ids) so multiple panels
+ * that share the same result lines stay independent.
+ */
+export function isPanelLabTestSelectedInUI(
+  panelTestId: string,
+  catalog: LabTestCatalogItem[],
+  selectedIds: ReadonlySet<string>,
+  requestedIds?: ReadonlySet<string>,
+): boolean {
+  const pid = String(panelTestId).trim();
+  if (!pid) return false;
+  if (selectedIds.has(pid)) return true;
+
+  const components = getComponentTestIds(catalog, pid);
+  if (components.length === 0) return selectedIds.has(pid);
+
+  if (requestedIds && components.every((cid) => requestedIds.has(cid))) return true;
+
+  return false;
+}
+
+/** Toggle panel selection; stores panel id only (components expand on submit). */
+export function applyPanelLabTestToggle(
+  panelTestId: string,
+  catalog: LabTestCatalogItem[],
+  selectedIds: ReadonlySet<string>,
+): Set<string> {
+  const pid = String(panelTestId).trim();
+  const next = new Set(selectedIds);
+  const components = getComponentTestIds(catalog, pid);
+  const isOn = isPanelLabTestSelectedInUI(pid, catalog, selectedIds);
+
+  if (isOn) {
+    next.delete(pid);
+    for (const cid of components) next.delete(cid);
+  } else {
+    next.add(pid);
+    for (const cid of components) next.delete(cid);
+  }
+  return next;
+}
+
+export function isLabPackageTestSatisfiedInUI(
+  testId: string,
+  catalog: LabTestCatalogItem[],
+  selectedIds: ReadonlySet<string>,
+  requestedIds: ReadonlySet<string>,
+): boolean {
+  const id = String(testId).trim();
+  if (!id) return false;
+  if (testHasPanelComponents(catalog, id)) {
+    return isPanelLabTestSelectedInUI(id, catalog, selectedIds, requestedIds);
+  }
+  return selectedIds.has(id) || requestedIds.has(id);
+}
+
+export type LabRequestItemInsertRow = {
+  lab_test_id: string;
+  is_billable: boolean;
+};
+
+/**
+ * Build rows for `lab_request_items`: one billable row per panel/standalone test,
+ * plus non-billable rows for each panel component (lab results entry).
+ */
+export function buildLabRequestItemRows(
+  selectedTestIds: Iterable<string>,
+  catalog: LabTestCatalogItem[],
+): LabRequestItemInsertRow[] {
+  const billableIds = collapseComponentsToPanel(selectedTestIds, catalog);
+  const rows: LabRequestItemInsertRow[] = [];
+  const resultLineIds = new Set<string>();
+
+  for (const testId of billableIds) {
+    if (testHasPanelComponents(catalog, testId)) {
+      rows.push({ lab_test_id: testId, is_billable: true });
+      for (const cid of getComponentTestIds(catalog, testId)) {
+        if (resultLineIds.has(cid)) continue;
+        resultLineIds.add(cid);
+        rows.push({ lab_test_id: cid, is_billable: false });
+      }
+      continue;
+    }
+    rows.push({ lab_test_id: testId, is_billable: true });
+  }
+
+  return rows;
+}
+
+/** Expand panel ids to all linked component ids for lab_request_items / selection state. */
+export function expandPanelTestIds(
+  testIds: Iterable<string>,
+  catalog: LabTestCatalogItem[],
+): string[] {
+  const out = new Set<string>();
+  for (const rawId of testIds) {
+    const id = String(rawId).trim();
+    if (!id) continue;
+    const components = getComponentTestIds(catalog, id);
+    if (components.length > 0) {
+      for (const c of components) out.add(c);
+      continue;
+    }
+    out.add(id);
+  }
+  return [...out];
+}
+
+/** @deprecated Use {@link expandPanelTestIds}. */
+export const expandUrinalysisPanelTestIds = expandPanelTestIds;
+
+/** Persist panel id on packages instead of individual component ids. */
+export function collapseComponentsToPanel(
+  testIds: Iterable<string>,
+  catalog: LabTestCatalogItem[],
+): string[] {
+  const ids = [...new Set([...testIds].map((x) => String(x).trim()).filter(Boolean))];
+  const panelIds = getPanelTestIds(catalog);
+  if (panelIds.length === 0) return ids;
+
+  const result = new Set(ids);
+  for (const panelId of panelIds) {
+    const componentIds = getComponentTestIds(catalog, panelId);
+    if (componentIds.length === 0) continue;
+    const componentSet = new Set(componentIds);
+    const touches =
+      result.has(panelId) || componentIds.some((cid) => result.has(cid));
+    if (!touches) continue;
+    for (const cid of componentIds) result.delete(cid);
+    result.delete(panelId);
+    result.add(panelId);
+  }
+  return [...result];
+}
+
+/** @deprecated Use {@link collapseComponentsToPanel}. */
+export const collapseUrinalysisComponentsToPanel = collapseComponentsToPanel;
+
+/** @deprecated Use {@link getPanelTest} with {@link URINALYSIS_PANEL_CODE}. */
+export function getUrinalysisPanelTest(tests: LabTestCatalogItem[]): LabTestCatalogItem | null {
+  return tests.find((t) => String(t.code ?? "").toUpperCase() === URINALYSIS_PANEL_CODE) ?? null;
+}
+
+/** @deprecated Use {@link getComponentTestIds} with panel id. */
+export function getUrinalysisComponentTests(tests: LabTestCatalogItem[]): LabTestCatalogItem[] {
+  const panel = getUrinalysisPanelTest(tests);
+  if (!panel) return tests.filter(isNonOrderableResultLine);
+  return tests.filter((t) => componentHasPanelLink(t, panel.id));
+}
+
+export function testsForLabOrderSection(
+  _category: Pick<LabCategoryRow, "code">,
+  tests: LabTestCatalogItem[],
+): LabTestCatalogItem[] {
+  return filterOrderableLabTests(tests);
+}
+
+export type LabTestOrderablePanelInput = {
+  is_orderable?: boolean;
+  panel_lab_test_ids?: string[] | null;
+  category_id?: number | string;
+};
+
+export type ValidateLabTestOrderablePanelResult =
+  | { ok: true; is_orderable: boolean; panel_lab_test_ids: string[] }
+  | { ok: false; error: string };
+
+function normalizePanelIdList(raw: string[] | null | undefined): string[] {
+  return [...new Set((raw ?? []).map((x) => String(x).trim()).filter(Boolean))];
+}
+
+function validatePanelLabTestTargets(
+  panelIds: string[],
+  input: LabTestOrderablePanelInput,
+  opts: { testId?: string; panelTargets?: LabTestCatalogItem[] },
+): { ok: true } | { ok: false; error: string } {
+  const testId = opts.testId?.trim() ?? "";
+  const targets = opts.panelTargets ?? [];
+  if (targets.length !== panelIds.length) {
+    return { ok: false, error: "One or more selected panel tests do not exist." };
+  }
+
+  const catId = input.category_id ?? targets[0]?.category_id;
+  for (const target of targets) {
+    if (testId && target.id === testId) {
+      return { ok: false, error: "A test cannot be ordered under itself." };
+    }
+    if (target.is_orderable === false) {
+      return { ok: false, error: "Panel tests must be orderable." };
+    }
+    if (String(target.category_id) !== String(catId)) {
+      return {
+        ok: false,
+        error: "All panel tests must be in the same category as this test.",
+      };
+    }
+  }
+
+  return { ok: true };
+}
+
+/** Validate orderable / panel fields for create or update. */
+export function validateLabTestOrderablePanel(
+  input: LabTestOrderablePanelInput,
+  opts: {
+    testId?: string;
+    panelTargets?: LabTestCatalogItem[];
+    componentCount?: number;
+  } = {},
+): ValidateLabTestOrderablePanelResult {
+  const is_orderable = input.is_orderable !== false;
+  const panelIds = normalizePanelIdList(input.panel_lab_test_ids);
+
+  if (!is_orderable) {
+    if (panelIds.length === 0) {
+      return {
+        ok: false,
+        error: "Non-orderable tests must select at least one orderable panel in the same category.",
+      };
+    }
+    const panelCheck = validatePanelLabTestTargets(panelIds, input, opts);
+    if (!panelCheck.ok) return panelCheck;
+    if ((opts.componentCount ?? 0) > 0) {
+      return {
+        ok: false,
+        error:
+          "Cannot mark as non-orderable: other tests use this test as their panel. Reassign them first.",
+      };
+    }
+    return { ok: true, is_orderable: false, panel_lab_test_ids: panelIds };
+  }
+
+  if (panelIds.length === 0) {
+    return { ok: true, is_orderable: true, panel_lab_test_ids: [] };
+  }
+
+  const panelCheck = validatePanelLabTestTargets(panelIds, input, opts);
+  if (!panelCheck.ok) return panelCheck;
+  return { ok: true, is_orderable: true, panel_lab_test_ids: panelIds };
+}
+
+/** Collapse component ids to panel ids when saving package membership (server). */
+export async function normalizePackageLabTestIdsForStorage(
+  db: SupabaseClient,
+  testIds: string[],
+): Promise<{ testIds: string[]; error: string | null }> {
+  const unique = [...new Set(testIds.map((x) => String(x).trim()).filter(Boolean))];
+  if (unique.length === 0) return { testIds: [], error: null };
+
+  const fetched = await fetchLabTestCatalogRows(db, { testIds: unique });
+  if (fetched.error) return { testIds: [], error: fetched.error };
+
+  let catalog = fetched.rows.map((raw) => mapLabTestCatalogItem(raw));
+  const known = new Set(catalog.map((t) => t.id));
+  const missing = unique.filter((id) => !known.has(id));
+  if (missing.length > 0) {
+    const panelIds = getPanelTestIds(catalog);
+    const related = [...new Set([...missing, ...panelIds])];
+    const extraFetch = await fetchLabTestCatalogRows(db, {
+      testIds: related.length > 0 ? related : missing,
+    });
+    if (extraFetch.error) return { testIds: [], error: extraFetch.error };
+    for (const raw of extraFetch.rows) {
+      const item = mapLabTestCatalogItem(raw);
+      if (!known.has(item.id)) {
+        catalog.push(item);
+        known.add(item.id);
+      }
+    }
+    const stillMissing = unique.filter((id) => !known.has(id));
+    if (stillMissing.length > 0) {
+      const { links, error: linkErr } = await fetchPanelLinksForPanelIds(db, stillMissing);
+      if (linkErr) return { testIds: [], error: linkErr };
+      if (links.length > 0) {
+        const componentIds = [...new Set(links.map((l) => l.component_lab_test_id))];
+        const componentFetch = await fetchLabTestCatalogRows(db, { testIds: componentIds });
+        if (componentFetch.error) return { testIds: [], error: componentFetch.error };
+        for (const raw of componentFetch.rows) {
+          const item = mapLabTestCatalogItem(raw);
+          if (!known.has(item.id)) {
+            catalog.push(item);
+            known.add(item.id);
+          }
+        }
+      }
+    }
+  }
+
+  const unknown = unique.filter((id) => !known.has(id));
+  if (unknown.length > 0) {
+    return {
+      testIds: [],
+      error: `Unknown lab test id(s): ${unknown.slice(0, 3).join(", ")}${unknown.length > 3 ? "…" : ""}`,
+    };
+  }
+
+  const attached = await attachPanelLinksToCatalogItems(db, catalog);
+  if (attached.error) return { testIds: [], error: attached.error };
+  catalog = attached.tests;
+
+  return { testIds: collapseComponentsToPanel(unique, catalog), error: null };
 }
 
 /**
@@ -333,6 +818,14 @@ export function isAllowedLabResultsTemplateCode(code: string): boolean {
 }
 
 /** Split comma-separated `results_template_code`; keep only allowlisted stems, preserve order. */
+/** Normalize a single template code for storage; null when empty. */
+export function normalizeResultsTemplateCodeForStorage(
+  raw: string | null | undefined,
+): string | null {
+  const c = String(raw ?? "").trim().toUpperCase();
+  return c === "" ? null : c;
+}
+
 export function splitAllowlistedResultsTemplateCodes(csv: string | null | undefined): string[] {
   const out: string[] = [];
   for (const part of String(csv ?? "").split(",")) {

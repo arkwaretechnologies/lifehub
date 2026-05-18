@@ -2,6 +2,7 @@
  * Single module for Pharmacy POS and consultation Rx bridge Supabase access.
  * Prefer calling functions here instead of scattering `supabase.from` across the app.
  */
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
 
 export const PRODUCTS_TABLE = "products" as const;
@@ -219,8 +220,11 @@ export async function fetchPosProductById(
 }
 
 /** Sum available quantity across stock rows for a product */
-export async function getProductStockOnHand(productId: string): Promise<{ qty: number; error: string | null }> {
-  const { data, error } = await supabase
+export async function getProductStockOnHand(
+  productId: string,
+  db: SupabaseClient = supabase,
+): Promise<{ qty: number; error: string | null }> {
+  const { data, error } = await db
     .from(STOCK_TABLE)
     .select("quantity")
     .eq("product_id", productId);
@@ -470,12 +474,15 @@ export type CompletePharmacySaleInput = {
   notes?: string | null;
 };
 
-export async function validateStockForCheckout(lines: { productId: string; quantity: number }[]): Promise<{
+export async function validateStockForCheckout(
+  lines: { productId: string; quantity: number }[],
+  db: SupabaseClient = supabase,
+): Promise<{
   ok: boolean;
   error: string | null;
 }> {
   for (const line of lines) {
-    const { qty, error } = await getProductStockOnHand(line.productId);
+    const { qty, error } = await getProductStockOnHand(line.productId, db);
     if (error) return { ok: false, error };
     if (qty + 1e-9 < line.quantity) {
       return {
@@ -487,12 +494,16 @@ export async function validateStockForCheckout(lines: { productId: string; quant
   return { ok: true, error: null };
 }
 
-export async function completePharmacySale(input: CompletePharmacySaleInput): Promise<{
+export async function completePharmacySale(
+  input: CompletePharmacySaleInput,
+  db: SupabaseClient = supabase,
+): Promise<{
   saleId: string | null;
   error: string | null;
 }> {
   const stockCheck = await validateStockForCheckout(
     input.lines.map((l) => ({ productId: l.productId, quantity: l.quantity })),
+    db,
   );
   if (!stockCheck.ok) return { saleId: null, error: stockCheck.error };
 
@@ -500,7 +511,7 @@ export async function completePharmacySale(input: CompletePharmacySaleInput): Pr
   const saleDate = now.toISOString().slice(0, 10);
   const saleTime = now.toTimeString().slice(0, 8);
 
-  const { data: saleIns, error: saleErr } = await supabase
+  const { data: saleIns, error: saleErr } = await db
     .from(PHARMACY_SALES_TABLE)
     .insert({
       shift_id: input.shiftId,
@@ -540,17 +551,17 @@ export async function completePharmacySale(input: CompletePharmacySaleInput): Pr
     linenum: index + 1,
   }));
 
-  const { error: itemsErr } = await supabase.from(PHARMACY_SALE_ITEMS_TABLE).insert(itemRows);
+  const { error: itemsErr } = await db.from(PHARMACY_SALE_ITEMS_TABLE).insert(itemRows);
   if (itemsErr) {
-    await supabase.from(PHARMACY_SALES_TABLE).delete().eq("id", saleId);
+    await db.from(PHARMACY_SALES_TABLE).delete().eq("id", saleId);
     return { saleId: null, error: itemsErr.message };
   }
 
   for (const line of input.lines) {
-    const stockResult = await decrementStockFefo(line.productId, line.quantity, saleId);
+    const stockResult = await decrementStockFefo(line.productId, line.quantity, saleId, db);
     if (stockResult.error) {
-      await supabase.from(PHARMACY_SALE_ITEMS_TABLE).delete().eq("pharmacy_sale_id", saleId);
-      await supabase.from(PHARMACY_SALES_TABLE).delete().eq("id", saleId);
+      await db.from(PHARMACY_SALE_ITEMS_TABLE).delete().eq("pharmacy_sale_id", saleId);
+      await db.from(PHARMACY_SALES_TABLE).delete().eq("id", saleId);
       return { saleId: null, error: stockResult.error };
     }
   }
@@ -582,10 +593,11 @@ export type PharmacySaleSearchRow = {
 export async function searchCompletedPharmacySalesByOrNumber(
   orQuery: string,
   limit = 30,
+  db: SupabaseClient = supabase,
 ): Promise<{ sales: PharmacySaleSearchRow[]; error: string | null }> {
   const q = sanitizeOrSearchFragment(orQuery);
   if (!q) return { sales: [], error: null };
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from(PHARMACY_SALES_TABLE)
     .select("id, or_number, sale_date, sale_time, total_amount, payment_method, status, shift_id")
     .eq("status", "Completed")
@@ -616,11 +628,14 @@ export type PharmacySaleVoidDetail = {
   lines: PharmacySaleVoidLine[];
 };
 
-export async function fetchPharmacySaleWithItemsForVoid(saleId: string): Promise<{
+export async function fetchPharmacySaleWithItemsForVoid(
+  saleId: string,
+  db: SupabaseClient = supabase,
+): Promise<{
   detail: PharmacySaleVoidDetail | null;
   error: string | null;
 }> {
-  const { data: sale, error: sErr } = await supabase
+  const { data: sale, error: sErr } = await db
     .from(PHARMACY_SALES_TABLE)
     .select("id, or_number, sale_date, sale_time, total_amount, payment_method, status, shift_id, notes, patient_id")
     .eq("id", saleId)
@@ -632,7 +647,7 @@ export async function fetchPharmacySaleWithItemsForVoid(saleId: string): Promise
     return { detail: null, error: "Only completed sales can be modified." };
   }
 
-  const { data: rawItems, error: iErr } = await supabase
+  const { data: rawItems, error: iErr } = await db
     .from(PHARMACY_SALE_ITEMS_TABLE)
     .select("id, linenum, product_id, quantity, unit_price, line_total, discount")
     .eq("pharmacy_sale_id", saleId)
@@ -651,7 +666,7 @@ export async function fetchPharmacySaleWithItemsForVoid(saleId: string): Promise
   const productIds = [...new Set(items.map((i) => i.product_id))];
   const nameById = new Map<string, { generic_name: string; brand_name: string | null }>();
   if (productIds.length > 0) {
-    const { data: prows, error: pErr } = await supabase
+    const { data: prows, error: pErr } = await db
       .from(PRODUCTS_TABLE)
       .select("id, generic_name, brand_name")
       .in("id", productIds);
@@ -680,25 +695,19 @@ export async function fetchPharmacySaleWithItemsForVoid(saleId: string): Promise
   return { detail: { sale: s, lines }, error: null };
 }
 
-async function restoreStockForVoidViaMovements(saleId: string): Promise<{ usedMovements: boolean; error: string | null }> {
+async function restoreStockForVoidViaMovements(
+  saleId: string,
+  db: SupabaseClient = supabase,
+): Promise<{ usedMovements: boolean; error: string | null }> {
   const saleNote = `Pharmacy sale ${saleId}`;
-  const { data: byNote, error: nErr } = await supabase
+  const { data: byNote, error: nErr } = await db
     .from(STOCK_MOVEMENTS_TABLE)
     .select("id, stock_id, product_id, quantity")
     .eq("reference_type", "pharmacy_sale")
     .eq("notes", saleNote);
   if (nErr) return { usedMovements: false, error: nErr.message };
 
-  let movs = (byNote ?? []) as Array<{ id: string; stock_id: string | null; product_id: string; quantity: number }>;
-  if (movs.length === 0) {
-    const { data: byRef, error: rErr } = await supabase
-      .from(STOCK_MOVEMENTS_TABLE)
-      .select("id, stock_id, product_id, quantity")
-      .eq("reference_type", "pharmacy_sale")
-      .eq("reference_id", saleId);
-    if (rErr) return { usedMovements: false, error: rErr.message };
-    movs = (byRef ?? []) as Array<{ id: string; stock_id: string | null; product_id: string; quantity: number }>;
-  }
+  const movs = (byNote ?? []) as Array<{ id: string; stock_id: string | null; product_id: string; quantity: number }>;
 
   const dispenseRows = movs.filter((m) => m.stock_id && Number(m.quantity) < 0);
   if (dispenseRows.length === 0) {
@@ -711,33 +720,35 @@ async function restoreStockForVoidViaMovements(saleId: string): Promise<{ usedMo
     const addBack = -Number(m.quantity);
     if (!Number.isFinite(addBack) || addBack <= 0) continue;
 
-    const { data: lot, error: lErr } = await supabase.from(STOCK_TABLE).select("id, quantity").eq("id", stockId).maybeSingle();
+    const { data: lot, error: lErr } = await db.from(STOCK_TABLE).select("id, quantity").eq("id", stockId).maybeSingle();
     if (lErr) return { usedMovements: true, error: lErr.message };
     if (!lot) return { usedMovements: true, error: `Stock lot ${stockId.slice(0, 8)}… no longer exists — void aborted.` };
 
     const prev = Number((lot as { quantity: number }).quantity) || 0;
-    const { error: upErr } = await supabase
+    const { error: upErr } = await db
       .from(STOCK_TABLE)
       .update({ quantity: prev + addBack, updated_at: now })
       .eq("id", stockId);
     if (upErr) return { usedMovements: true, error: upErr.message };
 
-    const { error: movInsErr } = await supabase.from(STOCK_MOVEMENTS_TABLE).insert({
+    const { error: movInsErr } = await db.from(STOCK_MOVEMENTS_TABLE).insert({
       product_id: m.product_id,
       quantity: addBack,
       movement_type: "VOID",
       stock_id: stockId,
       notes: `Void pharmacy sale ${saleId}`,
       reference_type: "pharmacy_sale_void",
-      reference_id: saleId,
     });
     if (movInsErr) return { usedMovements: true, error: movInsErr.message };
   }
   return { usedMovements: true, error: null };
 }
 
-async function restoreStockForVoidFallbackLots(saleId: string): Promise<{ error: string | null }> {
-  const { data: items, error: iErr } = await supabase
+async function restoreStockForVoidFallbackLots(
+  saleId: string,
+  db: SupabaseClient = supabase,
+): Promise<{ error: string | null }> {
+  const { data: items, error: iErr } = await db
     .from(PHARMACY_SALE_ITEMS_TABLE)
     .select("product_id, quantity")
     .eq("pharmacy_sale_id", saleId);
@@ -749,7 +760,7 @@ async function restoreStockForVoidFallbackLots(saleId: string): Promise<{ error:
     const qty = Math.round(Number(row.quantity)) || 0;
     if (qty <= 0) continue;
 
-    const { data: lots, error: lErr } = await supabase
+    const { data: lots, error: lErr } = await db
       .from(STOCK_TABLE)
       .select("id, quantity")
       .eq("product_id", row.product_id)
@@ -763,20 +774,19 @@ async function restoreStockForVoidFallbackLots(saleId: string): Promise<{ error:
       };
     }
     const prev = Number(lot.quantity) || 0;
-    const { error: upErr } = await supabase
+    const { error: upErr } = await db
       .from(STOCK_TABLE)
       .update({ quantity: prev + qty, updated_at: now })
       .eq("id", lot.id);
     if (upErr) return { error: upErr.message };
 
-    const { error: movInsErr } = await supabase.from(STOCK_MOVEMENTS_TABLE).insert({
+    const { error: movInsErr } = await db.from(STOCK_MOVEMENTS_TABLE).insert({
       product_id: row.product_id,
       quantity: qty,
       movement_type: "VOID",
       stock_id: lot.id,
       notes: `Void pharmacy sale ${saleId} (lot fallback)`,
       reference_type: "pharmacy_sale_void",
-      reference_id: saleId,
     });
     if (movInsErr) return { error: movInsErr.message };
   }
@@ -786,15 +796,18 @@ async function restoreStockForVoidFallbackLots(saleId: string): Promise<{ error:
 /**
  * Marks a completed pharmacy sale void and puts quantity back on stock (via dispense movements, or lot fallback).
  */
-export async function voidCompletedPharmacySale(args: {
-  saleId: string;
-  voidedByUserId: number | null;
-  reason?: string | null;
-}): Promise<{ error: string | null }> {
+export async function voidCompletedPharmacySale(
+  args: {
+    saleId: string;
+    voidedByUserId: number | null;
+    reason?: string | null;
+  },
+  db: SupabaseClient = supabase,
+): Promise<{ error: string | null }> {
   const saleId = args.saleId.trim();
   if (!saleId) return { error: "Sale id required." };
 
-  const { data: head, error: hErr } = await supabase
+  const { data: head, error: hErr } = await db
     .from(PHARMACY_SALES_TABLE)
     .select("id, status, notes")
     .eq("id", saleId)
@@ -805,10 +818,10 @@ export async function voidCompletedPharmacySale(args: {
     return { error: "This sale is not completed (or was already voided)." };
   }
 
-  const { usedMovements, error: movErr } = await restoreStockForVoidViaMovements(saleId);
+  const { usedMovements, error: movErr } = await restoreStockForVoidViaMovements(saleId, db);
   if (movErr) return { error: movErr };
   if (!usedMovements) {
-    const fb = await restoreStockForVoidFallbackLots(saleId);
+    const fb = await restoreStockForVoidFallbackLots(saleId, db);
     if (fb.error) return { error: fb.error };
   }
 
@@ -819,7 +832,7 @@ export async function voidCompletedPharmacySale(args: {
   const voidLine = `[VOID ${stamp}] ${who} · ${reason}`;
   const mergedNotes = [prevNotes?.trim() || null, voidLine].filter(Boolean).join("\n");
 
-  const { error: uErr } = await supabase
+  const { error: uErr } = await db
     .from(PHARMACY_SALES_TABLE)
     .update({
       status: "Voided",
@@ -843,17 +856,7 @@ async function loadDispenseBucketsForSale(saleId: string): Promise<{ buckets: Di
     .eq("notes", saleNote)
     .order("id", { ascending: true });
   if (nErr) return { buckets: [], error: nErr.message };
-  let rows = (byNote ?? []) as Array<{ stock_id: string | null; product_id: string; quantity: number }>;
-  if (rows.length === 0) {
-    const { data: byRef, error: rErr } = await supabase
-      .from(STOCK_MOVEMENTS_TABLE)
-      .select("id, stock_id, product_id, quantity")
-      .eq("reference_type", "pharmacy_sale")
-      .eq("reference_id", saleId)
-      .order("id", { ascending: true });
-    if (rErr) return { buckets: [], error: rErr.message };
-    rows = (byRef ?? []) as Array<{ stock_id: string | null; product_id: string; quantity: number }>;
-  }
+  const rows = (byNote ?? []) as Array<{ stock_id: string | null; product_id: string; quantity: number }>;
   const buckets: DispBucket[] = [];
   for (const m of rows) {
     const q = Number(m.quantity) || 0;
@@ -885,7 +888,6 @@ async function addStockReturnToLot(
     stock_id: stockId,
     notes: `${label} pharmacy sale ${saleId}`,
     reference_type: "pharmacy_sale_return",
-    reference_id: saleId,
   });
   if (movErr) return { error: movErr.message };
   return { error: null };
@@ -1099,10 +1101,11 @@ async function decrementStockFefo(
   productId: string,
   qtyNeeded: number,
   saleId: string,
+  db: SupabaseClient = supabase,
 ): Promise<{ error: string | null }> {
   if (qtyNeeded <= 0) return { error: null };
 
-  const { data: rows, error } = await supabase
+  const { data: rows, error } = await db
     .from(STOCK_TABLE)
     .select("id, quantity, expiry_date")
     .eq("product_id", productId);
@@ -1124,21 +1127,20 @@ async function decrementStockFefo(
     if (q <= 0) continue;
     const take = Math.min(q, remaining);
     const newQ = q - take;
-    const { error: upErr } = await supabase
+    const { error: upErr } = await db
       .from(STOCK_TABLE)
       .update({ quantity: newQ, updated_at: new Date().toISOString() })
       .eq("id", row.id);
     if (upErr) return { error: upErr.message };
 
-    const { error: movErr } = await supabase.from(STOCK_MOVEMENTS_TABLE).insert({
+    const { error: movErr } = await db.from(STOCK_MOVEMENTS_TABLE).insert({
       product_id: productId,
       quantity: -take,
       movement_type: "DISPENSE",
       stock_id: row.id,
       notes: `Pharmacy sale ${saleId}`,
       reference_type: "pharmacy_sale",
-      /** Lets void logic find movements when `notes` is unchanged. */
-      reference_id: saleId,
+      /** `reference_id` is integer in DB; sale id is UUID — match via `notes` + `reference_type`. */
     });
     if (movErr) return { error: movErr.message };
 
@@ -1737,8 +1739,45 @@ export async function updateSupplier(
   return { error: error?.message ?? null };
 }
 
-export async function generateOrNumber(): Promise<string> {
-  return `PH-${Date.now().toString(36).toUpperCase()}`;
+function localDateCompactYmd(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}${m}${day}`;
+}
+
+function parsePharmacySaleRefSeq(saleRef: string, expectedPrefix: string): number | null {
+  const s = (saleRef ?? "").trim();
+  if (!s.startsWith(expectedPrefix)) return null;
+  const rest = s.slice(expectedPrefix.length);
+  const seqStr = rest.split("-")[0] ?? "";
+  if (!/^\d+$/.test(seqStr)) return null;
+  const n = Number.parseInt(seqStr, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Daily pharmacy sale reference for POS slips (not a BIR OR).
+ * Format: `YYYYMMDD-####` (numeric, resets each calendar day).
+ */
+export async function generateOrNumber(db: SupabaseClient = supabase): Promise<string> {
+  const now = new Date();
+  const prefix = `${localDateCompactYmd(now)}-`;
+
+  const { data, error } = await db
+    .from(PHARMACY_SALES_TABLE)
+    .select("or_number")
+    .not("or_number", "is", null)
+    .like("or_number", `${prefix}%`)
+    .order("or_number", { ascending: false })
+    .limit(1);
+
+  if (error) throw new Error(error.message);
+
+  const row = (data ?? [])[0] as { or_number?: string } | undefined;
+  const parsed = row?.or_number ? parsePharmacySaleRefSeq(String(row.or_number), prefix) : null;
+  const next = (parsed ?? 0) + 1;
+  return `${prefix}${String(next).padStart(4, "0")}`;
 }
 
 function formatLocalYmd(d: Date): string {
@@ -1751,7 +1790,10 @@ function formatLocalYmd(d: Date): string {
 export type PharmacyDailyStat = { date: string; total: number; count: number };
 
 /** Aggregates completed pharmacy sales for dashboard charts (walk-in vs Rx uses prescription_id). */
-export async function fetchPharmacyDashboardAnalytics(daysBack = 14): Promise<{
+export async function fetchPharmacyDashboardAnalytics(
+  daysBack = 14,
+  db: SupabaseClient = supabase,
+): Promise<{
   daily: PharmacyDailyStat[];
   walkInRevenue: number;
   rxRevenue: number;
@@ -1766,7 +1808,7 @@ export async function fetchPharmacyDashboardAnalytics(daysBack = 14): Promise<{
   oldest.setDate(oldest.getDate() - (cap - 1));
   const startYmd = formatLocalYmd(oldest);
 
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from(PHARMACY_SALES_TABLE)
     .select("sale_date, total_amount, prescription_id, payment_method")
     .eq("status", "Completed")

@@ -18,10 +18,8 @@ import ReceiptLongOutlinedIcon from "@mui/icons-material/ReceiptLongOutlined";
 import LocalPharmacyOutlinedIcon from "@mui/icons-material/LocalPharmacyOutlined";
 import AssignmentOutlinedIcon from "@mui/icons-material/AssignmentOutlined";
 import PaymentsOutlinedIcon from "@mui/icons-material/PaymentsOutlined";
-import {
-  fetchPharmacyDashboardAnalytics,
-  type PharmacyDailyStat,
-} from "@/lib/pharmacyPosDb";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
+import type { PharmacyDailyStat } from "@/lib/pharmacyPosDb";
 
 function moneyPhp(n: number): string {
   return `₱${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -246,24 +244,44 @@ export default function PharmacyDashboardCharts() {
 
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
+
+    const load = async () => {
       setLoading(true);
-      const r = await fetchPharmacyDashboardAnalytics(14);
+      const res = await authenticatedFetch("/api/pharmacy/dashboard-analytics?days=14", {
+        cache: "no-store",
+      });
+      const r = (await res.json().catch(() => ({}))) as {
+        daily?: PharmacyDailyStat[];
+        walkInRevenue?: number;
+        rxRevenue?: number;
+        totalRevenue?: number;
+        transactionCount?: number;
+        paymentBreakdown?: Record<string, number>;
+        error?: string;
+      };
       if (cancelled) return;
-      if (r.error) setErr(r.error);
-      else {
+      if (!res.ok) {
+        setErr(r.error ?? "Could not load pharmacy analytics.");
+      } else if (r.error) {
+        setErr(r.error);
+      } else {
         setErr(null);
-        setDaily(r.daily);
-        setWalkIn(r.walkInRevenue);
-        setRx(r.rxRevenue);
-        setTotalRev(r.totalRevenue);
-        setTxnCount(r.transactionCount);
-        setPayments(r.paymentBreakdown);
+        setDaily(r.daily ?? []);
+        setWalkIn(r.walkInRevenue ?? 0);
+        setRx(r.rxRevenue ?? 0);
+        setTotalRev(r.totalRevenue ?? 0);
+        setTxnCount(r.transactionCount ?? 0);
+        setPayments(r.paymentBreakdown ?? {});
       }
       setLoading(false);
-    })();
+    };
+
+    void load();
+    const onFocus = () => void load();
+    window.addEventListener("focus", onFocus);
     return () => {
       cancelled = true;
+      window.removeEventListener("focus", onFocus);
     };
   }, []);
 
@@ -284,7 +302,7 @@ export default function PharmacyDashboardCharts() {
     <Stack spacing={2.5}>
       {err && (
         <Alert severity="warning">
-          Could not load pharmacy analytics: {err}. Check RLS policies on <code>pharmacy_sales</code>.
+          Could not load pharmacy analytics: {err}
         </Alert>
       )}
 

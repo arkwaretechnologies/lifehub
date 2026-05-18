@@ -7,6 +7,7 @@ import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
 export type QueueTicketStatus =
   | "Waiting"
   | "Called"
+  | "Collected"
   | "Serving"
   | "Completed"
   | "Skipped"

@@ -462,7 +462,6 @@ export default function SettingsLaboratoryImagingPage() {
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <TableCell width={72}>ID</TableCell>
                     <TableCell>Code</TableCell>
                     <TableCell>Name</TableCell>
                     <TableCell align="right">Default price</TableCell>
@@ -477,7 +476,7 @@ export default function SettingsLaboratoryImagingPage() {
                 <TableBody>
                   {rows.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={8}>
+                      <TableCell colSpan={7}>
                         <Typography variant="body2" color="text.secondary">
                           No imaging studies. Run the database migration, then refresh — five default studies are
                           seeded.
@@ -486,7 +485,7 @@ export default function SettingsLaboratoryImagingPage() {
                     </TableRow>
                   ) : filteredRows.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={8}>
+                      <TableCell colSpan={7}>
                         <Typography variant="body2" color="text.secondary">
                           No rows match your search.
                         </Typography>
@@ -495,7 +494,6 @@ export default function SettingsLaboratoryImagingPage() {
                   ) : (
                     pagedRows.map((r) => (
                       <TableRow key={r.id} hover>
-                        <TableCell>{r.id}</TableCell>
                         <TableCell sx={{ fontFamily: "monospace", fontWeight: 600 }}>{r.code}</TableCell>
                         <TableCell sx={{ fontWeight: 600 }}>{r.name}</TableCell>
                         <TableCell align="right">

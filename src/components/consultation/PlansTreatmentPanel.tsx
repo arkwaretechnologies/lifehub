@@ -56,14 +56,23 @@ import {
   createLabRequestWithItems,
   parseLabRequestPackageId,
   deleteLabRequestsForEncounter,
+  fetchLabRequestItemsForRequestIds,
   fetchLabRequestsForEncounter,
   parsePatientIdForLab,
   type EncounterLabRequestSummary,
   type LabRequestItemPriority,
 } from "@/lib/labRequests";
 import {
+  applyPanelLabTestToggle,
+  expandPanelTestIds,
   fetchLabCatalogGrouped,
+  filterLabRequestItemsForResultEntry,
+  getComponentTestIds,
   groupLabTestsByBloodChemTemplate,
+  isLabPackageTestSatisfiedInUI,
+  isPanelLabTestSelectedInUI,
+  testHasPanelComponents,
+  testsForLabOrderSection,
   type LabCatalogSection,
   type LabTestCatalogItem,
 } from "@/lib/labTests";
@@ -276,6 +285,25 @@ const imagingCheckboxLabelSx = {
   "& .MuiFormControlLabel-label": { display: "inline", lineHeight: 1.35 },
 } as const;
 
+/** Checkbox + test name on one line; secondary lines use {@link labTestMetaIndentSx}. */
+const labTestCheckboxLabelSx = {
+  ...imagingCheckboxLabelSx,
+  width: "100%",
+  "& .MuiFormControlLabel-label": {
+    display: "inline-flex",
+    alignItems: "center",
+    lineHeight: 1.35,
+    flex: 1,
+    minWidth: 0,
+  },
+} as const;
+
+const labTestMetaIndentSx = {
+  display: "block",
+  pl: 3.25,
+  mt: 0.15,
+} as const;
+
 /** Room for label + text in small outlined fields (avoids clipped placeholders). */
 const medicationOutlinedFieldSx = {
   "& .MuiOutlinedInput-root": {
@@ -315,6 +343,9 @@ export default function PlansTreatmentPanel({
 
   const [labsModalOpen, setLabsModalOpen] = useState(false);
   const [labSections, setLabSections] = useState<LabCatalogSection[]>([]);
+  const labCatalogTests = useMemo(() => labSections.flatMap((s) => s.tests), [labSections]);
+  const labCatalogTestsRef = useRef(labCatalogTests);
+  labCatalogTestsRef.current = labCatalogTests;
   const [labTestsLoading, setLabTestsLoading] = useState(false);
   const [labTestsError, setLabTestsError] = useState("");
   const [selectedLabTestIds, setSelectedLabTestIds] = useState<Set<string>>(() => new Set());
@@ -638,12 +669,23 @@ export default function PlansTreatmentPanel({
     labPackages,
     selectedLabTestIds,
     requestedTestIdSet,
+    labCatalogTests,
   });
-  labPackagePruneInputsRef.current = { labPackages, selectedLabTestIds, requestedTestIdSet };
+  labPackagePruneInputsRef.current = {
+    labPackages,
+    selectedLabTestIds,
+    requestedTestIdSet,
+    labCatalogTests,
+  };
 
   useEffect(() => {
     if (!labsModalOpen) return;
-    const { labPackages: pkgs, selectedLabTestIds: sel, requestedTestIdSet: req } = labPackagePruneInputsRef.current;
+    const {
+      labPackages: pkgs,
+      selectedLabTestIds: sel,
+      requestedTestIdSet: req,
+      labCatalogTests: catalog,
+    } = labPackagePruneInputsRef.current;
     if (pkgs.length === 0) return;
     setSelectedLabPackageIds((prev) => {
       const next = new Set<string>();
@@ -652,7 +694,9 @@ export default function PlansTreatmentPanel({
         if (
           pkg &&
           pkg.labTestIds.length > 0 &&
-          pkg.labTestIds.every((tid) => sel.has(tid) || req.has(tid))
+          pkg.labTestIds.every((tid) =>
+            isLabPackageTestSatisfiedInUI(tid, catalog, sel, req),
+          )
         ) {
           next.add(id);
         }
@@ -669,15 +713,22 @@ export default function PlansTreatmentPanel({
       }
       return next;
     });
-  }, [labsModalOpen, labPackagePruneSelectedKey, labPackagePruneRequestedKey, labPackagePruneCatalogSig]);
+  }, [
+    labsModalOpen,
+    labPackagePruneSelectedKey,
+    labPackagePruneRequestedKey,
+    labPackagePruneCatalogSig,
+    labCatalogTests,
+  ]);
 
   /** Paid (`lab_sales`) and requests that already have result rows — drives View result vs View catalog. */
-  const syncPaidAndResultsFromRequestIds = useCallback(async (reqIds: string[]) => {
+  const syncPaidAndResultsFromRequestIds = useCallback(async (reqIds: string[], catalog?: LabTestCatalogItem[]) => {
     if (reqIds.length === 0) {
       setPaidLabRequestIds(new Set());
       setLabRequestIdsWithResults(new Set());
       return;
     }
+    const catalogForFilter = catalog ?? labCatalogTestsRef.current;
     const { data: salesRows } = await supabase.from("lab_sales").select("lab_request_id").in("lab_request_id", reqIds);
     const paid = new Set<string>();
     for (const row of (salesRows ?? []) as Array<{ lab_request_id: string | null }>) {
@@ -686,12 +737,11 @@ export default function PlansTreatmentPanel({
     }
     setPaidLabRequestIds(paid);
 
-    const { data: itemRows } = await supabase
-      .from("lab_request_items")
-      .select("id, lab_request_id")
-      .in("lab_request_id", reqIds);
+    const itemRes = await fetchLabRequestItemsForRequestIds(supabase, reqIds);
+    if (itemRes.error) return;
+    const itemRows = filterLabRequestItemsForResultEntry(itemRes.items, catalogForFilter);
     const itemToReq = new Map<string, string>();
-    for (const r of itemRows ?? []) {
+    for (const r of itemRows) {
       const row = r as { id?: string; lab_request_id?: string };
       if (row.id && row.lab_request_id) itemToReq.set(row.id, row.lab_request_id);
     }
@@ -718,61 +768,69 @@ export default function PlansTreatmentPanel({
     setLabTestsError("");
     setLabEncounterError("");
     void (async () => {
-      const [cat, enc, pkgRes] = await Promise.all([
-        fetchLabCatalogGrouped(),
-        fetchLabRequestsForEncounter(transId),
-        fetchActiveLabPackagesWithTests(),
-      ]);
-      if (cancelled) return;
-      setLabTestsLoading(false);
-      const activePkgList = !pkgRes.error ? pkgRes.packages.filter((p) => p.labTestIds.length > 0) : [];
-      if (!pkgRes.error) {
-        setLabPackages(activePkgList);
-      }
-      if (cat.error) {
-        setLabTestsError(cat.error);
-        setLabSections([]);
-      } else {
-        setLabSections(cat.sections);
-      }
+      try {
+        const [cat, enc, pkgRes] = await Promise.all([
+          fetchLabCatalogGrouped(),
+          fetchLabRequestsForEncounter(transId),
+          fetchActiveLabPackagesWithTests(),
+        ]);
+        if (cancelled) return;
 
-      // Load prices for all tests in the catalog so each row can display a price.
-      if (!cat.error) {
-        const allTestIds = cat.sections.flatMap((s) => s.tests.map((t) => t.id));
-        const pricesAll = await fetchActiveLabPricesByTestIds(allTestIds);
-        if (!cancelled && !pricesAll.error) {
-          setLabPriceByTestId(pricesAll.pricesByTestId);
+        const catalogFromFetch = cat.error ? [] : cat.sections.flatMap((s) => s.tests);
+        const activePkgList = !pkgRes.error ? pkgRes.packages.filter((p) => p.labTestIds.length > 0) : [];
+        if (!pkgRes.error) {
+          setLabPackages(activePkgList);
         }
-      }
+        if (cat.error) {
+          setLabTestsError(cat.error);
+          setLabSections([]);
+        } else {
+          setLabSections(cat.sections);
+        }
 
-      if (enc.error) {
-        setLabEncounterError(enc.error);
-        setEncounterLabRequests([]);
-        setRequestedTestIdSet(new Set());
-        setPaidLabRequestIds(new Set());
-        setLabRequestIdsWithResults(new Set());
-        setSelectedLabPackageIds(new Set());
-      } else {
-        setEncounterLabRequests(enc.requests);
-        setRequestedTestIdSet(new Set(enc.requestedTestIds));
-        if (isNew) {
-          // In a new consultation, allow editing/removal of previously saved lab selections.
-          setSelectedLabTestIds(new Set(enc.requestedTestIds));
-        }
-        // Restore package chips from saved lab requests (View catalog).
-        const activePkgIdSet = new Set(activePkgList.map((p) => p.id));
-        const restoredPkgs = new Set<string>();
-        for (const req of enc.requests) {
-          for (const lp of req.lab_packages) {
-            const sid = String(lp.id);
-            if (activePkgIdSet.has(sid)) restoredPkgs.add(sid);
+        // Load prices for all tests in the catalog so each row can display a price.
+        if (!cat.error) {
+          const allTestIds = cat.sections.flatMap((s) => s.tests.map((t) => t.id));
+          const pricesAll = await fetchActiveLabPricesByTestIds(allTestIds);
+          if (!cancelled && !pricesAll.error) {
+            setLabPriceByTestId(pricesAll.pricesByTestId);
           }
         }
-        setSelectedLabPackageIds(restoredPkgs);
-        // Keep labPriceByTestId from the catalog fetch above.
 
-        const reqIds = enc.requests.map((r) => r.id).filter(Boolean);
-        if (!cancelled) await syncPaidAndResultsFromRequestIds(reqIds);
+        if (enc.error) {
+          setLabEncounterError(enc.error);
+          setEncounterLabRequests([]);
+          setRequestedTestIdSet(new Set());
+          setPaidLabRequestIds(new Set());
+          setLabRequestIdsWithResults(new Set());
+          setSelectedLabPackageIds(new Set());
+        } else {
+          setEncounterLabRequests(enc.requests);
+          setRequestedTestIdSet(new Set(enc.requestedTestIds));
+          if (isNew) {
+            // In a new consultation, allow editing/removal of previously saved lab selections.
+            setSelectedLabTestIds(new Set(enc.requestedTestIds));
+          }
+          // Restore package chips from saved lab requests (View catalog).
+          const activePkgIdSet = new Set(activePkgList.map((p) => p.id));
+          const restoredPkgs = new Set<string>();
+          for (const req of enc.requests) {
+            for (const lp of req.lab_packages) {
+              const sid = String(lp.id);
+              if (activePkgIdSet.has(sid)) restoredPkgs.add(sid);
+            }
+          }
+          setSelectedLabPackageIds(restoredPkgs);
+
+          const reqIds = enc.requests.map((r) => r.id).filter(Boolean);
+          if (!cancelled) await syncPaidAndResultsFromRequestIds(reqIds, catalogFromFetch);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setLabTestsError(e instanceof Error ? e.message : "Failed to load laboratory data.");
+        }
+      } finally {
+        if (!cancelled) setLabTestsLoading(false);
       }
     })();
     return () => {
@@ -824,14 +882,20 @@ export default function PlansTreatmentPanel({
     return () => window.removeEventListener("lifehub:lab-requests-updated", handler);
   }, [transId, syncPaidAndResultsFromRequestIds]);
 
-  const toggleLabTestSelection = useCallback((testId: string) => {
-    setSelectedLabTestIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(testId)) next.delete(testId);
-      else next.add(testId);
-      return next;
-    });
-  }, []);
+  const toggleLabTestSelection = useCallback(
+    (testId: string) => {
+      setSelectedLabTestIds((prev) => {
+        if (testHasPanelComponents(labCatalogTests, testId)) {
+          return applyPanelLabTestToggle(testId, labCatalogTests, prev);
+        }
+        const next = new Set(prev);
+        if (next.has(testId)) next.delete(testId);
+        else next.add(testId);
+        return next;
+      });
+    },
+    [labCatalogTests],
+  );
 
   const toggleLabPackageSelection = useCallback(
     (pkg: LabPackageWithTests) => {
@@ -846,14 +910,24 @@ export default function PlansTreatmentPanel({
       setSelectedLabTestIds((sel) => {
         const n2 = new Set(sel);
         if (wasOn) {
-          for (const t of pkg.labTestIds) n2.delete(t);
+          for (const tid of pkg.labTestIds) {
+            n2.delete(tid);
+            if (testHasPanelComponents(labCatalogTests, tid)) {
+              for (const cid of getComponentTestIds(labCatalogTests, tid)) n2.delete(cid);
+            }
+          }
         } else {
-          for (const t of pkg.labTestIds) n2.add(t);
+          for (const tid of pkg.labTestIds) {
+            n2.add(tid);
+            if (testHasPanelComponents(labCatalogTests, tid)) {
+              for (const cid of getComponentTestIds(labCatalogTests, tid)) n2.delete(cid);
+            }
+          }
         }
         return n2;
       });
     },
-    [selectedLabPackageIds],
+    [selectedLabPackageIds, labCatalogTests],
   );
 
   const addLabPackageFromDropdown = useCallback(
@@ -864,11 +938,16 @@ export default function PlansTreatmentPanel({
       setSelectedLabPackageIds((prev) => new Set(prev).add(pkg.id));
       setSelectedLabTestIds((sel) => {
         const n2 = new Set(sel);
-        for (const t of pkg.labTestIds) n2.add(t);
+        for (const tid of pkg.labTestIds) {
+          n2.add(tid);
+          if (testHasPanelComponents(labCatalogTests, tid)) {
+            for (const cid of getComponentTestIds(labCatalogTests, tid)) n2.delete(cid);
+          }
+        }
         return n2;
       });
     },
-    [labPackages, selectedLabPackageIds],
+    [labPackages, selectedLabPackageIds, labCatalogTests],
   );
 
   const syncStructuredPrescription = useCallback(async () => {
@@ -998,10 +1077,13 @@ export default function PlansTreatmentPanel({
     const s = new Set<string>();
     for (const pkg of labPackages) {
       if (!selectedLabPackageIds.has(pkg.id)) continue;
-      for (const t of pkg.labTestIds) s.add(t);
+      for (const tid of pkg.labTestIds) {
+        s.add(tid);
+        for (const t of expandPanelTestIds([tid], labCatalogTests)) s.add(t);
+      }
     }
     return s;
-  }, [labPackages, selectedLabPackageIds]);
+  }, [labPackages, selectedLabPackageIds, labCatalogTests]);
 
   const labSelectedTotal = useMemo(() => {
     let sum = 0;
@@ -1149,6 +1231,7 @@ export default function PlansTreatmentPanel({
     labRequestRemarks,
     labRequestPriority,
     selectedLabPackageIds,
+    labCatalogTests,
   ]);
 
   const closeLabsModal = useCallback(() => {
@@ -1747,10 +1830,19 @@ export default function PlansTreatmentPanel({
                   </Typography>
                   <Box sx={{ display: "flex", flexDirection: "column", gap: 1.25 }}>
                     {(labCategoryUsesBloodChemTemplateSubgroups(section.category)
-                      ? groupLabTestsByBloodChemTemplate(section.tests)
+                      ? groupLabTestsByBloodChemTemplate(
+                          testsForLabOrderSection(section.category, section.tests),
+                        )
                       : labCategoryUsesUaFecalSubgroups(section.category)
-                        ? groupLabTestsByDescription(section.tests)
-                        : [{ heading: "", tests: section.tests }]
+                        ? groupLabTestsByDescription(
+                            testsForLabOrderSection(section.category, section.tests),
+                          )
+                        : [
+                            {
+                              heading: "",
+                              tests: testsForLabOrderSection(section.category, section.tests),
+                            },
+                          ]
                     ).map(({ heading, tests: subTests }) => (
                       <Box key={`${String(section.category.id)}-${heading || "default"}`}>
                         {heading ? (
@@ -1765,78 +1857,97 @@ export default function PlansTreatmentPanel({
                         ) : null}
                         <Box sx={{ display: "flex", flexDirection: "column", gap: 0.25 }}>
                           {subTests.map((test) => {
-                            const alreadyRequested = !isNew && requestedTestIdSet.has(test.id);
-                            const checked = alreadyRequested || selectedLabTestIds.has(test.id);
+                            const panelComponentIds = getComponentTestIds(labCatalogTests, test.id);
+                            const isPanel = panelComponentIds.length > 0;
+                            const alreadyRequested =
+                              !isNew &&
+                              (requestedTestIdSet.has(test.id) ||
+                                (isPanel &&
+                                  panelComponentIds.length > 0 &&
+                                  panelComponentIds.every((cid) =>
+                                    requestedTestIdSet.has(cid),
+                                  )));
+                            const checked =
+                              alreadyRequested ||
+                              (isPanel
+                                ? isPanelLabTestSelectedInUI(
+                                    test.id,
+                                    labCatalogTests,
+                                    selectedLabTestIds,
+                                    requestedTestIdSet,
+                                  )
+                                : selectedLabTestIds.has(test.id));
                             const coveredByPkg = testsCoveredBySelectedPackages.has(test.id);
+                            const metaLine =
+                              !coveredByPkg &&
+                              (test.specimen_type ||
+                                test.unit ||
+                                test.requires_fasting ||
+                                test.reference_range)
+                                ? [
+                                    test.specimen_type,
+                                    test.unit ? `Unit ${test.unit}` : null,
+                                    test.requires_fasting ? "Fasting required" : null,
+                                    test.reference_range ? `Ref ${test.reference_range}` : null,
+                                  ]
+                                    .filter(Boolean)
+                                    .join(" · ")
+                                : null;
                             return (
-                              <FormControlLabel
-                                key={test.id}
-                                sx={{
-                                  ...consultFormControlLabelSx,
-                                  display: "flex",
-                                  flexDirection: "row",
-                                  alignItems: "flex-start",
-                                  ml: 0,
-                                  mr: 0,
-                                  gap: 0.5,
-                                  "& .MuiFormControlLabel-label": { display: "block", lineHeight: 1.35 },
-                                }}
-                                control={
-                                  <Checkbox
-                                    size="small"
-                                    sx={{ mt: 0.25 }}
-                                    checked={checked}
-                                    disabled={alreadyRequested}
-                                    onChange={() => {
-                                      if (alreadyRequested) return;
-                                      toggleLabTestSelection(test.id);
-                                    }}
-                                  />
-                                }
-                                label={
-                                  <Box
-                                    component="span"
-                                    sx={{ display: "flex", flexDirection: "column", gap: 0.25, minWidth: 0, flex: 1 }}
-                                  >
+                              <Box key={test.id}>
+                                <FormControlLabel
+                                  sx={labTestCheckboxLabelSx}
+                                  control={
+                                    <Checkbox
+                                      size="small"
+                                      checked={checked}
+                                      disabled={alreadyRequested}
+                                      onChange={() => {
+                                        if (alreadyRequested) return;
+                                        toggleLabTestSelection(test.id);
+                                      }}
+                                    />
+                                  }
+                                  label={
                                     <Box
                                       component="span"
-                                      sx={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 1 }}
+                                      sx={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        justifyContent: "space-between",
+                                        gap: 1,
+                                        width: "100%",
+                                        minWidth: 0,
+                                      }}
                                     >
-                                      <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
+                                      <Typography
+                                        component="span"
+                                        variant="body2"
+                                        sx={{ textTransform: "uppercase", minWidth: 0 }}
+                                      >
                                         {test.name}
                                       </Typography>
                                       <Typography
                                         component="span"
                                         variant="caption"
-                                        sx={{ fontWeight: 800, whiteSpace: "nowrap" }}
+                                        sx={{ fontWeight: 800, whiteSpace: "nowrap", flexShrink: 0 }}
                                       >
                                         {coveredByPkg ? "—" : money2(labPriceByTestId.get(test.id) ?? 0)}
                                       </Typography>
                                     </Box>
-                                    {coveredByPkg ? (
-                                      <Typography component="span" variant="caption" color="text.secondary">
-                                        Included in package (bundle price)
-                                      </Typography>
-                                    ) : null}
-                                    {!coveredByPkg &&
-                                    (test.specimen_type ||
-                                      test.unit ||
-                                      test.requires_fasting ||
-                                      test.reference_range) ? (
-                                      <Typography component="span" variant="caption" color="text.secondary">
-                                        {[
-                                          test.specimen_type,
-                                          test.unit ? `Unit ${test.unit}` : null,
-                                          test.requires_fasting ? "Fasting required" : null,
-                                          test.reference_range ? `Ref ${test.reference_range}` : null,
-                                        ]
-                                          .filter(Boolean)
-                                          .join(" · ")}
-                                      </Typography>
-                                    ) : null}
-                                  </Box>
-                                }
-                              />
+                                  }
+                                />
+                                {coveredByPkg ? (
+                                  <Typography variant="caption" color="text.secondary" sx={labTestMetaIndentSx}>
+                                    Included in package (bundle price)
+                                  </Typography>
+                                ) : null}
+                                {metaLine ? (
+                                  <Typography variant="caption" color="text.secondary" sx={labTestMetaIndentSx}>
+                                    {metaLine}
+                                  </Typography>
+                                ) : null}
+                              </Box>
                             );
                           })}
                         </Box>

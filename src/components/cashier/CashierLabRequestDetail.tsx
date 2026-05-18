@@ -49,6 +49,7 @@ import { createLabSaleWithItems, generateNextDailyOrNumber } from "@/lib/cashier
 import { fetchActiveDiscountTypes, type DiscountTypeRow } from "@/lib/discountTypes";
 import { fetchQueuePriorities, type QueuePriorityRow } from "@/lib/queueReception";
 import { openCashierAcknowledgementReceiptPrint } from "@/lib/cashierAcknowledgementReceiptPrint";
+import { scheduleCashierHomeNavigation } from "@/lib/thermalPrintIframe";
 import {
   openReceptionQueueReceiptPrint,
   storeCashierLabQueueReprintOffer,
@@ -364,8 +365,7 @@ export default function CashierLabRequestDetail() {
         });
       }
       setPaySuccess(`Payment saved.${labQueueLine}`);
-      await reloadAll();
-      router.replace("/cashier?tab=walkin");
+      scheduleCashierHomeNavigation(() => router.replace("/cashier?tab=walkin"));
     } catch (e) {
       setPayError(e instanceof Error ? e.message : "Could not save payment.");
     } finally {

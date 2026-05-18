@@ -1,9 +1,18 @@
 import { NextResponse } from "next/server";
 import type { LabPackageDetail } from "@/lib/labPackages";
-import { attachLabRequestSummariesPackagesForDb, type EncounterLabRequestSummary } from "@/lib/labRequests";
+import {
+  attachLabRequestSummariesPackagesForDb,
+  fetchLabRequestItemsForRequestIds,
+  loadLabTestCatalogForTestIds,
+  type EncounterLabRequestSummary,
+} from "@/lib/labRequests";
 import type { LabResultPrintPosition } from "@/lib/labResultsPrintLayout";
 import { parseResultsPrintLayouts } from "@/lib/labResultsPrintLayout";
-import { isAllowedLabResultsTemplateCode, labResultsTemplateCodeFromCatalogTestCode } from "@/lib/labTests";
+import {
+  filterLabRequestItemsForResultEntry,
+  isAllowedLabResultsTemplateCode,
+  labResultsTemplateCodeFromCatalogTestCode,
+} from "@/lib/labTests";
 import { queueAdminClient } from "@/lib/receptionQueueServer";
 
 type LabRequestHeader = {
@@ -129,6 +138,9 @@ export type LabRequestItemView = {
   /** Parallel to comma-separated `results_template_code` (index = template slot). */
   results_print_layouts?: (LabResultPrintPosition | null)[] | null;
   test_name: string | null;
+  category_id: string | null;
+  category_name: string | null;
+  category_sort_order: number | null;
   specimen_type: string | null;
   priority: string | null;
   notes: string | null;
@@ -244,20 +256,15 @@ export async function GET(req: Request) {
   if (qtErr) return NextResponse.json({ error: qtErr.message }, { status: 500 });
   const queue_display = ((qtRow as { queue_display?: string | null } | null)?.queue_display ?? null)?.trim() || null;
 
-  const { data: items, error: iErr } = await admin
-    .from("lab_request_items")
-    .select("id, lab_test_id, notes, priority, collected_item")
-    .eq("lab_request_id", id);
+  const storedItems = await fetchLabRequestItemsForRequestIds(admin, [id]);
+  if (storedItems.error) return NextResponse.json({ error: storedItems.error }, { status: 500 });
 
-  if (iErr) return NextResponse.json({ error: iErr.message }, { status: 500 });
+  const allItems = storedItems.items;
 
-  const itemRows = (items ?? []) as Array<{
-    id: string;
-    lab_test_id: string;
-    notes: string | null;
-    priority: string | null;
-    collected_item?: string | null;
-  }>;
+  const allTestIds = [...new Set(allItems.map((r) => r.lab_test_id).filter(Boolean))];
+  const catRes = await loadLabTestCatalogForTestIds(admin, allTestIds);
+  if (catRes.error) return NextResponse.json({ error: catRes.error }, { status: 500 });
+  const itemRows = filterLabRequestItemsForResultEntry(allItems, catRes.catalog);
 
   // Load existing lab results keyed by item id (1 row per item).
   const itemIds = itemRows.map((r) => r.id).filter(Boolean);
@@ -312,20 +319,24 @@ export async function GET(req: Request) {
       results_template_code: string | null;
       results_print_layout: unknown | null;
       name: string | null;
+      category_id: string | null;
       specimen_type: string | null;
       unit: string | null;
       reference_range: string | null;
     }
   >();
+  const categoriesById = new Map<string, { name: string; sort_order: number | null }>();
   if (testIds.length > 0) {
     const { data: tests, error: tErr } = await admin
       .from("lab_tests")
-      .select("id, code, results_template_code, results_print_layout, name, specimen_type, unit, reference_range")
+      .select("id, code, category_id, results_template_code, results_print_layout, name, specimen_type, unit, reference_range")
       .in("id", testIds);
     if (tErr) return NextResponse.json({ error: tErr.message }, { status: 500 });
+    const catIds = new Set<string>();
     for (const t of (tests ?? []) as Array<{
       id: string;
       code: string | null;
+      category_id: string | number | null;
       results_template_code: string | null;
       results_print_layout: unknown | null;
       name: string | null;
@@ -333,15 +344,31 @@ export async function GET(req: Request) {
       unit: string | null;
       reference_range: string | null;
     }>) {
+      const category_id = t.category_id == null ? null : String(t.category_id);
+      if (category_id) catIds.add(category_id);
       testsById.set(t.id, {
         code: t.code,
         results_template_code: t.results_template_code,
         results_print_layout: t.results_print_layout,
         name: t.name,
+        category_id,
         specimen_type: t.specimen_type,
         unit: t.unit,
         reference_range: t.reference_range,
       });
+    }
+    if (catIds.size > 0) {
+      const { data: cats, error: cErr } = await admin
+        .from("lab_categories")
+        .select("id, name, sort_order")
+        .in("id", [...catIds]);
+      if (cErr) return NextResponse.json({ error: cErr.message }, { status: 500 });
+      for (const c of (cats ?? []) as Array<{ id: string | number; name: string; sort_order: number | null }>) {
+        categoriesById.set(String(c.id), {
+          name: String(c.name ?? ""),
+          sort_order: c.sort_order == null ? null : Number(c.sort_order),
+        });
+      }
     }
   }
 
@@ -360,6 +387,17 @@ export async function GET(req: Request) {
       results_template_code,
       results_print_layouts,
       test_name: t?.name ?? null,
+      category_id: t?.category_id ?? null,
+      category_name: (() => {
+        const cid = t?.category_id ?? null;
+        if (!cid) return null;
+        return categoriesById.get(cid)?.name ?? null;
+      })(),
+      category_sort_order: (() => {
+        const cid = t?.category_id ?? null;
+        if (!cid) return null;
+        return categoriesById.get(cid)?.sort_order ?? null;
+      })(),
       specimen_type: t?.specimen_type ?? null,
       priority: r.priority,
       notes: r.notes,
@@ -373,7 +411,16 @@ export async function GET(req: Request) {
     };
   });
 
-  outItems.sort((a, b) => (a.test_name ?? a.lab_test_id).localeCompare(b.test_name ?? b.lab_test_id));
+  outItems.sort((a, b) => {
+    const sa = a.category_sort_order ?? 9999;
+    const sb = b.category_sort_order ?? 9999;
+    if (sa !== sb) return sa - sb;
+    const ca = (a.category_name ?? "").localeCompare(b.category_name ?? "", undefined, { sensitivity: "base" });
+    if (ca !== 0) return ca;
+    return (a.test_name ?? a.lab_test_id).localeCompare(b.test_name ?? b.lab_test_id, undefined, {
+      sensitivity: "base",
+    });
+  });
 
   const headerOut: LabRequestHeaderView = {
     ...baseHeader,

@@ -24,6 +24,7 @@ import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
 import type { QueueTicketStatus } from "@/lib/queueReception";
 import type { LabQueueRow } from "@/app/api/laboratory/lab-queue/route";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
+import { canOpenLabQueueRequest, labQueueRequestButtonTooltip } from "@/lib/labQueueUi";
 
 const statusColor: Record<
   QueueTicketStatus,
@@ -31,6 +32,7 @@ const statusColor: Record<
 > = {
   Waiting: "warning",
   Called: "info",
+  Collected: "success",
   Serving: "info",
   Completed: "success",
   Skipped: "default",
@@ -72,6 +74,10 @@ export default function LaboratoryPage() {
     const labRequestId = (ticket.lab_request_id ?? "").trim();
     if (!labRequestId) {
       setError("No lab request is linked to this queue ticket.");
+      return;
+    }
+    if (!canOpenLabQueueRequest(ticket.status, labRequestId)) {
+      setError("Call the patient before opening the lab request.");
       return;
     }
     router.push(`/laboratory/results?labRequestId=${encodeURIComponent(labRequestId)}`);
@@ -206,13 +212,14 @@ export default function LaboratoryPage() {
                           </Button>
                         </Box>
                       </Tooltip>
-                      <Tooltip title="View requested tests & specimen status">
+                      <Tooltip title={labQueueRequestButtonTooltip(t.status, t.lab_request_id)}>
                         <Box component="span" sx={{ display: "inline-flex", ml: 1 }}>
                           <Button
                             variant="outlined"
                             size="small"
                             startIcon={<ScienceOutlinedIcon fontSize="small" />}
                             onClick={() => goToResults(t)}
+                            disabled={!canOpenLabQueueRequest(t.status, t.lab_request_id)}
                             sx={{
                               minWidth: 120,
                               borderRadius: 999,

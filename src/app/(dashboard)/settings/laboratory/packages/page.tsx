@@ -45,7 +45,8 @@ import KeyboardDoubleArrowLeft from "@mui/icons-material/KeyboardDoubleArrowLeft
 import KeyboardDoubleArrowRight from "@mui/icons-material/KeyboardDoubleArrowRight";
 import SearchIcon from "@mui/icons-material/Search";
 import type { LabPackageWithTests } from "@/lib/labPackages";
-import type { LabTestCatalogItem } from "@/lib/labTests";
+import type { LabCategoryRow, LabTestCatalogItem } from "@/lib/labTests";
+import { collapseComponentsToPanel, labTestCategoryPickerLabel } from "@/lib/labTests";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 
 type TestOption = { id: string; label: string };
@@ -379,6 +380,7 @@ function LabTestTransferList({
 export default function SettingsLabPackagesPage() {
   const [packages, setPackages] = useState<LabPackageWithTests[]>([]);
   const [tests, setTests] = useState<LabTestCatalogItem[]>([]);
+  const [categories, setCategories] = useState<LabCategoryRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -401,13 +403,35 @@ export default function SettingsLabPackagesPage() {
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteError, setDeleteError] = useState("");
 
+  const categoryNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of categories) {
+      const name = c.name?.trim();
+      if (name) m.set(String(c.id), name);
+    }
+    return m;
+  }, [categories]);
+
+  const activePackageLabTestIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const id of addForm.lab_test_ids) ids.add(id);
+    for (const id of editForm.lab_test_ids) ids.add(id);
+    return ids;
+  }, [addForm.lab_test_ids, editForm.lab_test_ids]);
+
+  const packagePickerTests = useMemo(
+    () =>
+      tests.filter((t) => t.is_orderable !== false || activePackageLabTestIds.has(t.id)),
+    [tests, activePackageLabTestIds],
+  );
+
   const testOptions: TestOption[] = useMemo(
     () =>
-      tests.map((t) => ({
+      packagePickerTests.map((t) => ({
         id: t.id,
-        label: `${t.code} — ${t.name}`,
+        label: labTestCategoryPickerLabel(t, categoryNameById),
       })),
-    [tests],
+    [packagePickerTests, categoryNameById],
   );
 
   const filteredPackages = useMemo(() => {
@@ -447,15 +471,19 @@ export default function SettingsLabPackagesPage() {
     setListError("");
     setLoading(true);
     try {
-      const [pRes, tRes] = await Promise.all([
+      const [pRes, tRes, cRes] = await Promise.all([
         authenticatedFetch("/api/settings/laboratory/packages"),
         authenticatedFetch("/api/settings/laboratory/lab-tests"),
+        authenticatedFetch("/api/settings/laboratory/categories"),
       ]);
       const pJson = (await pRes.json().catch(() => null)) as
         | { packages?: LabPackageWithTests[]; error?: string }
         | null;
       const tJson = (await tRes.json().catch(() => null)) as
         | { tests?: LabTestCatalogItem[]; error?: string }
+        | null;
+      const cJson = (await cRes.json().catch(() => null)) as
+        | { categories?: LabCategoryRow[]; error?: string }
         | null;
 
       let errMsg = "";
@@ -472,11 +500,19 @@ export default function SettingsLabPackagesPage() {
       } else {
         setTests(tJson?.tests ?? []);
       }
+
+      if (!cRes.ok || cJson?.error) {
+        errMsg = errMsg || (cJson?.error ?? "Failed to load categories.");
+        setCategories([]);
+      } else {
+        setCategories(cJson?.categories ?? []);
+      }
       setListError(errMsg);
     } catch {
       setListError("Failed to load data.");
       setPackages([]);
       setTests([]);
+      setCategories([]);
     } finally {
       setLoading(false);
     }
@@ -494,7 +530,10 @@ export default function SettingsLabPackagesPage() {
 
   const openEdit = (r: LabPackageWithTests) => {
     setEditingId(r.id);
-    setEditForm(rowToForm(r));
+    const base = rowToForm(r);
+    const lab_test_ids =
+      tests.length > 0 ? collapseComponentsToPanel(base.lab_test_ids, tests) : base.lab_test_ids;
+    setEditForm({ ...base, lab_test_ids });
     setEditError("");
     setEditOpen(true);
   };
@@ -750,7 +789,6 @@ export default function SettingsLabPackagesPage() {
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <TableCell width={72}>ID</TableCell>
                     <TableCell>Name</TableCell>
                     <TableCell>Description</TableCell>
                     <TableCell align="right">Price</TableCell>
@@ -765,7 +803,7 @@ export default function SettingsLabPackagesPage() {
                 <TableBody>
                   {packages.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={8}>
+                      <TableCell colSpan={7}>
                         <Typography variant="body2" color="text.secondary">
                           No packages yet. Add one and attach lab tests.
                         </Typography>
@@ -773,7 +811,7 @@ export default function SettingsLabPackagesPage() {
                     </TableRow>
                   ) : filteredPackages.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={8}>
+                      <TableCell colSpan={7}>
                         <Typography variant="body2" color="text.secondary">
                           No packages match your search.
                         </Typography>
@@ -782,7 +820,6 @@ export default function SettingsLabPackagesPage() {
                   ) : (
                     pagedPackages.map((p) => (
                       <TableRow key={p.id} hover>
-                        <TableCell>{p.id}</TableCell>
                         <TableCell sx={{ fontWeight: 600 }}>{p.name}</TableCell>
                         <TableCell sx={{ maxWidth: 280, color: "text.secondary" }}>
                           <Typography variant="body2" noWrap title={p.description ?? undefined}>

@@ -27,6 +27,9 @@ import {
   Tooltip,
   Typography,
   MenuItem,
+  List,
+  ListItemButton,
+  ListItemText,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import RemoveIcon from "@mui/icons-material/Remove";
@@ -40,26 +43,39 @@ import FullscreenIcon from "@mui/icons-material/Fullscreen";
 import FullscreenExitIcon from "@mui/icons-material/FullscreenExit";
 import BackspaceOutlinedIcon from "@mui/icons-material/BackspaceOutlined";
 import CalculateOutlinedIcon from "@mui/icons-material/CalculateOutlined";
-import UndoOutlinedIcon from "@mui/icons-material/UndoOutlined";
 import PauseCircleOutlineIcon from "@mui/icons-material/PauseCircleOutline";
 import PlaylistPlayIcon from "@mui/icons-material/PlaylistPlay";
 import LocalOfferIcon from "@mui/icons-material/LocalOffer";
 import RemoveShoppingCartOutlinedIcon from "@mui/icons-material/RemoveShoppingCartOutlined";
 import AssignmentReturnOutlinedIcon from "@mui/icons-material/AssignmentReturnOutlined";
 import { useAuth } from "@/components/AuthProvider";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
+import {
+  openPharmacySaleReceiptPrint,
+  pharmacyReceiptLineFromCart,
+} from "@/lib/pharmacySaleReceiptPrint";
 import { LIFEHUB_LOGO_SRC } from "@/lib/lifehubLogo";
 import type { ProductPosRow } from "@/lib/pharmacyPosDb";
+import { fetchActiveDiscountTypes, type DiscountTypeRow } from "@/lib/discountTypes";
+import {
+  POS_BUILTIN_DISCOUNT_PRESETS,
+  POS_DISCOUNT_NONE,
+  computePosCartTotals,
+  discountSelectionsEqual,
+  formatPosDiscountButtonLabel,
+  isStatutoryScPwdCode,
+  selectionFromDbType,
+  type PosDiscountSelection,
+} from "@/lib/pharmacyPosDiscount";
 import {
   aggregateShiftSales,
   closeShiftWithZ,
-  completePharmacySale,
   fetchOpenShiftForUser,
   fetchPrescriptionCartByEncounter,
   fetchPosProductById,
   fetchProductByBarcode,
   fetchStockLotsForProduct,
   fetchOnHandQtyByProductIds,
-  generateOrNumber,
   getClosestStockExpiryYmd,
   openPharmacyShift,
   recordXReadingForShift,
@@ -72,11 +88,13 @@ import {
   type PharmacyCategoryRow,
   type PharmacySaleSearchRow,
   type PharmacySaleVoidDetail,
-  searchCompletedPharmacySalesByOrNumber,
-  fetchPharmacySaleWithItemsForVoid,
-  voidCompletedPharmacySale,
   processPharmacySaleReturn,
 } from "@/lib/pharmacyPosDb";
+import {
+  fetchPharmacySaleDetailApi,
+  searchPharmacySalesByOrApi,
+  voidPharmacySaleApi,
+} from "@/lib/pharmacySalesApi";
 
 type CartLine = {
   key: string;
@@ -121,6 +139,7 @@ type HeldSaleSnapshot = {
   prescriptionId: string | null;
   patientId: number | null;
   patientName: string | null;
+  posDiscount?: PosDiscountSelection;
 };
 
 function emptyDenomQty(): Record<string, string> {
@@ -200,6 +219,16 @@ function parseMoneyAmount(raw: string): number {
   return Number.isFinite(n) && n >= 0 ? round2(n) : 0;
 }
 
+/** Cash tendered field — digits with at most one decimal and two centavo places. */
+function sanitizeCashTenderedInput(raw: string): string {
+  let s = raw.replace(/[^\d.]/g, "");
+  const dot = s.indexOf(".");
+  if (dot === -1) return s;
+  const whole = s.slice(0, dot);
+  const frac = s.slice(dot + 1).replace(/\./g, "").slice(0, 2);
+  return `${whole}.${frac}`;
+}
+
 /** Encounter `trans_id` from printed prescription QR (UUID v4 shape). */
 function isEncounterTransId(s: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s.trim());
@@ -270,9 +299,13 @@ export default function PharmacyPosWorkspace() {
   const [payOpen, setPayOpen] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<string>("Cash");
   const [amountTendered, setAmountTendered] = useState("");
-  const [discountAmount, setDiscountAmount] = useState("0");
+  const [posDiscount, setPosDiscount] = useState<PosDiscountSelection>(POS_DISCOUNT_NONE);
   const [discountDialogOpen, setDiscountDialogOpen] = useState(false);
-  const [discountDraft, setDiscountDraft] = useState("0");
+  const [discountDraft, setDiscountDraft] = useState<PosDiscountSelection>(POS_DISCOUNT_NONE);
+  const [discountCustomPercent, setDiscountCustomPercent] = useState("10");
+  const [discountCustomFixed, setDiscountCustomFixed] = useState("0");
+  const [dbDiscountTypes, setDbDiscountTypes] = useState<DiscountTypeRow[]>([]);
+  const [dbDiscountsLoading, setDbDiscountsLoading] = useState(false);
   const [checkoutErr, setCheckoutErr] = useState<string | null>(null);
 
   const [shiftDialogOpen, setShiftDialogOpen] = useState(false);
@@ -283,12 +316,11 @@ export default function PharmacyPosWorkspace() {
   const [countGcashPeso, setCountGcashPeso] = useState("");
   const [countDebitPeso, setCountDebitPeso] = useState("");
 
-  const [cartSelectedKey, setCartSelectedKey] = useState<string | null>(null);
   const [heldSales, setHeldSales] = useState<HeldSaleSnapshot[]>([]);
   const [heldDialogOpen, setHeldDialogOpen] = useState(false);
   const heldHydrated = useRef(false);
 
-  /** Void a completed sale by OR / search (not the same as removing a cart line). */
+  /** Void a completed sale by sale # / search (not the same as removing a cart line). */
   const [voidSaleOpen, setVoidSaleOpen] = useState(false);
   const [voidOrQuery, setVoidOrQuery] = useState("");
   const [voidSaleResults, setVoidSaleResults] = useState<PharmacySaleSearchRow[]>([]);
@@ -315,6 +347,8 @@ export default function PharmacyPosWorkspace() {
 
   const searchRef = useRef<HTMLInputElement>(null);
   const posRootRef = useRef<HTMLDivElement>(null);
+  /** MUI Dialog portals to body by default; in browser fullscreen only this subtree is visible. */
+  const posDialogContainer = useCallback((): HTMLElement | null => posRootRef.current, []);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   /** Confirm quantity + show closest expiry before adding from search / barcode. */
@@ -328,6 +362,9 @@ export default function PharmacyPosWorkspace() {
   const addLineQtyInputRef = useRef<HTMLInputElement | null>(null);
   /** After open, first digit (keyboard or numpad) replaces default `1` like a POS register. */
   const addLineQtyFreshRef = useRef(true);
+  const payCashInputRef = useRef<HTMLInputElement | null>(null);
+  /** After open, first digit (keyboard or numpad) replaces the pre-filled total. */
+  const payCashFreshRef = useRef(true);
 
   useEffect(() => {
     const onFsChange = () => {
@@ -444,10 +481,63 @@ export default function PharmacyPosWorkspace() {
   }, []);
 
   useEffect(() => {
-    if (cartSelectedKey && !cart.some((l) => l.key === cartSelectedKey)) {
-      setCartSelectedKey(null);
+    if (!discountDialogOpen) return;
+    let cancelled = false;
+    setDbDiscountsLoading(true);
+    void fetchActiveDiscountTypes().then((r) => {
+      if (cancelled) return;
+      if (!r.error) setDbDiscountTypes(r.discounts);
+      setDbDiscountsLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [discountDialogOpen]);
+
+  const openDiscountModal = useCallback(() => {
+    setDiscountDraft(posDiscount);
+    if (posDiscount.kind === "fixed") {
+      setDiscountCustomFixed(String(posDiscount.fixedAmount ?? 0));
+    } else if (posDiscount.kind === "percent") {
+      setDiscountCustomPercent(String(posDiscount.percent ?? 10));
     }
-  }, [cart, cartSelectedKey]);
+    setDiscountDialogOpen(true);
+  }, [posDiscount]);
+
+  const applyDiscountDraft = useCallback(() => {
+    let next = discountDraft;
+    if (discountDraft.kind === "percent") {
+      const pct = Math.max(0, Math.min(100, Number(discountCustomPercent) || 0));
+      next = {
+        ...discountDraft,
+        percent: pct,
+        label:
+          discountDraft.typeCode === "PERCENT_CUSTOM"
+            ? `Custom (${pct}%)`
+            : discountDraft.label,
+      };
+    } else if (discountDraft.kind === "fixed") {
+      const amt = Math.max(0, Number(discountCustomFixed) || 0);
+      next = {
+        kind: "fixed",
+        label: `Fixed · ₱${amt.toFixed(2)}`,
+        typeCode: "FIXED",
+        fixedAmount: amt,
+      };
+    }
+    setPosDiscount(next);
+    setDiscountDialogOpen(false);
+  }, [discountDraft, discountCustomPercent, discountCustomFixed]);
+
+  const catalogDbDiscounts = useMemo(() => {
+    const builtinCodes = new Set(POS_BUILTIN_DISCOUNT_PRESETS.map((p) => (p.typeCode ?? "").toUpperCase()));
+    return dbDiscountTypes.filter((row) => {
+      if (isStatutoryScPwdCode(row.code) || isStatutoryScPwdCode(row.name)) return false;
+      const code = (row.code ?? "").trim().toUpperCase();
+      if (code && builtinCodes.has(code)) return false;
+      return true;
+    });
+  }, [dbDiscountTypes]);
 
   const openPriceCheckModal = useCallback(() => {
     setPriceCheckQuery("");
@@ -536,26 +626,33 @@ export default function PharmacyPosWorkspace() {
     return round2(sum);
   }, [denomQty, countGcashPeso, countDebitPeso]);
 
-  const totals = useMemo(() => {
-    let gross = 0;
-    let vat = 0;
-    for (const line of cart) {
-      const lineGross = line.qty * line.product.unit_price;
-      gross += lineGross;
-      vat += vatPortionFromInclusive(lineGross, defaultVatPct(line.product));
-    }
-    const disc = Math.max(0, Number(discountAmount) || 0);
-    const subtotal = Math.max(0, gross - disc);
-    const vatAdjusted = gross > 0 ? (subtotal / gross) * vat : 0;
-    const total = subtotal;
-    return {
-      gross: round2(gross),
-      discountApplied: round2(disc),
-      vat: round2(vatAdjusted),
-      subtotal: round2(subtotal),
-      total: round2(total),
-    };
-  }, [cart, discountAmount]);
+  const totals = useMemo(() => computePosCartTotals(cart, posDiscount), [cart, posDiscount]);
+
+  const payChangeDue = useMemo(() => {
+    const tendered = parseMoneyAmount(amountTendered);
+    return round2(Math.max(0, tendered - totals.total));
+  }, [amountTendered, totals.total]);
+
+  const discountDraftTotals = useMemo(() => {
+    const draft =
+      discountDraft.kind === "percent"
+        ? {
+            ...discountDraft,
+            percent: Math.max(0, Math.min(100, Number(discountCustomPercent) || 0)),
+            label:
+              discountDraft.typeCode === "PERCENT_CUSTOM"
+                ? `Custom (${Math.max(0, Math.min(100, Number(discountCustomPercent) || 0))}%)`
+                : discountDraft.label,
+          }
+        : discountDraft.kind === "fixed"
+          ? {
+              ...discountDraft,
+              fixedAmount: Math.max(0, Number(discountCustomFixed) || 0),
+              label: `Fixed · ₱${Math.max(0, Number(discountCustomFixed) || 0).toFixed(2)}`,
+            }
+          : discountDraft;
+    return computePosCartTotals(cart, draft);
+  }, [cart, discountDraft, discountCustomPercent, discountCustomFixed]);
 
   const addProductToCart = useCallback((p: ProductPosRow, qty = 1, prescId?: string | null) => {
     setCart((prev) => {
@@ -791,10 +888,74 @@ export default function PharmacyPosWorkspace() {
     setShiftOpenModal(false);
   }, [beginInput, servedBy, profile?.branch_code]);
 
+  const focusPayCashField = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      const el = payCashInputRef.current;
+      if (el) {
+        el.focus();
+        el.select();
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!payOpen || paymentMethod !== "Cash") return;
+    payCashFreshRef.current = true;
+    const id = window.requestAnimationFrame(() => {
+      const el = payCashInputRef.current;
+      if (el) {
+        el.focus();
+        el.select();
+      }
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [payOpen, paymentMethod, totals.total]);
+
+  const payNumpadDigit = useCallback((digit: string) => {
+    if (!/^\d$/.test(digit)) return;
+    setAmountTendered((prev) => {
+      if (payCashFreshRef.current) {
+        payCashFreshRef.current = false;
+        return digit;
+      }
+      return sanitizeCashTenderedInput(prev + digit);
+    });
+  }, []);
+
+  const payNumpadDecimal = useCallback(() => {
+    setAmountTendered((prev) => {
+      if (payCashFreshRef.current) {
+        payCashFreshRef.current = false;
+        return "0.";
+      }
+      if (prev.includes(".")) return prev;
+      return prev === "" ? "0." : `${prev}.`;
+    });
+  }, []);
+
+  const payNumpadBackspace = useCallback(() => {
+    setAmountTendered((prev) => {
+      if (payCashFreshRef.current || prev.length <= 1) {
+        payCashFreshRef.current = true;
+        return "";
+      }
+      payCashFreshRef.current = false;
+      return prev.slice(0, -1);
+    });
+  }, []);
+
+  const payNumpadClear = useCallback(() => {
+    const amt = totals.total.toFixed(2);
+    payCashFreshRef.current = true;
+    setAmountTendered(amt);
+    focusPayCashField();
+  }, [totals.total, focusPayCashField]);
+
   const openPaymentModal = useCallback(() => {
     if (!shiftId || cart.length === 0) return;
     setPaymentMethod((pm) => (pm === "GCash" || pm === "Cash" ? pm : "Cash"));
-    setAmountTendered((prev) => (prev.trim() === "" ? totals.total.toFixed(2) : prev));
+    payCashFreshRef.current = true;
+    setAmountTendered(totals.total.toFixed(2));
     setPayOpen(true);
   }, [totals.total, shiftId, cart.length]);
 
@@ -820,26 +981,58 @@ export default function PharmacyPosWorkspace() {
       discount: 0,
       pharmacyPrescriptionItemId: l.prescriptionItemId ?? null,
     }));
-    const orNum = await generateOrNumber();
-    const disc = Math.max(0, Number(discountAmount) || 0);
-    const { saleId, error } = await completePharmacySale({
-      shiftId,
-      patientId,
-      prescriptionId,
-      servedBy,
+    const receiptLines = cart.map((l) => pharmacyReceiptLineFromCart(l.product, l.qty));
+    const receiptPayloadBase = {
+      branchCode: profile?.branch_code ?? null,
+      cashierName: profile?.fullname?.trim() || profile?.username?.trim() || null,
+      patientName: patientName,
       paymentMethod,
-      amountTendered: paymentMethod.toLowerCase() === "cash" ? tendered : null,
-      changeAmount: change,
-      discountAmount: disc,
-      discountType: disc > 0 ? "MANUAL" : null,
-      subtotal: totals.subtotal,
+      lines: receiptLines,
+      itemsGross: totals.gross,
+      discountLabel: totals.discountApplied > 0 ? posDiscount.label : null,
+      discountAmount: totals.discountApplied,
       vatAmount: totals.vat,
       totalAmount: totals.total,
-      orNumber: orNum,
-      lines,
+      amountTendered: paymentMethod.toLowerCase() === "cash" ? tendered : null,
+      changeAmount: change,
+      soldAt: new Date(),
+    };
+    const res = await authenticatedFetch("/api/pharmacy/complete-sale", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        shiftId,
+        patientId,
+        prescriptionId,
+        servedBy,
+        paymentMethod,
+        amountTendered: paymentMethod.toLowerCase() === "cash" ? tendered : null,
+        changeAmount: change,
+        discountAmount: totals.discountApplied,
+        discountType: totals.discountApplied > 0 ? posDiscount.typeCode : null,
+        subtotal: totals.subtotal,
+        vatAmount: totals.vat,
+        totalAmount: totals.total,
+        lines,
+      }),
     });
-    if (error || !saleId) {
-      setCheckoutErr(error ?? "Checkout failed.");
+    const payload = (await res.json().catch(() => ({}))) as {
+      saleId?: string;
+      orNumber?: string;
+      error?: string;
+    };
+    if (!res.ok) {
+      setCheckoutErr(payload.error ?? "Checkout failed.");
+      return;
+    }
+    const saleId = payload.saleId;
+    if (!saleId) {
+      setCheckoutErr("Checkout failed.");
+      return;
+    }
+    const saleRef = payload.orNumber?.trim();
+    if (!saleRef) {
+      setCheckoutErr("Checkout succeeded but sale reference was missing.");
       return;
     }
     setCart([]);
@@ -847,9 +1040,9 @@ export default function PharmacyPosWorkspace() {
     setPrescriptionId(null);
     setPatientId(null);
     setPatientName(null);
-    setDiscountAmount("0");
+    setPosDiscount(POS_DISCOUNT_NONE);
     setAmountTendered("");
-    printReceipt(orNum, totals.total);
+    openPharmacySaleReceiptPrint({ ...receiptPayloadBase, orNumber: saleRef });
   }, [
     shiftId,
     cart,
@@ -859,27 +1052,10 @@ export default function PharmacyPosWorkspace() {
     patientId,
     prescriptionId,
     servedBy,
-    discountAmount,
+    posDiscount,
+    patientName,
+    profile,
   ]);
-
-  const printReceipt = (orNumber: string, total: number) => {
-    const w = window.open("", "_blank");
-    if (!w) return;
-    w.document.write(`<!DOCTYPE html><html><head><title>Receipt</title>
-      <style>
-        body{font-family:system-ui,sans-serif;padding:16px;max-width:320px;}
-        img.logo{height:36px;margin-bottom:8px;}
-        h1{font-size:14px;margin:0 0 8px;}
-      </style></head><body>
-      <img class="logo" src="${LIFEHUB_LOGO_SRC}" alt="LifeHub" />
-      <h1>Pharmacy sale</h1>
-      <p>OR: ${orNumber}</p>
-      <p><strong>Total: PHP ${total.toFixed(2)}</strong></p>
-      </body></html>`);
-    w.document.close();
-    w.focus();
-    w.print();
-  };
 
   const printReadingWindow = (title: string, snap: ShiftReadingSnapshot) => {
     const w = window.open("", "_blank");
@@ -919,18 +1095,6 @@ export default function PharmacyPosWorkspace() {
     printReadingWindow("X-Reading (interim)", snapshot);
   }, [shiftId, servedBy]);
 
-  const voidCartLine = useCallback(() => {
-    setCart((prev) => {
-      if (prev.length === 0) return prev;
-      const key =
-        cartSelectedKey && prev.some((l) => l.key === cartSelectedKey)
-          ? cartSelectedKey
-          : prev[prev.length - 1]!.key;
-      return prev.filter((l) => l.key !== key);
-    });
-    setCartSelectedKey(null);
-  }, [cartSelectedKey]);
-
   const holdCurrentSale = useCallback(() => {
     if (cart.length === 0) {
       setCheckoutErr("Cart is empty — nothing to hold.");
@@ -945,16 +1109,16 @@ export default function PharmacyPosWorkspace() {
       prescriptionId,
       patientId,
       patientName,
+      posDiscount,
     };
     setHeldSales((h) => [...h, snap]);
     setCart([]);
-    setCartSelectedKey(null);
     setPrescriptionId(null);
     setPatientId(null);
     setPatientName(null);
-    setDiscountAmount("0");
+    setPosDiscount(POS_DISCOUNT_NONE);
     setPosInfo("Sale held. Use Held carts to recall.");
-  }, [cart, totals.total, prescriptionId, patientId, patientName]);
+  }, [cart, totals.total, prescriptionId, patientId, patientName, posDiscount]);
 
   const recallHeldSale = useCallback((h: HeldSaleSnapshot) => {
     if (cart.length > 0) {
@@ -965,6 +1129,7 @@ export default function PharmacyPosWorkspace() {
     setPrescriptionId(h.prescriptionId);
     setPatientId(h.patientId);
     setPatientName(h.patientName);
+    setPosDiscount(h.posDiscount ?? POS_DISCOUNT_NONE);
     setHeldSales((list) => list.filter((x) => x.id !== h.id));
     setHeldDialogOpen(false);
     setPosInfo("Recalled held sale.");
@@ -990,7 +1155,7 @@ export default function PharmacyPosWorkspace() {
     setVoidSaleDetail(null);
     setVoidSaleSearching(true);
     try {
-      const { sales, error } = await searchCompletedPharmacySalesByOrNumber(voidOrQuery, 30);
+      const { sales, error } = await searchPharmacySalesByOrApi(voidOrQuery, 30);
       if (error) {
         setVoidSaleResults([]);
         setVoidSaleSearchErr(error);
@@ -998,7 +1163,7 @@ export default function PharmacyPosWorkspace() {
       }
       setVoidSaleResults(sales);
       if (sales.length === 0) {
-        setVoidSaleSearchErr("No completed sales match that OR / reference.");
+        setVoidSaleSearchErr("No completed sales match that sale # / reference.");
       }
     } finally {
       setVoidSaleSearching(false);
@@ -1013,7 +1178,7 @@ export default function PharmacyPosWorkspace() {
     let cancelled = false;
     setVoidSaleDetailLoading(true);
     void (async () => {
-      const { detail, error } = await fetchPharmacySaleWithItemsForVoid(voidSaleSelectedId);
+      const { detail, error } = await fetchPharmacySaleDetailApi(voidSaleSelectedId);
       if (cancelled) return;
       setVoidSaleDetailLoading(false);
       if (error) {
@@ -1036,15 +1201,7 @@ export default function PharmacyPosWorkspace() {
     if (!ok) return;
     setVoidSaleBusy(true);
     setCheckoutErr(null);
-    const uid =
-      profile != null && typeof profile.user_id === "number" && Number.isFinite(profile.user_id)
-        ? profile.user_id
-        : null;
-    const { error } = await voidCompletedPharmacySale({
-      saleId: voidSaleSelectedId,
-      voidedByUserId: uid,
-      reason: voidReason.trim() || undefined,
-    });
+    const { error } = await voidPharmacySaleApi(voidSaleSelectedId, voidReason.trim() || undefined);
     setVoidSaleBusy(false);
     if (error) {
       setCheckoutErr(error);
@@ -1052,7 +1209,7 @@ export default function PharmacyPosWorkspace() {
     }
     setVoidSaleOpen(false);
     setPosInfo(`Voided sale ${voidSaleDetail.sale.or_number}.`);
-  }, [voidSaleSelectedId, voidSaleDetail, profile, voidReason]);
+  }, [voidSaleSelectedId, voidSaleDetail, voidReason]);
 
   const openReturnSaleModal = useCallback(() => {
     setReturnOrQuery("");
@@ -1072,7 +1229,7 @@ export default function PharmacyPosWorkspace() {
     setReturnQtyDraft({});
     setReturnSaleSearching(true);
     try {
-      const { sales, error } = await searchCompletedPharmacySalesByOrNumber(returnOrQuery, 30);
+      const { sales, error } = await searchPharmacySalesByOrApi(returnOrQuery, 30);
       if (error) {
         setReturnSaleResults([]);
         setReturnSaleSearchErr(error);
@@ -1080,7 +1237,7 @@ export default function PharmacyPosWorkspace() {
       }
       setReturnSaleResults(sales);
       if (sales.length === 0) {
-        setReturnSaleSearchErr("No completed sales match that OR / reference.");
+        setReturnSaleSearchErr("No completed sales match that sale # / reference.");
       }
     } finally {
       setReturnSaleSearching(false);
@@ -1095,7 +1252,7 @@ export default function PharmacyPosWorkspace() {
     let cancelled = false;
     setReturnSaleDetailLoading(true);
     void (async () => {
-      const { detail, error } = await fetchPharmacySaleWithItemsForVoid(returnSaleSelectedId);
+      const { detail, error } = await fetchPharmacySaleDetailApi(returnSaleSelectedId);
       if (cancelled) return;
       setReturnSaleDetailLoading(false);
       if (error) {
@@ -1318,16 +1475,11 @@ export default function PharmacyPosWorkspace() {
         e.preventDefault();
         setHeldDialogOpen(true);
       }
-      if (e.key === "Delete") {
-        e.preventDefault();
-        voidCartLine();
-      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [
     holdCurrentSale,
-    voidCartLine,
     openPaymentModal,
     openPriceCheckModal,
     openVoidSaleModal,
@@ -1570,22 +1722,11 @@ export default function PharmacyPosWorkspace() {
             Cart
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            Tap a line to select · <strong>Delete</strong> removes the selected line (or last line) · <strong>Void paid sale</strong> (F7) cancels a whole receipt · <strong>Return / refund</strong> brings stock back for some or all lines
+            <strong>Void paid sale</strong> (F7) cancels a whole receipt · <strong>Return / refund</strong> brings stock back for some or all lines
           </Typography>
           <Stack spacing={1} sx={{ flex: 1, overflow: "auto" }}>
             {cart.map((line) => (
-              <Paper
-                key={line.key}
-                variant="outlined"
-                onClick={() => setCartSelectedKey(line.key)}
-                sx={{
-                  p: 1,
-                  cursor: "pointer",
-                  outline: cartSelectedKey === line.key ? "2px solid" : "none",
-                  outlineColor: "primary.main",
-                  outlineOffset: 2,
-                }}
-              >
+              <Paper key={line.key} variant="outlined" sx={{ p: 1 }}>
                 <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
                   <Box sx={{ minWidth: 0 }}>
                     <Typography variant="body2" fontWeight={600} noWrap>
@@ -1654,7 +1795,7 @@ export default function PharmacyPosWorkspace() {
             {totals.discountApplied > 0 && (
               <Stack direction="row" justifyContent="space-between">
                 <Typography variant="body2" color="success.main">
-                  Discount
+                  {posDiscount.label}
                 </Typography>
                 <Typography variant="body2" sx={{ fontVariantNumeric: "tabular-nums" }} color="success.main">
                   −₱{totals.discountApplied.toFixed(2)}
@@ -1684,12 +1825,9 @@ export default function PharmacyPosWorkspace() {
             fullWidth
             startIcon={<LocalOfferIcon />}
             disabled={cart.length === 0}
-            onClick={() => {
-              setDiscountDraft(discountAmount);
-              setDiscountDialogOpen(true);
-            }}
+            onClick={openDiscountModal}
           >
-            {Number(discountAmount) > 0 ? `Discount · ₱${Number(discountAmount).toFixed(2)}` : "Discount"}
+            {formatPosDiscountButtonLabel(posDiscount, totals.discountApplied)}
           </Button>
           <Button
             variant="contained"
@@ -1727,7 +1865,7 @@ export default function PharmacyPosWorkspace() {
         >
           Cash count
         </Button>
-        <Tooltip title="Return items to stock and reduce the sale total (search by OR #)">
+        <Tooltip title="Return items to stock and reduce the sale total (search by sale #)">
           <Button
             variant="contained"
             color="warning"
@@ -1739,7 +1877,7 @@ export default function PharmacyPosWorkspace() {
             Return / refund
           </Button>
         </Tooltip>
-        <Tooltip title="Search a completed sale by OR # and void the whole transaction (F7)">
+        <Tooltip title="Search a completed sale by sale # and void the whole transaction (F7)">
           <Button
             variant="contained"
             color="error"
@@ -1750,20 +1888,6 @@ export default function PharmacyPosWorkspace() {
           >
             Void paid sale
           </Button>
-        </Tooltip>
-        <Tooltip title="Remove selected cart line, or the last line if none selected (Delete)">
-          <span>
-            <Button
-              variant="contained"
-              sx={{ ...POS_FOOTER_BTN_SX, bgcolor: "grey.600", color: "#fff", "&:hover": { bgcolor: "grey.800" } }}
-              size="medium"
-              startIcon={<UndoOutlinedIcon />}
-              disabled={cart.length === 0}
-              onClick={() => voidCartLine()}
-            >
-              Remove line
-            </Button>
-          </span>
         </Tooltip>
         <Tooltip title="Look up price in a window (F5)">
           <Button
@@ -1804,15 +1928,20 @@ export default function PharmacyPosWorkspace() {
           Held carts{heldSales.length > 0 ? ` (${heldSales.length})` : ""}
         </Button>
         <Divider orientation="vertical" flexItem sx={{ display: { xs: "none", sm: "block" }, alignSelf: "stretch", mx: 0.5 }} />
-        <Button
-          variant="contained"
-          color="primary"
-          size="medium"
-          sx={POS_FOOTER_BTN_SX}
-          onClick={() => setShiftOpenModal(true)}
-        >
-          Start shift
-        </Button>
+        <Tooltip title={shiftId ? "Shift already open — use EOD to close" : "Enter beginning cash to open today's shift"}>
+          <span>
+            <Button
+              variant="contained"
+              color="primary"
+              size="medium"
+              sx={POS_FOOTER_BTN_SX}
+              disabled={!!shiftId}
+              onClick={() => setShiftOpenModal(true)}
+            >
+              Start shift
+            </Button>
+          </span>
+        </Tooltip>
         <Tooltip title="End of shift">
           <Button
             variant="contained"
@@ -1830,11 +1959,11 @@ export default function PharmacyPosWorkspace() {
           </Button>
         </Tooltip>
         <Typography variant="caption" color="text.secondary" sx={{ flex: 1, minWidth: 200 }}>
-          One bar: type, scan, or encounter UUID · Enter · F2 search · F3 hold · F4 pay · F5 price check · F6 cash count · F7 void paid sale · F9 held carts · Delete remove line · Esc full screen
+          One bar: type, scan, or encounter UUID · Enter · F2 search · F3 hold · F4 pay · F5 price check · F6 cash count · F7 void paid sale · F9 held carts · Esc full screen
         </Typography>
       </Paper>
 
-      <Dialog open={shiftOpenModal} onClose={() => shiftId && setShiftOpenModal(false)}>
+      <Dialog container={posDialogContainer} open={shiftOpenModal} onClose={() => shiftId && setShiftOpenModal(false)}>
         <DialogTitle>Beginning cash</DialogTitle>
         <DialogContent>
           <TextField
@@ -1858,6 +1987,7 @@ export default function PharmacyPosWorkspace() {
       </Dialog>
 
       <Dialog
+        container={posDialogContainer}
         open={priceCheckOpen}
         onClose={() => {
           setPriceCheckOpen(false);
@@ -1991,48 +2121,177 @@ export default function PharmacyPosWorkspace() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={discountDialogOpen} onClose={() => setDiscountDialogOpen(false)} maxWidth="xs" fullWidth>
+      <Dialog container={posDialogContainer} open={discountDialogOpen} onClose={() => setDiscountDialogOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Discount</DialogTitle>
         <DialogContent>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2, mt: 0.5 }}>
-            Enter a peso amount to subtract from the cart before VAT display. Items total:{" "}
-            <strong>₱{totals.gross.toFixed(2)}</strong>
-          </Typography>
-          <TextField
-            autoFocus
-            fullWidth
-            label="Discount (PHP)"
-            value={discountDraft}
-            onChange={(e) => setDiscountDraft(e.target.value.replace(/[^\d.]/g, ""))}
-            sx={POS_BAR_FIELD_SX}
-          />
+          <Stack spacing={2.5} sx={{ mt: 0.5 }}>
+            <Typography variant="body2" color="text.secondary">
+              Cart subtotal (VAT-inclusive): <strong>₱{totals.gross.toFixed(2)}</strong>
+              {discountDraftTotals.discountApplied > 0 ? (
+                <>
+                  {" "}
+                  · After discount: <strong>₱{discountDraftTotals.total.toFixed(2)}</strong> (−₱
+                  {discountDraftTotals.discountApplied.toFixed(2)})
+                </>
+              ) : null}
+            </Typography>
+
+            <Box>
+              <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
+                Philippines (medicines)
+              </Typography>
+              <List dense disablePadding>
+                {POS_BUILTIN_DISCOUNT_PRESETS.filter((p) => p.kind === "sc" || p.kind === "pwd").map((preset) => (
+                  <ListItemButton
+                    key={preset.typeCode}
+                    selected={discountSelectionsEqual(discountDraft, preset)}
+                    onClick={() => setDiscountDraft(preset)}
+                    sx={{ borderRadius: 2, mb: 0.5, border: "1px solid", borderColor: "divider" }}
+                  >
+                    <ListItemText
+                      primary={preset.label}
+                      secondary={preset.description}
+                      primaryTypographyProps={{ fontWeight: 700 }}
+                    />
+                  </ListItemButton>
+                ))}
+              </List>
+            </Box>
+
+            <Box>
+              <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
+                Store discounts
+              </Typography>
+              <List dense disablePadding>
+                {POS_BUILTIN_DISCOUNT_PRESETS.filter((p) => p.kind !== "sc" && p.kind !== "pwd").map((preset) => (
+                  <ListItemButton
+                    key={preset.typeCode}
+                    selected={discountSelectionsEqual(discountDraft, preset)}
+                    onClick={() => setDiscountDraft(preset)}
+                    sx={{ borderRadius: 2, mb: 0.5, border: "1px solid", borderColor: "divider" }}
+                  >
+                    <ListItemText
+                      primary={preset.label}
+                      secondary={preset.description}
+                      primaryTypographyProps={{ fontWeight: 600 }}
+                    />
+                  </ListItemButton>
+                ))}
+              </List>
+            </Box>
+
+            {dbDiscountsLoading ? (
+              <Stack direction="row" spacing={1} alignItems="center">
+                <CircularProgress size={20} />
+                <Typography variant="body2" color="text.secondary">
+                  Loading discount catalog…
+                </Typography>
+              </Stack>
+            ) : catalogDbDiscounts.length > 0 ? (
+              <Box>
+                <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
+                  From catalog
+                </Typography>
+                <List dense disablePadding>
+                  {catalogDbDiscounts.map((row) => {
+                    const sel = selectionFromDbType(row);
+                    return (
+                      <ListItemButton
+                        key={row.id}
+                        selected={discountSelectionsEqual(discountDraft, sel)}
+                        onClick={() => setDiscountDraft(sel)}
+                        sx={{ borderRadius: 2, mb: 0.5, border: "1px solid", borderColor: "divider" }}
+                      >
+                        <ListItemText
+                          primary={row.name}
+                          secondary={`${row.code} · ${Number(row.discount_pct) || 0}%`}
+                          primaryTypographyProps={{ fontWeight: 600 }}
+                        />
+                      </ListItemButton>
+                    );
+                  })}
+                </List>
+              </Box>
+            ) : null}
+
+            <Divider />
+
+            <Typography variant="subtitle2" fontWeight={700}>
+              Other
+            </Typography>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+              <TextField
+                fullWidth
+                label="Custom % off"
+                value={discountCustomPercent}
+                onChange={(e) => {
+                  setDiscountCustomPercent(e.target.value.replace(/[^\d.]/g, ""));
+                  setDiscountDraft({
+                    kind: "percent",
+                    label: "Custom %",
+                    typeCode: "PERCENT_CUSTOM",
+                    percent: Number(e.target.value) || 0,
+                  });
+                }}
+                onFocus={() =>
+                  setDiscountDraft({
+                    kind: "percent",
+                    label: "Custom %",
+                    typeCode: "PERCENT_CUSTOM",
+                    percent: Number(discountCustomPercent) || 0,
+                  })
+                }
+                inputProps={{ inputMode: "decimal" }}
+                sx={POS_BAR_FIELD_SX}
+              />
+              <TextField
+                fullWidth
+                label="Fixed amount (PHP)"
+                value={discountCustomFixed}
+                onChange={(e) => {
+                  setDiscountCustomFixed(e.target.value.replace(/[^\d.]/g, ""));
+                  setDiscountDraft({
+                    kind: "fixed",
+                    label: "Fixed amount",
+                    typeCode: "FIXED",
+                    fixedAmount: Number(e.target.value) || 0,
+                  });
+                }}
+                onFocus={() =>
+                  setDiscountDraft({
+                    kind: "fixed",
+                    label: "Fixed amount",
+                    typeCode: "FIXED",
+                    fixedAmount: Number(discountCustomFixed) || 0,
+                  })
+                }
+                inputProps={{ inputMode: "decimal" }}
+                sx={POS_BAR_FIELD_SX}
+              />
+            </Stack>
+          </Stack>
         </DialogContent>
-        <DialogActions sx={{ flexWrap: "wrap", gap: 1 }}>
+        <DialogActions sx={{ flexWrap: "wrap", gap: 1, px: 3, pb: 2 }}>
           <Button
             onClick={() => {
-              setDiscountDraft("0");
-              setDiscountAmount("0");
+              setDiscountDraft(POS_DISCOUNT_NONE);
+              setPosDiscount(POS_DISCOUNT_NONE);
+              setDiscountCustomPercent("10");
+              setDiscountCustomFixed("0");
               setDiscountDialogOpen(false);
             }}
           >
             Clear discount
           </Button>
+          <Box sx={{ flex: 1 }} />
           <Button onClick={() => setDiscountDialogOpen(false)}>Cancel</Button>
-          <Button
-            variant="contained"
-            onClick={() => {
-              const n = Number(discountDraft);
-              if (!Number.isFinite(n) || n < 0) return;
-              setDiscountAmount(String(Math.max(0, n)));
-              setDiscountDialogOpen(false);
-            }}
-          >
+          <Button variant="contained" onClick={applyDiscountDraft}>
             Apply
           </Button>
         </DialogActions>
       </Dialog>
 
-      <Dialog open={payOpen} onClose={() => setPayOpen(false)} maxWidth="xs" fullWidth>
+      <Dialog container={posDialogContainer} open={payOpen} onClose={() => setPayOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Payment</DialogTitle>
         <DialogContent>
           <Stack spacing={2.5} sx={{ mt: 1 }}>
@@ -2052,7 +2311,9 @@ export default function PharmacyPosWorkspace() {
                   onClick={() => {
                     setPaymentMethod(m);
                     if (m === "Cash") {
-                      setAmountTendered((prev) => (prev.trim() === "" ? totals.total.toFixed(2) : prev));
+                      payCashFreshRef.current = true;
+                      setAmountTendered(totals.total.toFixed(2));
+                      focusPayCashField();
                     }
                   }}
                 >
@@ -2061,13 +2322,121 @@ export default function PharmacyPosWorkspace() {
               ))}
             </Stack>
             {paymentMethod === "Cash" && (
-              <TextField
-                label="Cash received"
-                value={amountTendered}
-                onChange={(e) => setAmountTendered(e.target.value)}
-                fullWidth
-                sx={POS_BAR_FIELD_SX}
-              />
+              <Stack spacing={2} alignItems="center">
+                <TextField
+                  inputRef={payCashInputRef}
+                  label="Cash received"
+                  value={amountTendered}
+                  onChange={(e) => {
+                    payCashFreshRef.current = false;
+                    setAmountTendered(sanitizeCashTenderedInput(e.target.value));
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void pay();
+                    }
+                  }}
+                  onClick={() => {
+                    payCashFreshRef.current = false;
+                  }}
+                  fullWidth
+                  autoFocus
+                  inputProps={{ inputMode: "decimal", "aria-label": "Cash received from customer" }}
+                  helperText="Type or use the keypad — first key replaces the amount shown."
+                  InputLabelProps={{ shrink: true }}
+                  sx={{
+                    maxWidth: 360,
+                    width: "100%",
+                    "& .MuiOutlinedInput-root": { borderRadius: 2 },
+                    "& .MuiOutlinedInput-input": {
+                      fontSize: "1.5rem",
+                      fontWeight: 800,
+                      textAlign: "center",
+                      py: 1.25,
+                      fontVariantNumeric: "tabular-nums",
+                    },
+                  }}
+                />
+                {payChangeDue > 0 && (
+                  <Typography variant="h6" fontWeight={800} color="success.main" sx={{ fontVariantNumeric: "tabular-nums" }}>
+                    Change: ₱{payChangeDue.toFixed(2)}
+                  </Typography>
+                )}
+                <Box
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                    gap: 1,
+                    maxWidth: 360,
+                    width: "100%",
+                  }}
+                >
+                  {(["7", "8", "9", "4", "5", "6", "1", "2", "3"] as const).map((d) => (
+                    <Button
+                      key={d}
+                      variant="outlined"
+                      size="large"
+                      onClick={() => payNumpadDigit(d)}
+                      sx={{
+                        minHeight: 52,
+                        fontSize: "1.35rem",
+                        fontWeight: 800,
+                        borderRadius: 2,
+                        bgcolor: "background.paper",
+                      }}
+                    >
+                      {d}
+                    </Button>
+                  ))}
+                  <Button
+                    variant="outlined"
+                    color="warning"
+                    size="large"
+                    onClick={payNumpadClear}
+                    sx={{ minHeight: 52, fontWeight: 800, borderRadius: 2, bgcolor: "background.paper" }}
+                  >
+                    Clear
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    size="large"
+                    onClick={payNumpadDecimal}
+                    sx={{
+                      minHeight: 52,
+                      fontSize: "1.35rem",
+                      fontWeight: 800,
+                      borderRadius: 2,
+                      bgcolor: "background.paper",
+                    }}
+                  >
+                    .
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    size="large"
+                    onClick={() => payNumpadDigit("0")}
+                    sx={{
+                      minHeight: 52,
+                      fontSize: "1.35rem",
+                      fontWeight: 800,
+                      borderRadius: 2,
+                      bgcolor: "background.paper",
+                    }}
+                  >
+                    0
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    size="large"
+                    aria-label="Backspace cash amount"
+                    onClick={payNumpadBackspace}
+                    sx={{ gridColumn: "1 / -1", minHeight: 52, borderRadius: 2, bgcolor: "background.paper" }}
+                  >
+                    <BackspaceOutlinedIcon />
+                  </Button>
+                </Box>
+              </Stack>
             )}
             {paymentMethod === "GCash" && (
               <Typography variant="body2" color="text.secondary">
@@ -2087,7 +2456,7 @@ export default function PharmacyPosWorkspace() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={shiftDialogOpen} onClose={() => setShiftDialogOpen(false)} maxWidth="xs" fullWidth>
+      <Dialog container={posDialogContainer} open={shiftDialogOpen} onClose={() => setShiftDialogOpen(false)} maxWidth="xs" fullWidth>
         <DialogTitle>End of shift</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
@@ -2117,7 +2486,7 @@ export default function PharmacyPosWorkspace() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={cashCountOpen} onClose={() => setCashCountOpen(false)} maxWidth="md" fullWidth>
+      <Dialog container={posDialogContainer} open={cashCountOpen} onClose={() => setCashCountOpen(false)} maxWidth="md" fullWidth>
         <DialogTitle>Cash count</DialogTitle>
         <DialogContent>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
@@ -2207,7 +2576,7 @@ export default function PharmacyPosWorkspace() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={heldDialogOpen} onClose={() => setHeldDialogOpen(false)} maxWidth="sm" fullWidth>
+      <Dialog container={posDialogContainer} open={heldDialogOpen} onClose={() => setHeldDialogOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Held carts</DialogTitle>
         <DialogContent>
           {heldSales.length === 0 ? (
@@ -2243,6 +2612,7 @@ export default function PharmacyPosWorkspace() {
       </Dialog>
 
       <Dialog
+        container={posDialogContainer}
         open={voidSaleOpen}
         onClose={() => !voidSaleBusy && setVoidSaleOpen(false)}
         maxWidth="md"
@@ -2251,13 +2621,13 @@ export default function PharmacyPosWorkspace() {
         <DialogTitle>Void paid sale</DialogTitle>
         <DialogContent>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Search by OR number (or part of it). Pick the sale, review lines, then void. Inventory is returned to the lots used at checkout when possible.
+            Search by sale # (or part of it). Pick the sale, review lines, then void. Inventory is returned to the lots used at checkout when possible.
           </Typography>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 2 }}>
             <TextField
               autoFocus
               fullWidth
-              label="OR # / receipt reference"
+              label="Sale #"
               value={voidOrQuery}
               onChange={(e) => setVoidOrQuery(e.target.value)}
               onKeyDown={(e) => {
@@ -2281,7 +2651,7 @@ export default function PharmacyPosWorkspace() {
             <Table size="small" stickyHeader>
               <TableHead>
                 <TableRow>
-                  <TableCell>OR #</TableCell>
+                  <TableCell>Sale #</TableCell>
                   <TableCell>Date</TableCell>
                   <TableCell align="right">Total</TableCell>
                   <TableCell>Payment</TableCell>
@@ -2309,7 +2679,7 @@ export default function PharmacyPosWorkspace() {
                   <TableRow>
                     <TableCell colSpan={4} align="center">
                       <Typography variant="body2" color="text.secondary">
-                        No results yet — enter OR and search.
+                        No results yet — enter sale # and search.
                       </Typography>
                     </TableCell>
                   </TableRow>
@@ -2397,6 +2767,7 @@ export default function PharmacyPosWorkspace() {
       </Dialog>
 
       <Dialog
+        container={posDialogContainer}
         open={returnSaleOpen}
         onClose={() => !returnSaleBusy && setReturnSaleOpen(false)}
         maxWidth="md"
@@ -2411,7 +2782,7 @@ export default function PharmacyPosWorkspace() {
             <TextField
               autoFocus
               fullWidth
-              label="OR # / receipt reference"
+              label="Sale #"
               value={returnOrQuery}
               onChange={(e) => setReturnOrQuery(e.target.value)}
               onKeyDown={(e) => {
@@ -2435,7 +2806,7 @@ export default function PharmacyPosWorkspace() {
             <Table size="small" stickyHeader>
               <TableHead>
                 <TableRow>
-                  <TableCell>OR #</TableCell>
+                  <TableCell>Sale #</TableCell>
                   <TableCell>Date</TableCell>
                   <TableCell align="right">Total</TableCell>
                   <TableCell>Payment</TableCell>
@@ -2463,7 +2834,7 @@ export default function PharmacyPosWorkspace() {
                   <TableRow>
                     <TableCell colSpan={4} align="center">
                       <Typography variant="body2" color="text.secondary">
-                        No results yet — enter OR and search.
+                        No results yet — enter sale # and search.
                       </Typography>
                     </TableCell>
                   </TableRow>
@@ -2566,7 +2937,7 @@ export default function PharmacyPosWorkspace() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={addLineOpen} onClose={closeAddLineModal} maxWidth="sm" fullWidth>
+      <Dialog container={posDialogContainer} open={addLineOpen} onClose={closeAddLineModal} maxWidth="sm" fullWidth>
         <DialogTitle>Add to cart</DialogTitle>
         <DialogContent>
           {addLineProduct && (
@@ -2715,7 +3086,7 @@ export default function PharmacyPosWorkspace() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={catalogOpen} onClose={() => setCatalogOpen(false)} maxWidth="sm" fullWidth>
+      <Dialog container={posDialogContainer} open={catalogOpen} onClose={() => setCatalogOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Catalog</DialogTitle>
         <DialogContent>
           <Typography variant="subtitle2" sx={{ mt: 1 }}>

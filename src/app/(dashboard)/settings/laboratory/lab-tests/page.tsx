@@ -1,12 +1,21 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type Dispatch,
+  type MouseEvent,
+  type SetStateAction,
+} from "react";
 import {
   Alert,
   Box,
   Button,
   Card,
   CardContent,
+  Checkbox,
   Chip,
   CircularProgress,
   Dialog,
@@ -18,6 +27,7 @@ import {
   IconButton,
   InputAdornment,
   InputLabel,
+  ListItemText,
   MenuItem,
   Select,
   type SelectChangeEvent,
@@ -38,7 +48,17 @@ import AddIcon from "@mui/icons-material/Add";
 import SearchIcon from "@mui/icons-material/Search";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
+import {
+  buildPrintLayoutJsonFromFormFields,
+  printLayoutFormFieldsFromDb,
+} from "@/lib/labResultsPrintLayout";
 import type { LabCategoryRow, LabTestCatalogItem } from "@/lib/labTests";
+import {
+  filterOrderableLabTests,
+  isNonOrderableResultLine,
+  LAB_RESULTS_PRINT_TEMPLATE_CODES_ORDER,
+  splitAllowlistedResultsTemplateCodes,
+} from "@/lib/labTests";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 
 type TestForm = {
@@ -55,6 +75,13 @@ type TestForm = {
   requires_fasting: boolean;
   sort_order: string;
   is_active: boolean;
+  is_orderable: boolean;
+  panel_lab_test_ids: string[];
+  print_ref_x: string;
+  print_ref_from_top: string;
+  print_font_size: string;
+  print_max_width: string;
+  print_page_index: string;
 };
 
 const emptyForm = (): TestForm => ({
@@ -71,9 +98,18 @@ const emptyForm = (): TestForm => ({
   requires_fasting: false,
   sort_order: "",
   is_active: true,
+  is_orderable: true,
+  panel_lab_test_ids: [],
+  print_ref_x: "",
+  print_ref_from_top: "",
+  print_font_size: "",
+  print_max_width: "",
+  print_page_index: "",
 });
 
 function rowToForm(r: LabTestCatalogItem): TestForm {
+  const tplCodes = splitAllowlistedResultsTemplateCodes(r.results_template_code);
+  const layout = printLayoutFormFieldsFromDb(r.results_print_layout);
   return {
     category_id: String(r.category_id ?? ""),
     code: r.code ?? "",
@@ -82,12 +118,15 @@ function rowToForm(r: LabTestCatalogItem): TestForm {
     specimen_type: r.specimen_type ?? "",
     unit: r.unit ?? "",
     reference_range: r.reference_range ?? "",
-    results_template_code: r.results_template_code ?? "",
+    results_template_code: tplCodes[0] ?? "",
     turnaround_hours: r.turnaround_hours == null ? "" : String(r.turnaround_hours),
     price: r.price == null || r.price === "" ? "" : String(r.price),
     requires_fasting: r.requires_fasting === true,
     sort_order: r.sort_order == null ? "" : String(r.sort_order),
     is_active: r.is_active !== false,
+    is_orderable: r.is_orderable !== false,
+    panel_lab_test_ids: r.panel_lab_test_ids ?? [],
+    ...layout,
   };
 }
 
@@ -97,6 +136,118 @@ const fieldSx = {
     "& .MuiOutlinedInput-root": { minHeight: 44, borderRadius: 2 },
   },
 };
+
+type OrderedAsPanelMultiSelectProps = {
+  value: string[];
+  onChange: (ids: string[]) => void;
+  options: LabTestCatalogItem[];
+  renderValue: (ids: string[]) => string;
+  emptyMessage: string;
+  required?: boolean;
+};
+
+function OrderedAsPanelMultiSelect({
+  value,
+  onChange,
+  options,
+  renderValue,
+  emptyMessage,
+  required = true,
+}: OrderedAsPanelMultiSelectProps) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<string[]>([]);
+
+  const openMenu = () => {
+    setDraft([...value]);
+    setOpen(true);
+  };
+
+  const cancel = (e?: MouseEvent) => {
+    e?.stopPropagation();
+    setDraft([...value]);
+    setOpen(false);
+  };
+
+  const confirm = (e?: MouseEvent) => {
+    e?.stopPropagation();
+    onChange([...draft]);
+    setOpen(false);
+  };
+
+  const toggleId = (id: string) => {
+    setDraft((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
+  return (
+    <FormControl fullWidth required={required} sx={fieldSx.sx}>
+      <InputLabel id="lab-test-panel-label">Ordered as</InputLabel>
+      <Select<string[]>
+        labelId="lab-test-panel-label"
+        label="Ordered as"
+        multiple
+        open={open}
+        onOpen={openMenu}
+        value={value}
+        renderValue={(selected) => renderValue(selected)}
+        MenuProps={{
+          autoFocus: false,
+          PaperProps: { sx: { maxHeight: 360 } },
+          onClose: (_e, reason) => {
+            if (reason === "backdropClick" || reason === "escapeKeyDown") {
+              setDraft([...value]);
+            }
+            setOpen(false);
+          },
+        }}
+      >
+        {options.length === 0 ? (
+          <MenuItem value="" disabled>
+            {emptyMessage}
+          </MenuItem>
+        ) : (
+          options.map((p) => (
+            <MenuItem
+              key={p.id}
+              value={p.id}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                toggleId(p.id);
+              }}
+            >
+              <Checkbox checked={draft.includes(p.id)} size="small" />
+              <ListItemText primary={`${p.code} — ${p.name}`} />
+            </MenuItem>
+          ))
+        )}
+        {options.length > 0 ? (
+          <MenuItem
+            disableRipple
+            dense
+            sx={{
+              opacity: 1,
+              borderTop: 1,
+              borderColor: "divider",
+              "&.Mui-focusVisible": { backgroundColor: "transparent" },
+              "&:hover": { backgroundColor: "transparent" },
+            }}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Box sx={{ display: "flex", gap: 1, justifyContent: "flex-end", width: "100%", py: 0.5 }}>
+              <Button size="small" onClick={cancel}>
+                Cancel
+              </Button>
+              <Button size="small" variant="contained" onClick={confirm}>
+                OK
+              </Button>
+            </Box>
+          </MenuItem>
+        ) : null}
+      </Select>
+    </FormControl>
+  );
+}
 
 const paginationSx = {
   "& .MuiTablePagination-toolbar": { textTransform: "none" as const },
@@ -142,6 +293,7 @@ export default function SettingsLabTestsPage() {
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [deleteError, setDeleteError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [orderableOnlyFilter, setOrderableOnlyFilter] = useState(false);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
 
@@ -198,10 +350,36 @@ export default function SettingsLabTestsPage() {
     [categories],
   );
 
+  const nonOrderableLines = useMemo(() => tests.filter(isNonOrderableResultLine), [tests]);
+  const testById = useMemo(() => new Map(tests.map((t) => [t.id, t])), [tests]);
+
+  const panelLabel = useCallback(
+    (panelId: string | null | undefined) => {
+      if (!panelId) return "—";
+      const p = testById.get(panelId);
+      if (!p) return panelId;
+      return p.name?.trim() || p.code || panelId;
+    },
+    [testById],
+  );
+
+  const panelLabels = useCallback(
+    (panelIds: string[]) => {
+      const labels = panelIds.map((id) => panelLabel(id)).filter((l) => l !== "—");
+      return labels.length > 0 ? labels.join(", ") : "—";
+    },
+    [panelLabel],
+  );
+
+  const listSourceTests = useMemo(
+    () => (orderableOnlyFilter ? filterOrderableLabTests(tests) : tests),
+    [tests, orderableOnlyFilter],
+  );
+
   const filteredTests = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return tests;
-    return tests.filter((t) => {
+    if (!q) return listSourceTests;
+    return listSourceTests.filter((t) => {
       const cat = categoryLabel(t.category_id).toLowerCase();
       const hay = [
         t.code,
@@ -221,7 +399,7 @@ export default function SettingsLabTestsPage() {
         .toLowerCase();
       return hay.includes(q);
     });
-  }, [tests, searchQuery, categoryLabel]);
+  }, [listSourceTests, searchQuery, categoryLabel]);
 
   useEffect(() => {
     setPage(0);
@@ -278,6 +456,23 @@ export default function SettingsLabTestsPage() {
     if (f.price.trim() !== "" && price === null) {
       return { error: "Price must be a valid number or empty." as const };
     }
+    if (!f.is_orderable && f.panel_lab_test_ids.length === 0) {
+      return {
+        error: "Select at least one orderable panel test for non-orderable result lines." as const,
+      };
+    }
+
+    const layoutBuilt = buildPrintLayoutJsonFromFormFields({
+      print_ref_x: f.print_ref_x,
+      print_ref_from_top: f.print_ref_from_top,
+      print_font_size: f.print_font_size,
+      print_max_width: f.print_max_width,
+      print_page_index: f.print_page_index,
+    });
+    if (!layoutBuilt.ok) {
+      return { error: layoutBuilt.error };
+    }
+
     const body: Record<string, unknown> = {
       category_id,
       code,
@@ -287,11 +482,14 @@ export default function SettingsLabTestsPage() {
       unit: f.unit.trim() || null,
       reference_range: f.reference_range.trim() || null,
       results_template_code: f.results_template_code.trim() || null,
+      results_print_layout: layoutBuilt.value,
       turnaround_hours,
       price,
       requires_fasting: f.requires_fasting,
       sort_order,
       is_active: f.is_active,
+      is_orderable: f.is_orderable,
+      panel_lab_test_ids: f.panel_lab_test_ids,
     };
     return { body };
   };
@@ -379,7 +577,26 @@ export default function SettingsLabTestsPage() {
     }
   };
 
-  const formFields = (form: TestForm, setForm: Dispatch<SetStateAction<TestForm>>) => (
+  const orderablePanelOptions = useCallback(
+    (form: TestForm, excludeTestId?: string | null) => {
+      const catId = form.category_id.trim();
+      if (!catId) return [];
+      return filterOrderableLabTests(tests).filter(
+        (t) =>
+          String(t.category_id) === catId &&
+          (!excludeTestId || t.id !== excludeTestId),
+      );
+    },
+    [tests],
+  );
+
+  const formFields = (
+    form: TestForm,
+    setForm: Dispatch<SetStateAction<TestForm>>,
+    excludeTestId?: string | null,
+  ) => {
+    const panelOptions = orderablePanelOptions(form, excludeTestId);
+    return (
     <Stack spacing={2} sx={{ pt: 0.5 }}>
       <FormControl fullWidth required sx={fieldSx.sx}>
         <InputLabel id="lab-test-category-label">Category</InputLabel>
@@ -444,13 +661,77 @@ export default function SettingsLabTestsPage() {
         onChange={(e) => setForm((f) => ({ ...f, reference_range: e.target.value }))}
         {...fieldSx}
       />
-      <TextField
-        label="Results template code"
-        placeholder="e.g. BLOODCHEM3"
-        value={form.results_template_code}
-        onChange={(e) => setForm((f) => ({ ...f, results_template_code: e.target.value }))}
-        {...fieldSx}
-      />
+      <Typography variant="subtitle2" fontWeight={700} sx={{ pt: 0.5 }}>
+        Lab results PDF
+      </Typography>
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: -1 }}>
+        Blank form: templates/Lab Results/LIFEHUB-MEDICAL-Results-&lt;CODE&gt;.pdf. Leave template empty to
+        infer from test code. Coordinates use a 612×792 pt page (refFromTop from top edge).
+      </Typography>
+      <FormControl fullWidth sx={fieldSx.sx}>
+        <InputLabel id="lab-test-results-template-label">Results template</InputLabel>
+        <Select
+          labelId="lab-test-results-template-label"
+          label="Results template"
+          value={form.results_template_code}
+          onChange={(e: SelectChangeEvent<string>) =>
+            setForm((prev) => ({ ...prev, results_template_code: e.target.value }))
+          }
+        >
+          <MenuItem value="">
+            <em>Infer from test code</em>
+          </MenuItem>
+          {LAB_RESULTS_PRINT_TEMPLATE_CODES_ORDER.map((code) => (
+            <MenuItem key={code} value={code}>
+              {code}
+            </MenuItem>
+          ))}
+        </Select>
+      </FormControl>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+        <TextField
+          label="Print X (refX)"
+          type="number"
+          inputProps={{ step: "0.1" }}
+          value={form.print_ref_x}
+          onChange={(e) => setForm((f) => ({ ...f, print_ref_x: e.target.value }))}
+          {...fieldSx}
+        />
+        <TextField
+          label="Print Y from top (refFromTop)"
+          type="number"
+          inputProps={{ step: "0.1" }}
+          value={form.print_ref_from_top}
+          onChange={(e) => setForm((f) => ({ ...f, print_ref_from_top: e.target.value }))}
+          {...fieldSx}
+        />
+      </Stack>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+        <TextField
+          label="Font size (optional)"
+          type="number"
+          inputProps={{ step: "0.5" }}
+          value={form.print_font_size}
+          onChange={(e) => setForm((f) => ({ ...f, print_font_size: e.target.value }))}
+          {...fieldSx}
+        />
+        <TextField
+          label="Max width (optional)"
+          type="number"
+          inputProps={{ step: "1" }}
+          value={form.print_max_width}
+          onChange={(e) => setForm((f) => ({ ...f, print_max_width: e.target.value }))}
+          {...fieldSx}
+        />
+        <TextField
+          label="Page index (optional)"
+          type="number"
+          inputProps={{ step: 1, min: 0 }}
+          value={form.print_page_index}
+          onChange={(e) => setForm((f) => ({ ...f, print_page_index: e.target.value }))}
+          {...fieldSx}
+        />
+      </Stack>
       <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
         <TextField
           label="Turnaround (hours)"
@@ -492,8 +773,39 @@ export default function SettingsLabTestsPage() {
         }
         label="Active"
       />
+      <FormControlLabel
+        control={
+          <Switch
+            checked={form.is_orderable}
+            onChange={(_, v) => setForm((f) => ({ ...f, is_orderable: v }))}
+          />
+        }
+        label="Orderable in consultation and packages"
+      />
+      <Box>
+        <OrderedAsPanelMultiSelect
+          value={form.panel_lab_test_ids}
+          onChange={(panel_lab_test_ids) => setForm((prev) => ({ ...prev, panel_lab_test_ids }))}
+          options={panelOptions}
+          renderValue={panelLabels}
+          required={!form.is_orderable}
+          emptyMessage={
+            form.category_id ? "No orderable tests in this category" : "Select a category first"
+          }
+        />
+        {form.is_orderable ? (
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
+            Optional: also used as result lines under these panels when a panel is ordered.
+          </Typography>
+        ) : (
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
+            Required for non-orderable result lines.
+          </Typography>
+        )}
+      </Box>
     </Stack>
-  );
+    );
+  };
 
   return (
     <>
@@ -539,6 +851,18 @@ export default function SettingsLabTestsPage() {
                 Add lab test
               </Button>
             </Stack>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={orderableOnlyFilter}
+                  onChange={(_, v) => {
+                    setOrderableOnlyFilter(v);
+                    setPage(0);
+                  }}
+                />
+              }
+              label="Show orderable tests only"
+            />
             <TextField
               placeholder="Search code, name, category, specimen, unit…"
               value={searchQuery}
@@ -597,9 +921,12 @@ export default function SettingsLabTestsPage() {
                     <TableCell>Category</TableCell>
                     <TableCell>Specimen</TableCell>
                     <TableCell>Unit</TableCell>
+                    <TableCell>Template</TableCell>
                     <TableCell align="right">Price</TableCell>
                     <TableCell align="center">Fasting</TableCell>
                     <TableCell align="right">Sort</TableCell>
+                    <TableCell align="center">Orderable</TableCell>
+                    <TableCell>Ordered as</TableCell>
                     <TableCell>Status</TableCell>
                     <TableCell align="right" width={100}>
                       Actions
@@ -609,7 +936,7 @@ export default function SettingsLabTestsPage() {
                 <TableBody>
                   {tests.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={10}>
+                      <TableCell colSpan={13}>
                         <Typography variant="body2" color="text.secondary">
                           No lab tests yet. Add one to get started.
                         </Typography>
@@ -617,7 +944,7 @@ export default function SettingsLabTestsPage() {
                     </TableRow>
                   ) : filteredTests.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={10}>
+                      <TableCell colSpan={13}>
                         <Typography variant="body2" color="text.secondary">
                           No tests match your search. Try a different term.
                         </Typography>
@@ -635,6 +962,9 @@ export default function SettingsLabTestsPage() {
                         </TableCell>
                         <TableCell sx={{ maxWidth: 120 }}>{r.specimen_type ?? "—"}</TableCell>
                         <TableCell>{r.unit ?? "—"}</TableCell>
+                        <TableCell sx={{ whiteSpace: "nowrap", fontFamily: "monospace", fontSize: "0.8rem" }}>
+                          {splitAllowlistedResultsTemplateCodes(r.results_template_code)[0] ?? "—"}
+                        </TableCell>
                         <TableCell align="right">{r.price != null && r.price !== "" ? String(r.price) : "—"}</TableCell>
                         <TableCell align="center">
                           {r.requires_fasting ? (
@@ -644,6 +974,16 @@ export default function SettingsLabTestsPage() {
                           )}
                         </TableCell>
                         <TableCell align="right">{r.sort_order ?? "—"}</TableCell>
+                        <TableCell align="center">
+                          {r.is_orderable !== false ? (
+                            <Chip label="Yes" size="small" color="primary" variant="outlined" />
+                          ) : (
+                            <Chip label="No" size="small" variant="outlined" />
+                          )}
+                        </TableCell>
+                        <TableCell sx={{ maxWidth: 200 }}>
+                          {panelLabels(r.panel_lab_test_ids ?? [])}
+                        </TableCell>
                         <TableCell>
                           {r.is_active !== false ? (
                             <Chip label="Active" size="small" color="success" variant="outlined" />
@@ -692,6 +1032,13 @@ export default function SettingsLabTestsPage() {
               sx={{ mt: 1, ...paginationSx }}
             />
           ) : null}
+          {!loading && nonOrderableLines.length > 0 ? (
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 2 }}>
+              {nonOrderableLines.length} non-orderable result-line test
+              {nonOrderableLines.length === 1 ? "" : "s"} appear in this list for configuration; they are used
+              on the Lab Results form and ordered via their panel test in consultation.
+            </Typography>
+          ) : null}
         </CardContent>
       </Card>
 
@@ -715,7 +1062,7 @@ export default function SettingsLabTestsPage() {
 
       <Dialog open={editOpen} onClose={() => !editSaving && setEditOpen(false)} maxWidth="md" fullWidth>
         <DialogTitle>Edit lab test</DialogTitle>
-        <DialogContent>{formFields(editForm, setEditForm)}</DialogContent>
+        <DialogContent>{formFields(editForm, setEditForm, editingId)}</DialogContent>
         {editError ? (
           <Box sx={{ px: 3, pb: 0 }}>
             <Alert severity="error">{editError}</Alert>

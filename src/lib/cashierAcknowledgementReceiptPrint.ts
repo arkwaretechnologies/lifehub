@@ -6,6 +6,7 @@ import {
   THERMAL_RECEIPT_HEADER_LOGO_CSS,
   resolveThermalReceiptLogoSrc,
 } from "@/lib/thermalReceiptFontCss";
+import { openThermalPrintHtml } from "@/lib/thermalPrintIframe";
 
 export type CashierAcknowledgementPaymentLine = {
   label: string;
@@ -158,30 +159,7 @@ export async function openCashierAcknowledgementReceiptPrint(args: CashierAcknow
 </body>
 </html>`;
 
-  const blob = new Blob([html], { type: "text/html;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const iframe = document.createElement("iframe");
-  iframe.setAttribute("title", "Acknowledgement Receipt print");
-  iframe.style.position = "fixed";
-  iframe.style.right = "0";
-  iframe.style.bottom = "0";
-  iframe.style.width = "0";
-  iframe.style.height = "0";
-  iframe.style.border = "none";
-  iframe.style.visibility = "hidden";
-  iframe.src = url;
-  document.body.appendChild(iframe);
-  iframe.onload = () => {
-    const win = iframe.contentWindow;
-    if (win != null) {
-      win.focus();
-      win.print();
-    }
-    window.setTimeout(() => {
-      URL.revokeObjectURL(url);
-      iframe.remove();
-    }, 120_000);
-  };
+  await openThermalPrintHtml(html, "Acknowledgement Receipt print");
 }
 
 function escapeHtml(s: string): string {

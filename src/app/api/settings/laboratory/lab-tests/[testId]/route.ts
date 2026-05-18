@@ -1,9 +1,46 @@
 import { NextResponse } from "next/server";
-import { LAB_CATEGORIES_TABLE, LAB_TESTS_TABLE, type LabTestCatalogItem } from "@/lib/labTests";
+import { parseResultsPrintLayoutInput } from "@/lib/labResultsPrintLayout";
+import {
+  isAllowedLabResultsTemplateCode,
+  LAB_CATEGORIES_TABLE,
+  LAB_TEST_CATALOG_SELECT,
+  LAB_TESTS_TABLE,
+  mapLabTestCatalogItem,
+  normalizeResultsTemplateCodeForStorage,
+  validateLabTestOrderablePanel,
+  type LabTestCatalogItem,
+} from "@/lib/labTests";
 import { LAB_PACKAGE_TESTS_TABLE } from "@/lib/labPackages";
-import { LAB_SERVICE_PRICES_TABLE } from "@/lib/labServicePrices";
+import {
+  fetchLabServicePricesMapAdmin,
+  LAB_SERVICE_PRICES_TABLE,
+  parseLabTestPriceInput,
+  syncLabTestServicePrice,
+} from "@/lib/labServicePrices";
 import { LAB_REQUEST_ITEMS_TABLE } from "@/lib/labRequests";
+import {
+  attachPanelLinksToCatalogItems,
+  countComponentsForPanel,
+  syncLabTestPanelLinks,
+} from "@/lib/labTestPanelLinks";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
+
+async function loadPanelTargets(
+  db: NonNullable<ReturnType<typeof supabaseAdminClient>>,
+  panelIds: string[],
+): Promise<{ targets: LabTestCatalogItem[]; error: string | null }> {
+  const ids = [...new Set(panelIds.map((x) => String(x).trim()).filter(Boolean))];
+  if (ids.length === 0) return { targets: [], error: null };
+  const { data, error } = await db
+    .from(LAB_TESTS_TABLE)
+    .select(LAB_TEST_CATALOG_SELECT)
+    .in("id", ids);
+  if (error) return { targets: [], error: error.message };
+  const targets = ((data ?? []) as Record<string, unknown>[]).map((raw) =>
+    mapLabTestCatalogItem(raw),
+  );
+  return { targets, error: null };
+}
 
 function adminOr500() {
   const db = supabaseAdminClient();
@@ -20,29 +57,7 @@ function adminOr500() {
 }
 
 function mapTestRow(raw: Record<string, unknown>): LabTestCatalogItem {
-  return {
-    id: String(raw.id ?? ""),
-    category_id: raw.category_id as number | string,
-    code: String(raw.code ?? ""),
-    name: String(raw.name ?? ""),
-    description: (raw.description as string | null) ?? null,
-    specimen_type: (raw.specimen_type as string | null) ?? null,
-    unit: (raw.unit as string | null) ?? null,
-    reference_range: (raw.reference_range as string | null) ?? null,
-    results_template_code: (raw.results_template_code as string | null) ?? null,
-    turnaround_hours: (() => {
-      if (raw.turnaround_hours == null || raw.turnaround_hours === "") return null;
-      const n = Number(raw.turnaround_hours);
-      return Number.isFinite(n) ? Math.trunc(n) : null;
-    })(),
-    price: (raw.price as string | number | null) ?? null,
-    requires_fasting: (raw.requires_fasting as boolean | null) ?? null,
-    sort_order:
-      raw.sort_order == null || raw.sort_order === ""
-        ? null
-        : Number(raw.sort_order),
-    is_active: (raw.is_active as boolean | null) ?? null,
-  };
+  return mapLabTestCatalogItem(raw);
 }
 
 export async function PATCH(
@@ -67,16 +82,28 @@ export async function PATCH(
     unit?: string | null;
     reference_range?: string | null;
     results_template_code?: string | null;
+    results_print_layout?: unknown | null;
     turnaround_hours?: number | null;
     price?: number | string | null;
     requires_fasting?: boolean | null;
     sort_order?: number | null;
     is_active?: boolean;
+    is_orderable?: boolean;
+    panel_lab_test_ids?: string[] | null;
   } | null;
 
   if (!body || Object.keys(body).length === 0) {
     return NextResponse.json({ error: "Provide at least one field to update." }, { status: 400 });
   }
+
+  const { data: existingRow, error: existingErr } = await db
+    .from(LAB_TESTS_TABLE)
+    .select(LAB_TEST_CATALOG_SELECT)
+    .eq("id", testId)
+    .maybeSingle();
+  if (existingErr) return NextResponse.json({ error: existingErr.message }, { status: 400 });
+  if (!existingRow) return NextResponse.json({ error: "Lab test not found." }, { status: 404 });
+  const existing = mapLabTestCatalogItem(existingRow as Record<string, unknown>);
 
   const patch: Record<string, unknown> = {};
 
@@ -123,10 +150,18 @@ export async function PATCH(
       body.reference_range === null ? null : String(body.reference_range).trim() || null;
   }
   if (body.results_template_code !== undefined) {
-    patch.results_template_code =
-      body.results_template_code === null
-        ? null
-        : String(body.results_template_code).trim() || null;
+    const tpl = normalizeResultsTemplateCodeForStorage(body.results_template_code);
+    if (tpl && !isAllowedLabResultsTemplateCode(tpl)) {
+      return NextResponse.json({ error: "Unsupported results template code." }, { status: 400 });
+    }
+    patch.results_template_code = tpl;
+  }
+  if (body.results_print_layout !== undefined) {
+    const layoutParsed = parseResultsPrintLayoutInput(body.results_print_layout);
+    if (!layoutParsed.ok) {
+      return NextResponse.json({ error: layoutParsed.error }, { status: 400 });
+    }
+    patch.results_print_layout = layoutParsed.value;
   }
   if (body.turnaround_hours !== undefined) {
     if (body.turnaround_hours === null) patch.turnaround_hours = null;
@@ -135,13 +170,13 @@ export async function PATCH(
       patch.turnaround_hours = Number.isFinite(th) ? Math.trunc(th) : null;
     }
   }
+  let nextServicePrice: number | null | undefined;
   if (body.price !== undefined) {
-    if (body.price === null || body.price === ("" as unknown)) patch.price = null;
-    else if (typeof body.price === "number" && Number.isFinite(body.price)) patch.price = body.price;
-    else {
-      const p = Number(String(body.price));
-      patch.price = Number.isFinite(p) ? p : null;
+    const priceParsed = parseLabTestPriceInput(body.price);
+    if (!priceParsed.ok) {
+      return NextResponse.json({ error: priceParsed.error }, { status: 400 });
     }
+    nextServicePrice = priceParsed.value;
   }
   if (body.requires_fasting !== undefined) {
     patch.requires_fasting = body.requires_fasting === true;
@@ -155,19 +190,102 @@ export async function PATCH(
   }
   if (body.is_active !== undefined) patch.is_active = body.is_active !== false;
 
-  const { data, error } = await db
-    .from(LAB_TESTS_TABLE)
-    .update(patch)
-    .eq("id", testId)
-    .select(
-      "id, category_id, code, name, description, specimen_type, unit, reference_range, results_template_code, turnaround_hours, price, requires_fasting, sort_order, is_active",
-    )
-    .maybeSingle();
+  let nextPanelIds: string[] | undefined;
+  let orderableCheckResult: ReturnType<typeof validateLabTestOrderablePanel> | null = null;
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
-  if (!data) return NextResponse.json({ error: "Lab test not found." }, { status: 404 });
+  if (body.is_orderable !== undefined || body.panel_lab_test_ids !== undefined) {
+    const nextCategoryId: number | string =
+      patch.category_id !== undefined
+        ? (patch.category_id as number | string)
+        : existing.category_id;
+    const nextIsOrderable =
+      body.is_orderable !== undefined ? body.is_orderable !== false : existing.is_orderable !== false;
 
-  return NextResponse.json({ test: mapTestRow(data as Record<string, unknown>) });
+    const existingAttached = await attachPanelLinksToCatalogItems(db, [existing]);
+    const existingPanelIds = existingAttached.tests[0]?.panel_lab_test_ids ?? [];
+
+    nextPanelIds =
+      body.panel_lab_test_ids !== undefined
+        ? (Array.isArray(body.panel_lab_test_ids) ? body.panel_lab_test_ids : [])
+        : existingPanelIds;
+
+    const { targets: panelTargets, error: panelLoadErr } = await loadPanelTargets(db, nextPanelIds);
+    if (panelLoadErr) return NextResponse.json({ error: panelLoadErr }, { status: 400 });
+
+    const { count: componentCount, error: compErr } = await countComponentsForPanel(db, testId);
+    if (compErr) return NextResponse.json({ error: compErr }, { status: 400 });
+
+    const orderableCheck = validateLabTestOrderablePanel(
+      {
+        is_orderable: nextIsOrderable,
+        panel_lab_test_ids: nextPanelIds,
+        category_id: nextCategoryId,
+      },
+      { testId, panelTargets, componentCount },
+    );
+    if (!orderableCheck.ok) {
+      return NextResponse.json({ error: orderableCheck.error }, { status: 400 });
+    }
+    orderableCheckResult = orderableCheck;
+    patch.is_orderable = orderableCheck.is_orderable;
+    nextPanelIds = orderableCheck.panel_lab_test_ids;
+  }
+
+  const hasLabTestPatch = Object.keys(patch).length > 0;
+  let data: Record<string, unknown> | null = null;
+
+  if (hasLabTestPatch) {
+    const res = await db
+      .from(LAB_TESTS_TABLE)
+      .update(patch)
+      .eq("id", testId)
+      .select(LAB_TEST_CATALOG_SELECT)
+      .maybeSingle();
+    if (res.error) return NextResponse.json({ error: res.error.message }, { status: 400 });
+    if (!res.data) return NextResponse.json({ error: "Lab test not found." }, { status: 404 });
+    data = res.data as Record<string, unknown>;
+  } else if (nextServicePrice === undefined && orderableCheckResult === null) {
+    return NextResponse.json({ error: "Provide at least one field to update." }, { status: 400 });
+  } else {
+    const res = await db
+      .from(LAB_TESTS_TABLE)
+      .select(LAB_TEST_CATALOG_SELECT)
+      .eq("id", testId)
+      .maybeSingle();
+    if (res.error) return NextResponse.json({ error: res.error.message }, { status: 400 });
+    if (!res.data) return NextResponse.json({ error: "Lab test not found." }, { status: 404 });
+    data = res.data as Record<string, unknown>;
+  }
+
+  if (nextServicePrice !== undefined) {
+    const priceSync = await syncLabTestServicePrice(db, testId, nextServicePrice);
+    if (priceSync.error) {
+      return NextResponse.json({ error: priceSync.error }, { status: 400 });
+    }
+  }
+
+  if (orderableCheckResult !== null) {
+    const linkSync = await syncLabTestPanelLinks(db, testId, orderableCheckResult.panel_lab_test_ids);
+    if (linkSync.error) {
+      return NextResponse.json({ error: linkSync.error }, { status: 400 });
+    }
+  }
+
+  let test = mapTestRow(data);
+  if (nextServicePrice !== undefined) {
+    test = { ...test, price: nextServicePrice };
+  } else {
+    const { pricesByTestId, error: priceLoadErr } = await fetchLabServicePricesMapAdmin(db, [testId]);
+    if (priceLoadErr) return NextResponse.json({ error: priceLoadErr }, { status: 400 });
+    const svc = pricesByTestId.get(testId);
+    if (svc != null) test = { ...test, price: svc };
+  }
+
+  const attached = await attachPanelLinksToCatalogItems(db, [test]);
+  if (attached.error) return NextResponse.json({ error: attached.error }, { status: 400 });
+  test = attached.tests[0] ?? test;
+
+  return NextResponse.json({ test });
 }
 
 export async function DELETE(

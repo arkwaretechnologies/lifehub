@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
+import HistoryOutlinedIcon from "@mui/icons-material/HistoryOutlined";
 import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
 import PrintOutlinedIcon from "@mui/icons-material/PrintOutlined";
 import SaveOutlinedIcon from "@mui/icons-material/SaveOutlined";
@@ -20,6 +21,7 @@ import {
   FormControl,
   FormControlLabel,
   InputAdornment,
+  Menu,
   MenuItem,
   Select,
   Snackbar,
@@ -41,10 +43,64 @@ import { FormFieldLabel } from "@/components/FormFieldLabel";
 import type { QueueTicketStatus } from "@/lib/queueReception";
 import type { LabQueueRow } from "@/app/api/laboratory/lab-queue/route";
 import type { LabRequestHeaderView, LabRequestItemView } from "@/app/api/laboratory/lab-request/route";
-import { formatDateMMDDYYYY, formatLabTime } from "@/lib/dateDisplay";
+import type { PatientPriorLabResultEntry } from "@/app/api/laboratory/patient-lab-history/route";
+import { formatDateMMDDYYYY, formatLabTime, formatQueueTicketWhen } from "@/lib/dateDisplay";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { mergeAutoFlagIntoLabResultRow } from "@/lib/labResultAutoFlag";
 import { openLabResultsPrintWindow } from "@/lib/labResultsPrint";
+import {
+  canOpenLabQueueRequest,
+  canOpenLabResultsQueueTicket,
+  labQueueRequestButtonTooltip,
+} from "@/lib/labQueueUi";
+
+type LabResultCategorySection = {
+  categoryId: string;
+  categoryName: string;
+  sortOrder: number;
+  items: LabRequestItemView[];
+};
+
+function groupItemsByCategory(items: LabRequestItemView[]): LabResultCategorySection[] {
+  const byCat = new Map<string, LabResultCategorySection>();
+  for (const it of items) {
+    const categoryId = String(it.category_id ?? "other").trim() || "other";
+    const categoryName = (it.category_name ?? "Other").trim() || "Other";
+    const sortOrder = it.category_sort_order ?? 9999;
+    const existing = byCat.get(categoryId);
+    if (existing) {
+      existing.items.push(it);
+    } else {
+      byCat.set(categoryId, { categoryId, categoryName, sortOrder, items: [it] });
+    }
+  }
+  for (const section of byCat.values()) {
+    section.items.sort((a, b) =>
+      (a.test_name ?? a.lab_test_id).localeCompare(b.test_name ?? b.lab_test_id, undefined, {
+        sensitivity: "base",
+      }),
+    );
+  }
+  return [...byCat.values()].sort((a, b) => {
+    if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+    return a.categoryName.localeCompare(b.categoryName, undefined, { sensitivity: "base" });
+  });
+}
+
+function categoryCollectState(items: LabRequestItemView[]): {
+  allCollected: boolean;
+  indeterminate: boolean;
+} {
+  if (items.length === 0) return { allCollected: false, indeterminate: false };
+  let collectedCount = 0;
+  for (const it of items) {
+    if ((it.collected_item ?? "").trim().toUpperCase() === "Y") collectedCount += 1;
+  }
+  return {
+    allCollected: collectedCount === items.length,
+    indeterminate: collectedCount > 0 && collectedCount < items.length,
+  };
+}
 
 export default function LabResultsPage() {
   const theme = useTheme();
@@ -71,6 +127,10 @@ export default function LabResultsPage() {
   const [reqItems, setReqItems] = useState<LabRequestItemView[]>([]);
   const [reqHeader, setReqHeader] = useState<LabRequestHeaderView | null>(null);
   const [itemSavingId, setItemSavingId] = useState<string | null>(null);
+  const [categoryCollectingId, setCategoryCollectingId] = useState<string | null>(null);
+  const [priorResultsLoading, setPriorResultsLoading] = useState(false);
+  const [priorResults, setPriorResults] = useState<PatientPriorLabResultEntry[]>([]);
+  const [priorMenu, setPriorMenu] = useState<{ anchorEl: HTMLElement; itemId: string } | null>(null);
   const [toastOpen, setToastOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState("");
   const [toastSeverity, setToastSeverity] = useState<"success" | "error">("success");
@@ -78,6 +138,7 @@ export default function LabResultsPage() {
   const statusColor: Record<QueueTicketStatus, "default" | "warning" | "info" | "success"> = {
     Waiting: "warning",
     Called: "info",
+    Collected: "success",
     Serving: "info",
     Completed: "success",
     Skipped: "default",
@@ -222,6 +283,93 @@ export default function LabResultsPage() {
     return sorted.find(match) ?? queueSearchRows.find(match) ?? null;
   }, [selectedRequestId, sorted, queueSearchRows]);
 
+  const priorResultsByTestId = useMemo(() => {
+    const m = new Map<string, PatientPriorLabResultEntry[]>();
+    for (const entry of priorResults) {
+      const list = m.get(entry.lab_test_id) ?? [];
+      list.push(entry);
+      m.set(entry.lab_test_id, list);
+    }
+    return m;
+  }, [priorResults]);
+
+  useEffect(() => {
+    const patientId = reqHeader?.patient_id;
+    const excludeId = selectedRequestId.trim();
+    if (patientId == null || !excludeId) {
+      setPriorResults([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      setPriorResultsLoading(true);
+      try {
+        const url = `/api/laboratory/patient-lab-history?patientId=${encodeURIComponent(String(patientId))}&excludeLabRequestId=${encodeURIComponent(excludeId)}&limit=40`;
+        const res = await authenticatedFetch(url, { cache: "no-store" });
+        const json = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          entries?: PatientPriorLabResultEntry[];
+        };
+        if (cancelled) return;
+        if (!res.ok) {
+          setPriorResults([]);
+          return;
+        }
+        setPriorResults(Array.isArray(json.entries) ? json.entries : []);
+      } catch {
+        if (!cancelled) setPriorResults([]);
+      } finally {
+        if (!cancelled) setPriorResultsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [reqHeader?.patient_id, selectedRequestId]);
+
+  const applyPriorResultToItem = (itemId: string, prior: PatientPriorLabResultEntry) => {
+    const sex = reqHeader?.patient_sex ?? null;
+    setReqItems((prev) =>
+      prev.map((x) =>
+        x.id === itemId
+          ? mergeAutoFlagIntoLabResultRow(
+              {
+                ...x,
+                result_value: prior.result_value,
+                result_unit: prior.result_unit ?? x.result_unit,
+                reference_range: prior.reference_range ?? x.reference_range,
+                flag: prior.flag ?? x.flag,
+                remarks: prior.remarks ?? x.remarks,
+                result_status: prior.result_status ?? (prior.result_value.trim() ? "Completed" : x.result_status),
+              },
+              sex,
+            )
+          : x,
+      ),
+    );
+  };
+
+  const formatPriorResultLabel = (prior: PatientPriorLabResultEntry): string => {
+    const when = formatLabRequestDateTime(prior.request_date, prior.request_time);
+    const unit = (prior.result_unit ?? "").trim();
+    const val = prior.result_value.trim();
+    return unit ? `${when} — ${val} ${unit}` : `${when} — ${val}`;
+  };
+
+  const openLabRequestFromTicket = (labRequestId: string) => {
+    const lr = labRequestId.trim();
+    if (!lr) return;
+    router.replace(`/laboratory/results?labRequestId=${encodeURIComponent(lr)}`);
+    void loadRequest(lr);
+  };
+
+  const formatTicketWhen = (t: LabQueueRow) =>
+    formatQueueTicketWhen(t.issued_at, {
+      ticketDate: t.ticket_date,
+      requestDate: t.request_date,
+      requestTime: t.request_time,
+    });
+
   const callPatient = async (ticketId: string) => {
     const id = ticketId.trim();
     if (!id) return;
@@ -246,30 +394,32 @@ export default function LabResultsPage() {
     }
   };
 
-  const saveItemCollected = async (labRequestItemId: string, collected: boolean) => {
-    const id = labRequestItemId.trim();
-    if (!id) return;
+  const resultSections = useMemo(() => groupItemsByCategory(reqItems), [reqItems]);
+
+  const saveCategoryCollected = async (section: LabResultCategorySection, collected: boolean) => {
+    const ids = section.items.map((it) => it.id.trim()).filter(Boolean);
+    if (ids.length === 0) return;
     setReqError("");
-    setItemSavingId(id);
+    setCategoryCollectingId(section.categoryId);
     try {
       const res = await authenticatedFetch("/api/laboratory/specimen-item", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ labRequestItemId: id, collected }),
+        body: JSON.stringify({ labRequestItemIds: ids, collected }),
       });
-      const json = (await res.json().catch(() => ({}))) as { error?: string; collected?: boolean };
+      const json = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) {
         setReqError(json.error ?? `Request failed (${res.status})`);
         return;
       }
       setReqItems((prev) =>
-        prev.map((it) => (it.id === id ? { ...it, collected_item: json.collected ? "Y" : null } : it)),
+        prev.map((it) => (ids.includes(it.id) ? { ...it, collected_item: collected ? "Y" : null } : it)),
       );
       await loadQueue();
     } catch {
       setReqError("Failed to save specimen status.");
     } finally {
-      setItemSavingId(null);
+      setCategoryCollectingId(null);
     }
   };
 
@@ -466,20 +616,21 @@ export default function LabResultsPage() {
                 <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
                   {sorted.map((t) => {
                     const active = (t.lab_request_id ?? "").trim() === selectedRequestId;
+                    const canOpen = canOpenLabQueueRequest(t.status, t.lab_request_id);
                     return (
                       <Card
                         key={t.id}
                         variant="outlined"
                         sx={{
                           borderRadius: 2,
-                          cursor: t.lab_request_id ? "pointer" : "default",
+                          cursor: canOpen ? "pointer" : "default",
                           borderColor: active ? "secondary.main" : "divider",
                           bgcolor: active ? "action.hover" : "background.paper",
                         }}
                         onClick={() => {
                           const lr = (t.lab_request_id ?? "").trim();
-                          if (!lr) return;
-                          router.replace(`/laboratory/results?labRequestId=${encodeURIComponent(lr)}`);
+                          if (!lr || !canOpenLabQueueRequest(t.status, lr)) return;
+                          openLabRequestFromTicket(lr);
                         }}
                       >
                         <CardContent sx={{ p: 1.5, "&:last-child": { pb: 1.5 } }}>
@@ -494,8 +645,8 @@ export default function LabResultsPage() {
                             </Box>
                             <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 0.75 }}>
                               <Chip label={t.status} color={statusColor[t.status]} size="small" />
-                              <Typography variant="caption" color="text.secondary">
-                                {new Date(t.issued_at).toLocaleTimeString()}
+                              <Typography variant="caption" color="text.secondary" sx={{ textAlign: "right" }}>
+                                {formatTicketWhen(t)}
                               </Typography>
                             </Box>
                           </Box>
@@ -524,18 +675,18 @@ export default function LabResultsPage() {
                                 </Button>
                               </span>
                             </Tooltip>
-                            <Tooltip title={t.lab_request_id ? "Open request" : "No lab request linked"}>
+                            <Tooltip title={labQueueRequestButtonTooltip(t.status, t.lab_request_id)}>
                               <span>
                                 <Button
                                   variant="outlined"
                                   size="small"
                                   startIcon={<ScienceOutlinedIcon fontSize="small" />}
-                                  disabled={!t.lab_request_id}
+                                  disabled={!canOpen}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     const lr = (t.lab_request_id ?? "").trim();
-                                    if (!lr) return;
-                                    router.replace(`/laboratory/results?labRequestId=${encodeURIComponent(lr)}`);
+                                    if (!lr || !canOpenLabQueueRequest(t.status, lr)) return;
+                                    openLabRequestFromTicket(lr);
                                   }}
                                   sx={{ borderRadius: 999, textTransform: "none", fontWeight: 700 }}
                                 >
@@ -615,20 +766,24 @@ export default function LabResultsPage() {
                 <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
                   {queueListRows.map((t) => {
                     const active = (t.lab_request_id ?? "").trim() === selectedRequestId;
+                    const canOpen = canOpenLabResultsQueueTicket(t.status, t.lab_request_id, {
+                      fromHistoricalSearch: true,
+                    });
                     return (
                       <Card
                         key={t.id}
                         variant="outlined"
                         sx={{
                           borderRadius: 2,
-                          cursor: t.lab_request_id ? "pointer" : "default",
+                          cursor: canOpen ? "pointer" : "default",
                           borderColor: active ? "secondary.main" : "divider",
                           bgcolor: active ? "action.hover" : "background.paper",
+                          opacity: canOpen ? 1 : 0.72,
                         }}
                         onClick={() => {
                           const lr = (t.lab_request_id ?? "").trim();
-                          if (!lr) return;
-                          router.replace(`/laboratory/results?labRequestId=${encodeURIComponent(lr)}`);
+                          if (!lr || !canOpenLabResultsQueueTicket(t.status, lr, { fromHistoricalSearch: true })) return;
+                          openLabRequestFromTicket(lr);
                         }}
                       >
                         <CardContent sx={{ p: 1.5, "&:last-child": { pb: 1.5 } }}>
@@ -643,11 +798,16 @@ export default function LabResultsPage() {
                             </Box>
                             <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 0.75 }}>
                               <Chip label={t.status} color={statusColor[t.status]} size="small" />
-                              <Typography variant="caption" color="text.secondary">
-                                {new Date(t.issued_at).toLocaleTimeString()}
+                              <Typography variant="caption" color="text.secondary" sx={{ textAlign: "right" }}>
+                                {formatTicketWhen(t)}
                               </Typography>
                             </Box>
                           </Box>
+                          {canOpen ? (
+                            <Typography variant="caption" color="primary.main" sx={{ display: "block", mt: 1, fontWeight: 700 }}>
+                              Open lab results
+                            </Typography>
+                          ) : null}
                         </CardContent>
                       </Card>
                     );
@@ -698,8 +858,16 @@ export default function LabResultsPage() {
               </Button>
             </Box>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              Select a ticket on the left to view requested tests. Mark each item as collected to enable result entry.
+              Select a ticket on the left to view requested tests. Mark each category as collected to enable result entry for its tests.
+              {reqHeader?.patient_id != null && priorResults.length > 0
+                ? " Use “Previous result” on each line to copy a value from this patient’s earlier lab orders."
+                : null}
             </Typography>
+            {priorResultsLoading ? (
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+                Loading previous results…
+              </Typography>
+            ) : null}
 
             {reqHeader ? (
               <Box
@@ -769,50 +937,55 @@ export default function LabResultsPage() {
                 No items found.
               </Typography>
             ) : (
-              <Box sx={{ display: "flex", flexDirection: "column", gap: 1.25 }}>
-                {reqItems.map((it) => {
-                  const collected = (it.collected_item ?? "").trim().toUpperCase() === "Y";
-                  const busy = itemSavingId === it.id;
+              <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                {resultSections.map((section) => {
+                  const { allCollected, indeterminate } = categoryCollectState(section.items);
+                  const categoryBusy = categoryCollectingId === section.categoryId;
                   return (
                     <Box
-                      key={it.id}
+                      key={section.categoryId}
                       sx={{
                         border: "1px solid",
                         borderColor: "divider",
                         borderRadius: 2,
-                        px: 1.5,
-                        py: 1.25,
                         bgcolor: "background.paper",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 1.25,
+                        overflow: "hidden",
                       }}
                     >
-                      <Box sx={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 2 }}>
+                      <Box
+                        sx={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 2,
+                          px: 1.5,
+                          py: 1.25,
+                          bgcolor: alpha(theme.palette.info.main, 0.06),
+                          borderBottom: "1px solid",
+                          borderColor: "divider",
+                        }}
+                      >
                         <Box sx={{ minWidth: 0 }}>
-                          <Typography variant="body2" fontWeight={800} noWrap>
-                            {it.test_name ?? it.lab_test_id}
+                          <Typography
+                            variant="subtitle2"
+                            fontWeight={800}
+                            color="info.main"
+                            sx={{ letterSpacing: "0.06em" }}
+                          >
+                            {section.categoryName.toUpperCase()}
                           </Typography>
                           <Typography variant="caption" color="text.secondary">
-                            Specimen: {it.specimen_type ?? "—"}
-                            {it.priority ? ` · Priority: ${it.priority}` : ""}
+                            {section.items.length} test{section.items.length === 1 ? "" : "s"}
                           </Typography>
-                          {it.result_unit || it.reference_range ? (
-                            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-                              {[it.result_unit ? `Unit: ${it.result_unit}` : null, it.reference_range ? `Ref: ${it.reference_range}` : null]
-                                .filter(Boolean)
-                                .join(" · ")}
-                            </Typography>
-                          ) : null}
                         </Box>
-
                         <FormControlLabel
-                          sx={{ m: 0, alignItems: "center" }}
+                          sx={{ m: 0, alignItems: "center", flexShrink: 0 }}
                           control={
                             <Checkbox
-                              checked={collected}
-                              onChange={(_, checked) => void saveItemCollected(it.id, checked)}
-                              disabled={busy}
+                              checked={allCollected}
+                              indeterminate={indeterminate}
+                              disabled={categoryBusy}
+                              onChange={(_, checked) => void saveCategoryCollected(section, checked)}
                             />
                           }
                           label={
@@ -824,14 +997,99 @@ export default function LabResultsPage() {
                         />
                       </Box>
 
+                      <Box sx={{ display: "flex", flexDirection: "column", gap: 1.25, p: 1.5 }}>
+                        {section.items.map((it) => {
+                          const categoryCollected = allCollected;
+                          const busy = itemSavingId === it.id || categoryBusy;
+                          const priorOptions = priorResultsByTestId.get(it.lab_test_id) ?? [];
+                          return (
+                            <Box
+                              key={it.id}
+                              sx={{
+                                border: "1px solid #000",
+                                borderRadius: 2,
+                                px: 1.5,
+                                py: 1.25,
+                                bgcolor: "#fff",
+                                color: "#000",
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: 1.25,
+                              }}
+                            >
+                              <Box sx={{ minWidth: 0, color: "#000" }}>
+                                <Typography variant="body2" fontWeight={800} noWrap sx={{ color: "#000" }}>
+                                  {it.test_name ?? it.lab_test_id}
+                                </Typography>
+                                <Typography variant="caption" sx={{ color: "#000" }}>
+                                  Specimen: {it.specimen_type ?? "—"}
+                                  {it.priority ? ` · Priority: ${it.priority}` : ""}
+                                </Typography>
+                                {it.result_unit || it.reference_range ? (
+                                  <Typography variant="caption" sx={{ display: "block", color: "#000" }}>
+                                    {[it.result_unit ? `Unit: ${it.result_unit}` : null, it.reference_range ? `Ref: ${it.reference_range}` : null]
+                                      .filter(Boolean)
+                                      .join(" · ")}
+                                  </Typography>
+                                ) : null}
+                              </Box>
+
                       <Box
                         sx={{
                           display: "grid",
                           gridTemplateColumns: { xs: "1fr", sm: "1.2fr 0.8fr" },
                           gap: 1.5,
+                          color: "#000",
                         }}
                       >
-                        <Box>
+                        <Box sx={{ gridColumn: { xs: "1", sm: "1 / -1" } }}>
+                          {priorOptions.length > 0 ? (
+                            <Box sx={{ mb: 1 }}>
+                              <FormFieldLabel htmlFor={`lab-res-${it.id}-prior`} variant="consultation">
+                                Previous result
+                              </FormFieldLabel>
+                              <Button
+                                id={`lab-res-${it.id}-prior`}
+                                variant="outlined"
+                                size="small"
+                                disabled={!categoryCollected || busy}
+                                fullWidth
+                                endIcon={<HistoryOutlinedIcon fontSize="small" />}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPriorMenu({ anchorEl: e.currentTarget, itemId: it.id });
+                                }}
+                                sx={{
+                                  borderRadius: 2,
+                                  textTransform: "none",
+                                  fontWeight: 700,
+                                  justifyContent: "space-between",
+                                  bgcolor: "#fff",
+                                }}
+                              >
+                                Select previous result…
+                              </Button>
+                              <Menu
+                                anchorEl={priorMenu?.itemId === it.id ? priorMenu.anchorEl : null}
+                                open={priorMenu?.itemId === it.id}
+                                onClose={() => setPriorMenu(null)}
+                                slotProps={{ paper: { sx: { maxWidth: 420 } } }}
+                              >
+                                {priorOptions.map((prior, idx) => (
+                                  <MenuItem
+                                    key={`${prior.lab_request_id}-${idx}`}
+                                    sx={{ textTransform: "none", whiteSpace: "normal" }}
+                                    onClick={() => {
+                                      applyPriorResultToItem(it.id, prior);
+                                      setPriorMenu(null);
+                                    }}
+                                  >
+                                    {formatPriorResultLabel(prior)}
+                                  </MenuItem>
+                                ))}
+                              </Menu>
+                            </Box>
+                          ) : null}
                           <FormFieldLabel htmlFor={`lab-res-${it.id}-value`} variant="consultation">
                             Result
                           </FormFieldLabel>
@@ -850,7 +1108,7 @@ export default function LabResultsPage() {
                                 ),
                               );
                             }}
-                            disabled={!collected || busy}
+                            disabled={!categoryCollected || busy}
                             sx={fieldSx}
                           />
                         </Box>
@@ -866,7 +1124,7 @@ export default function LabResultsPage() {
                             onChange={(e) =>
                               setReqItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, result_unit: e.target.value } : x)))
                             }
-                            disabled={!collected || busy}
+                            disabled={!categoryCollected || busy}
                             sx={[fieldSx, { "& .MuiInputBase-input": { textTransform: "none" } }]}
                           />
                         </Box>
@@ -889,7 +1147,7 @@ export default function LabResultsPage() {
                                 ),
                               );
                             }}
-                            disabled={!collected || busy}
+                            disabled={!categoryCollected || busy}
                             sx={fieldSx}
                           />
                         </Box>
@@ -897,7 +1155,7 @@ export default function LabResultsPage() {
                           <FormFieldLabel htmlFor={`lab-res-${it.id}-flag`} variant="consultation">
                             Flag
                           </FormFieldLabel>
-                          <FormControl size="small" disabled={!collected || busy} sx={fieldSx} fullWidth>
+                          <FormControl size="small" disabled={!categoryCollected || busy} sx={fieldSx} fullWidth>
                             <Select
                               id={`lab-res-${it.id}-flag`}
                               displayEmpty
@@ -924,7 +1182,7 @@ export default function LabResultsPage() {
                           <FormFieldLabel htmlFor={`lab-res-${it.id}-status`} variant="consultation">
                             Status
                           </FormFieldLabel>
-                          <FormControl size="small" disabled={!collected || busy} sx={fieldSx} fullWidth>
+                          <FormControl size="small" disabled={!categoryCollected || busy} sx={fieldSx} fullWidth>
                             <Select
                               id={`lab-res-${it.id}-status`}
                               value={(it.result_status ?? "Pending").trim()}
@@ -954,24 +1212,30 @@ export default function LabResultsPage() {
                             onChange={(e) =>
                               setReqItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, remarks: e.target.value } : x)))
                             }
-                            disabled={!collected || busy}
+                            disabled={!categoryCollected || busy}
                             sx={fieldSx}
                           />
                         </Box>
                       </Box>
 
-                      <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
-                        <Button
-                          variant="contained"
-                          color="secondary"
-                          size="small"
-                          startIcon={busy ? <CircularProgress size={16} color="inherit" /> : <SaveOutlinedIcon fontSize="small" />}
-                          disabled={!collected || busy}
-                          onClick={() => void saveResult(it)}
-                          sx={{ borderRadius: 999, textTransform: "none", fontWeight: 800 }}
-                        >
-                          Save result
-                        </Button>
+                              <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
+                                <Button
+                                  variant="contained"
+                                  color="secondary"
+                                  size="small"
+                                  startIcon={
+                                    busy ? <CircularProgress size={16} color="inherit" /> : <SaveOutlinedIcon fontSize="small" />
+                                  }
+                                  disabled={!categoryCollected || busy}
+                                  onClick={() => void saveResult(it)}
+                                  sx={{ borderRadius: 999, textTransform: "none", fontWeight: 800 }}
+                                >
+                                  Save result
+                                </Button>
+                              </Box>
+                            </Box>
+                          );
+                        })}
                       </Box>
                     </Box>
                   );

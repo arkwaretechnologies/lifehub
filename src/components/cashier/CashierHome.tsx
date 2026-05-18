@@ -655,7 +655,7 @@ export default function CashierHome() {
               id="cashier-patient-search"
               name="cashier_visit_search"
               hiddenLabel
-              placeholder="Encounter ID, lab order QR (UUID), or patient name…"
+              placeholder="Encounter ID, lab order QR code, or patient name…"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               {...commonFieldProps}

@@ -422,7 +422,6 @@ export default function SettingsLabCategoriesPage() {
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <TableCell width={72}>ID</TableCell>
                     <TableCell>Code</TableCell>
                     <TableCell>Name</TableCell>
                     <TableCell>Description</TableCell>
@@ -438,7 +437,7 @@ export default function SettingsLabCategoriesPage() {
                 <TableBody>
                   {rows.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7}>
+                      <TableCell colSpan={6}>
                         <Typography variant="body2" color="text.secondary">
                           No categories yet. Add one to get started.
                         </Typography>
@@ -446,7 +445,7 @@ export default function SettingsLabCategoriesPage() {
                     </TableRow>
                   ) : filteredRows.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7}>
+                      <TableCell colSpan={6}>
                         <Typography variant="body2" color="text.secondary">
                           No categories match your search. Try a different term.
                         </Typography>
@@ -455,7 +454,6 @@ export default function SettingsLabCategoriesPage() {
                   ) : (
                     pagedRows.map((r) => (
                       <TableRow key={String(r.id)} hover>
-                        <TableCell>{String(r.id)}</TableCell>
                         <TableCell sx={{ fontFamily: "monospace", fontWeight: 600 }}>{r.code}</TableCell>
                         <TableCell>{r.name}</TableCell>
                         <TableCell sx={{ maxWidth: 280, color: "text.secondary" }}>

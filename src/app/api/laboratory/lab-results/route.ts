@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
+import {
+  computeLabRequestQueueCollectionState,
+  nextLabQueueTicketStatus,
+} from "@/lib/labQueueTicketSync";
 import { queueAdminClient } from "@/lib/receptionQueueServer";
-import type { QueueTicketStatus } from "@/lib/queueReception";
 
 type Body = {
   labRequestItemId?: unknown;
@@ -20,10 +23,6 @@ function safeText(v: unknown): string | null {
   return s === "" ? null : s;
 }
 
-function isYes(v: unknown): boolean {
-  return String(v ?? "").trim().toUpperCase() === "Y";
-}
-
 export async function PATCH(req: Request) {
   const body = (await req.json().catch(() => ({}))) as Body;
   const itemId = typeof body.labRequestItemId === "string" ? body.labRequestItemId.trim() : "";
@@ -40,14 +39,16 @@ export async function PATCH(req: Request) {
   const explicitVerified = typeof body.verified_by === "number" && Number.isFinite(body.verified_by) ? body.verified_by : null;
 
   const now = new Date();
+  const resultValue = safeText(body.result_value);
+  const explicitStatus = safeText(body.status);
   const payload = {
     lab_request_item_id: itemId,
-    result_value: safeText(body.result_value),
+    result_value: resultValue,
     result_unit: safeText(body.result_unit),
     reference_range: safeText(body.reference_range),
     flag: safeText(body.flag),
     remarks: safeText(body.remarks),
-    status: safeText(body.status) ?? "Pending",
+    status: resultValue ? "Completed" : explicitStatus ?? "Pending",
     performed_by: explicitPerformed,
     verified_by: explicitVerified,
     result_date: now.toISOString().slice(0, 10),
@@ -77,32 +78,12 @@ export async function PATCH(req: Request) {
   let allCollected = false;
   let allHasResults = false;
   if (labRequestId) {
-    const { data: items, error: itemsErr } = await admin
-      .from("lab_request_items")
-      .select("id, collected_item")
-      .eq("lab_request_id", labRequestId);
-    if (itemsErr) return NextResponse.json({ error: itemsErr.message }, { status: 500 });
+    const state = await computeLabRequestQueueCollectionState(admin, labRequestId);
+    if (state.error) return NextResponse.json({ error: state.error }, { status: 500 });
+    allCollected = state.allCollected;
+    allHasResults = state.allHasResults;
 
-    const itemIds = (items ?? [])
-      .map((r) => (r as { id?: string | null }).id)
-      .filter((v): v is string => typeof v === "string" && v.trim() !== "");
-
-    allCollected = itemIds.length > 0 && (items ?? []).every((r) => isYes((r as { collected_item?: string | null }).collected_item));
-
-    if (itemIds.length > 0) {
-      const { data: resRows, error: resErr } = await admin
-        .from("lab_results")
-        .select("lab_request_item_id, result_value")
-        .in("lab_request_item_id", itemIds);
-      if (resErr) return NextResponse.json({ error: resErr.message }, { status: 500 });
-      const byId = new Map<string, string>();
-      for (const rr of (resRows ?? []) as Array<{ lab_request_item_id: string; result_value: string | null }>) {
-        byId.set(rr.lab_request_item_id, String(rr.result_value ?? "").trim());
-      }
-      allHasResults = itemIds.every((id) => (byId.get(id) ?? "") !== "");
-    }
-
-    const nextStatus: QueueTicketStatus = !allCollected ? "Called" : allHasResults ? "Completed" : "Serving";
+    const nextStatus = nextLabQueueTicketStatus(allCollected, allHasResults);
     const nowIso = new Date().toISOString();
     const { error: tErr } = await admin
       .from("queue_tickets")

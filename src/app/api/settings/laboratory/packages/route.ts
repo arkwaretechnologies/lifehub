@@ -5,6 +5,7 @@ import {
   type LabPackageWithTests,
 } from "@/lib/labPackages";
 import { LAB_REQUEST_PACKAGES_TABLE } from "@/lib/labRequests";
+import { normalizePackageLabTestIdsForStorage } from "@/lib/labTests";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
 
 function adminOr500() {
@@ -132,7 +133,10 @@ export async function POST(req: Request) {
     body?.sort_order == null || body.sort_order === ("" as unknown)
       ? null
       : Number(body.sort_order);
-  const labTestIds = dedupeTestIds(Array.isArray(body?.lab_test_ids) ? body!.lab_test_ids! : []);
+  const labTestIdsRaw = dedupeTestIds(Array.isArray(body?.lab_test_ids) ? body!.lab_test_ids! : []);
+  const normalized = await normalizePackageLabTestIdsForStorage(db, labTestIdsRaw);
+  if (normalized.error) return NextResponse.json({ error: normalized.error }, { status: 400 });
+  const labTestIds = normalized.testIds;
 
   const insertPkg: Record<string, unknown> = {
     name,
@@ -151,8 +155,9 @@ export async function POST(req: Request) {
   if (insErr) return NextResponse.json({ error: insErr.message }, { status: 400 });
   if (!created) return NextResponse.json({ error: "Insert failed." }, { status: 500 });
 
-  const pkgId = String((created as Record<string, unknown>).id ?? "");
-  if (!pkgId) {
+  const pkgIdRaw = (created as Record<string, unknown>).id;
+  const pkgId = typeof pkgIdRaw === "number" ? pkgIdRaw : Number.parseInt(String(pkgIdRaw ?? ""), 10);
+  if (!Number.isFinite(pkgId) || pkgId <= 0) {
     return NextResponse.json({ error: "Package id missing after insert." }, { status: 500 });
   }
 
@@ -171,7 +176,7 @@ export async function POST(req: Request) {
 
   const { packages, error: loadErr } = await loadPackagesWithTests(db);
   if (loadErr) return NextResponse.json({ error: loadErr }, { status: 400 });
-  const pkg = packages.find((p) => p.id === pkgId);
+  const pkg = packages.find((p) => p.id === String(pkgId));
   if (!pkg) return NextResponse.json({ error: "Created package could not be reloaded." }, { status: 500 });
 
   return NextResponse.json({ package: pkg });

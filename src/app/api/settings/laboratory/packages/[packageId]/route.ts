@@ -5,6 +5,7 @@ import {
   type LabPackageWithTests,
 } from "@/lib/labPackages";
 import { LAB_REQUEST_PACKAGES_TABLE } from "@/lib/labRequests";
+import { normalizePackageLabTestIdsForStorage } from "@/lib/labTests";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
 
 function adminOr500() {
@@ -171,7 +172,10 @@ export async function PATCH(
   }
 
   if (body.lab_test_ids !== undefined) {
-    const labTestIds = dedupeTestIds(Array.isArray(body.lab_test_ids) ? body.lab_test_ids : []);
+    const labTestIdsRaw = dedupeTestIds(Array.isArray(body.lab_test_ids) ? body.lab_test_ids : []);
+    const normalized = await normalizePackageLabTestIdsForStorage(db, labTestIdsRaw);
+    if (normalized.error) return NextResponse.json({ error: normalized.error }, { status: 400 });
+    const labTestIds = normalized.testIds;
     const { error: delErr } = await db.from(LAB_PACKAGE_TESTS_TABLE).delete().eq("lab_package_id", packageId);
     if (delErr) return NextResponse.json({ error: delErr.message }, { status: 400 });
 

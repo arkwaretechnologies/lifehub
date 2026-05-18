@@ -1,6 +1,16 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchLabPackageDetailsMap, fetchLabPackageMemberTestIdsMap, type LabPackageDetail } from "@/lib/labPackages";
+import { attachPanelLinksToCatalogItems } from "@/lib/labTestPanelLinks";
+import {
+  buildLabRequestItemRows,
+  filterLabRequestItemsForResultEntry,
+  fetchLabTestCatalogRows,
+  isMissingDbColumnError,
+  LAB_TESTS_TABLE,
+  mapLabTestCatalogItem,
+  type LabTestCatalogItem,
+} from "@/lib/labTests";
 
 export type { LabPackageDetail } from "@/lib/labPackages";
 
@@ -135,11 +145,27 @@ export async function createLabRequestWithItems(
   }
 
   const itemPriority = input.itemPriority ?? null;
-  const items = ids.map((lab_test_id) => ({
+
+  const catalogFetch = await fetchLabTestCatalogRows(supabase);
+  if (catalogFetch.error) {
+    await supabase.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
+    return { labRequestId: null, error: catalogFetch.error };
+  }
+  let catalog = catalogFetch.rows.map((raw) => mapLabTestCatalogItem(raw));
+  const attached = await attachPanelLinksToCatalogItems(supabase, catalog);
+  if (attached.error) {
+    await supabase.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
+    return { labRequestId: null, error: attached.error };
+  }
+  catalog = attached.tests;
+
+  const itemSpecs = buildLabRequestItemRows(ids, catalog);
+  const items = itemSpecs.map((row) => ({
     lab_request_id: labRequestId,
-    lab_test_id,
+    lab_test_id: row.lab_test_id,
     notes: null as string | null,
     priority: itemPriority,
+    is_billable: row.is_billable,
   }));
 
   const { error: itemsErr } = await supabase.from(LAB_REQUEST_ITEMS_TABLE).insert(items);
@@ -371,22 +397,23 @@ export async function fetchLabRequestsForEncounter(
   }
 
   const requestIds = requestsRaw.map((r) => r.id);
-  const { data: itemRows, error: itemErr } = await supabase
-    .from(LAB_REQUEST_ITEMS_TABLE)
-    .select("lab_request_id, lab_test_id")
-    .in("lab_request_id", requestIds);
-
-  if (itemErr) {
-    return { requests: [], requestedTestIds: [], error: itemErr.message };
+  const itemRes = await fetchLabRequestItemsForRequestIds(supabase, requestIds);
+  if (itemRes.error) {
+    return { requests: [], requestedTestIds: [], error: itemRes.error };
   }
 
-  const items = (itemRows ?? []) as { lab_request_id: string; lab_test_id: string }[];
+  const items = itemRes.items;
   const byRequest = new Map<string, string[]>();
   const allTestIds = new Set<string>();
   for (const row of items) {
+    if (!row.is_billable) continue;
     const list = byRequest.get(row.lab_request_id) ?? [];
     list.push(row.lab_test_id);
     byRequest.set(row.lab_request_id, list);
+    allTestIds.add(row.lab_test_id);
+  }
+  for (const row of items) {
+    if (row.is_billable) continue;
     allTestIds.add(row.lab_test_id);
   }
 
@@ -416,6 +443,7 @@ export type LabRequestItemDetailRow = {
   id: string;
   lab_request_id: string;
   lab_test_id: string;
+  is_billable: boolean;
   notes: string | null;
   priority: string | null;
   test_name: string | null;
@@ -521,28 +549,223 @@ export function hasUnpricedNonPackageLabLines(
   return false;
 }
 
-/** All `lab_request_items` rows for the given requests, with `lab_tests.name`. */
-export async function fetchLabRequestItemDetailsForRequestIds(requestIds: string[]): Promise<{
-  items: LabRequestItemDetailRow[];
-  error: string | null;
-}> {
+export type FetchLabRequestItemDetailsOptions = {
+  /** When true (default), only billable rows for cashier; applies legacy panel collapse when needed. */
+  billableOnly?: boolean;
+  /** When true, only result-entry rows for lab results (non-billable + legacy component rows). */
+  resultEntryOnly?: boolean;
+};
+
+type LabRequestItemRawRow = {
+  id: string;
+  lab_request_id: string;
+  lab_test_id: string;
+  is_billable: boolean;
+  notes: string | null;
+  priority: string | null;
+};
+
+function isMissingOptionalItemColumnError(message: string | undefined): boolean {
+  return (
+    isMissingDbColumnError(message, "is_billable") || isMissingDbColumnError(message, "collected_item")
+  );
+}
+
+/** Billable when orderable; non-orderable catalog rows are result-entry components. */
+function inferLabRequestItemBillable(testId: string, catalog: LabTestCatalogItem[]): boolean {
+  const t = catalog.find((x) => x.id === testId);
+  if (!t) return true;
+  return t.is_orderable !== false;
+}
+
+export type LabRequestItemStoredRow = {
+  id: string;
+  lab_request_id: string;
+  lab_test_id: string;
+  is_billable: boolean;
+  notes: string | null;
+  priority: string | null;
+  collected_item?: string | null;
+};
+
+/**
+ * Loads lab_request_items with `is_billable` when the column exists; otherwise infers from catalog.
+ * Retries without `is_billable` when the migration has not been applied yet.
+ */
+export async function fetchLabRequestItemsForRequestIds(
+  db: SupabaseClient,
+  requestIds: string[],
+): Promise<{ items: LabRequestItemStoredRow[]; error: string | null }> {
   const ids = [...new Set(requestIds.map((x) => String(x).trim()).filter(Boolean))];
   if (ids.length === 0) return { items: [], error: null };
 
+  const selectFull = "id, lab_request_id, lab_test_id, is_billable, notes, priority, collected_item";
+  const selectMinimal = "id, lab_request_id, lab_test_id, notes, priority";
+
+  const first = await db.from(LAB_REQUEST_ITEMS_TABLE).select(selectFull).in("lab_request_id", ids);
+
+  let usedLegacySelect = false;
+  let rows: Array<Record<string, unknown>> = [];
+  if (first.error && isMissingOptionalItemColumnError(first.error.message)) {
+    usedLegacySelect = true;
+    const retry = await db.from(LAB_REQUEST_ITEMS_TABLE).select(selectMinimal).in("lab_request_id", ids);
+    if (retry.error) return { items: [], error: retry.error.message };
+    rows = (retry.data ?? []) as Array<Record<string, unknown>>;
+  } else if (first.error) {
+    return { items: [], error: first.error.message };
+  } else {
+    rows = (first.data ?? []) as Array<Record<string, unknown>>;
+  }
+
+  let items: LabRequestItemStoredRow[] = rows.map((r) => ({
+    id: String(r.id ?? ""),
+    lab_request_id: String(r.lab_request_id),
+    lab_test_id: String(r.lab_test_id),
+    is_billable: usedLegacySelect ? true : r.is_billable !== false,
+    notes: (r.notes as string | null) ?? null,
+    priority: (r.priority as string | null) ?? null,
+    collected_item: (r.collected_item as string | null) ?? null,
+  }));
+
+  if (usedLegacySelect) {
+    const testIds = [...new Set(items.map((i) => i.lab_test_id))];
+    const catRes = await loadLabTestCatalogForTestIds(db, testIds);
+    if (catRes.error) return { items: [], error: catRes.error };
+    items = items.map((row) => ({
+      ...row,
+      is_billable: inferLabRequestItemBillable(row.lab_test_id, catRes.catalog),
+    }));
+  }
+
+  return { items, error: null };
+}
+
+export async function loadLabTestCatalogForTestIds(
+  db: SupabaseClient,
+  testIds: string[],
+): Promise<{ catalog: LabTestCatalogItem[]; error: string | null }> {
+  const ids = [...new Set(testIds.map((x) => String(x).trim()).filter(Boolean))];
+  if (ids.length === 0) return { catalog: [], error: null };
+
+  const fetched = await fetchLabTestCatalogRows(db, { testIds: ids });
+  if (fetched.error) return { catalog: [], error: fetched.error };
+
+  let catalog = fetched.rows.map((raw) => mapLabTestCatalogItem(raw));
+  const attached = await attachPanelLinksToCatalogItems(db, catalog);
+  if (attached.error) return { catalog: [], error: attached.error };
+  return { catalog: attached.tests, error: null };
+}
+
+async function loadLabTestOrderableMap(testIds: string[]): Promise<Map<string, boolean>> {
+  const map = new Map<string, boolean>();
+  const ids = [...new Set(testIds.filter(Boolean))];
+  if (ids.length === 0) return map;
+  const { data, error } = await supabase.from(LAB_TESTS_TABLE).select("id, is_orderable").in("id", ids);
+  if (error) return map;
+  for (const t of (data ?? []) as Array<{ id: string; is_orderable?: boolean | null }>) {
+    map.set(t.id, t.is_orderable !== false);
+  }
+  return map;
+}
+
+async function loadPanelIdByComponentIdMap(componentIds: string[]): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  const ids = [...new Set(componentIds.filter(Boolean))];
+  if (ids.length === 0) return map;
   const { data, error } = await supabase
-    .from(LAB_REQUEST_ITEMS_TABLE)
-    .select("id, lab_request_id, lab_test_id, notes, priority")
-    .in("lab_request_id", ids);
+    .from("lab_test_panel_links")
+    .select("panel_lab_test_id, component_lab_test_id")
+    .in("component_lab_test_id", ids);
+  if (error) return map;
+  for (const l of (data ?? []) as Array<{
+    panel_lab_test_id: string;
+    component_lab_test_id: string;
+  }>) {
+    if (!map.has(l.component_lab_test_id)) map.set(l.component_lab_test_id, l.panel_lab_test_id);
+  }
+  return map;
+}
 
-  if (error) return { items: [], error: error.message };
+/** One billable line per panel when legacy orders only have component rows (or none marked billable). */
+async function fetchLegacyBillablePanelItemsForRequestIds(requestIds: string[]): Promise<{
+  items: LabRequestItemRawRow[];
+  error: string | null;
+}> {
+  const stored = await fetchLabRequestItemsForRequestIds(supabase, requestIds);
+  if (stored.error) return { items: [], error: stored.error };
 
-  const raw = (data ?? []) as Array<{
-    id: string;
-    lab_request_id: string;
-    lab_test_id: string;
-    notes: string | null;
-    priority: string | null;
-  }>;
+  const all = stored.items as LabRequestItemRawRow[];
+  const orderable = await loadLabTestOrderableMap(all.map((r) => r.lab_test_id));
+  const componentRows = all.filter((r) => orderable.get(r.lab_test_id) === false);
+  if (componentRows.length === 0) return { items: [], error: null };
+
+  const panelByComponent = await loadPanelIdByComponentIdMap(componentRows.map((r) => r.lab_test_id));
+  const byReqPanel = new Map<string, LabRequestItemRawRow>();
+
+  for (const row of componentRows) {
+    const panelId = panelByComponent.get(row.lab_test_id);
+    if (!panelId) continue;
+    const key = `${row.lab_request_id}\0${panelId}`;
+    if (!byReqPanel.has(key)) {
+      byReqPanel.set(key, {
+        ...row,
+        lab_test_id: panelId,
+        is_billable: true,
+      });
+    }
+  }
+
+  return { items: [...byReqPanel.values()], error: null };
+}
+
+/** Pre-migration orders: many billable component lines → one panel line each for checkout. */
+async function collapseLegacyBillableComponentLines(
+  rows: LabRequestItemRawRow[],
+): Promise<LabRequestItemRawRow[]> {
+  if (rows.length === 0) return rows;
+  const orderable = await loadLabTestOrderableMap(rows.map((r) => r.lab_test_id));
+  const allComponents = rows.every((r) => orderable.get(r.lab_test_id) === false);
+  if (!allComponents) return rows;
+
+  const legacy = await fetchLegacyBillablePanelItemsForRequestIds([
+    ...new Set(rows.map((r) => r.lab_request_id)),
+  ]);
+  return legacy.error || legacy.items.length === 0 ? rows : legacy.items;
+}
+
+/** All `lab_request_items` rows for the given requests, with `lab_tests.name`. */
+export async function fetchLabRequestItemDetailsForRequestIds(
+  requestIds: string[],
+  options: FetchLabRequestItemDetailsOptions = {},
+): Promise<{
+  items: LabRequestItemDetailRow[];
+  error: string | null;
+}> {
+  const billableOnly = options.billableOnly !== false;
+  const resultEntryOnly = options.resultEntryOnly === true;
+  const ids = [...new Set(requestIds.map((x) => String(x).trim()).filter(Boolean))];
+  if (ids.length === 0) return { items: [], error: null };
+
+  const stored = await fetchLabRequestItemsForRequestIds(supabase, ids);
+  if (stored.error) return { items: [], error: stored.error };
+
+  let raw: LabRequestItemRawRow[] = stored.items;
+
+  if (resultEntryOnly) {
+    const testIds = [...new Set(raw.map((r) => r.lab_test_id).filter(Boolean))];
+    const catRes = await loadLabTestCatalogForTestIds(supabase, testIds);
+    if (catRes.error) return { items: [], error: catRes.error };
+    raw = filterLabRequestItemsForResultEntry(raw, catRes.catalog);
+  } else if (billableOnly) {
+    raw = raw.filter((r) => r.is_billable);
+    if (raw.length === 0) {
+      const legacy = await fetchLegacyBillablePanelItemsForRequestIds(ids);
+      if (legacy.error) return { items: [], error: legacy.error };
+      raw = legacy.items;
+    } else {
+      raw = await collapseLegacyBillableComponentLines(raw);
+    }
+  }
 
   const testIds = [...new Set(raw.map((r) => r.lab_test_id).filter(Boolean))];
   const testsById = new Map<
@@ -609,6 +832,7 @@ export async function fetchLabRequestItemDetailsForRequestIds(requestIds: string
       id: r.id,
       lab_request_id: r.lab_request_id,
       lab_test_id: r.lab_test_id,
+      is_billable: r.is_billable !== false,
       notes: r.notes,
       priority: r.priority,
       test_name: testsById.get(r.lab_test_id)?.name ?? null,

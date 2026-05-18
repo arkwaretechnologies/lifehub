@@ -30,6 +30,36 @@ export function isoDateFromUnknown(value: string | null | undefined): string {
   return s.length >= 10 ? s.slice(0, 10) : s;
 }
 
+/** Queue ticket timestamp: mm-dd-yyyy · local time (uses lab request date when provided). */
+export function formatQueueTicketWhen(
+  issuedAt: string | null | undefined,
+  options?: {
+    ticketDate?: string | null;
+    requestDate?: string | null;
+    requestTime?: string | null;
+  },
+): string {
+  if (options?.requestDate) {
+    const d = formatDateMMDDYYYY(options.requestDate);
+    const t = formatLabTime(options.requestTime);
+    if (!d) return t;
+    return t === "—" ? d : `${d} · ${t}`;
+  }
+  const ticketYmd = options?.ticketDate ? formatDateMMDDYYYY(options.ticketDate) : "";
+  const issued = String(issuedAt ?? "").trim();
+  if (!issued) return ticketYmd || "—";
+  const dt = new Date(issued);
+  if (Number.isNaN(dt.getTime())) return ticketYmd || "—";
+  const date = ticketYmd || formatDateMMDDYYYY(issued.slice(0, 10));
+  const time = dt.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  if (!date) return time;
+  return `${date} · ${time}`;
+}
+
 /** Lab request clock time (`HH:mm` if parseable); otherwise em dash when empty. */
 export function formatLabTime(value: string | null | undefined): string {
   if (value == null || String(value).trim() === "") return "—";

@@ -100,6 +100,109 @@ export function getPrintLayoutForTemplateCode(
   return pos != null && Number.isFinite(pos.refX) && Number.isFinite(pos.refFromTop) ? pos : null;
 }
 
+export type PrintLayoutFormFields = {
+  print_ref_x: string;
+  print_ref_from_top: string;
+  print_font_size: string;
+  print_max_width: string;
+  print_page_index: string;
+};
+
+export function emptyPrintLayoutFormFields(): PrintLayoutFormFields {
+  return {
+    print_ref_x: "",
+    print_ref_from_top: "",
+    print_font_size: "",
+    print_max_width: "",
+    print_page_index: "",
+  };
+}
+
+/** Map DB `results_print_layout` (single object) to Settings form fields. */
+export function printLayoutFormFieldsFromDb(rawLayout: unknown): PrintLayoutFormFields {
+  const pos = parseResultsPrintLayout(rawLayout);
+  if (!pos) return emptyPrintLayoutFormFields();
+  return {
+    print_ref_x: String(pos.refX),
+    print_ref_from_top: String(pos.refFromTop),
+    print_font_size: pos.fontSize != null ? String(pos.fontSize) : "",
+    print_max_width: pos.maxWidth != null ? String(pos.maxWidth) : "",
+    print_page_index: pos.pageIndex != null ? String(pos.pageIndex) : "",
+  };
+}
+
+function parseOptionalPositiveNumber(raw: string): number | undefined {
+  const t = raw.trim();
+  if (t === "") return undefined;
+  const n = Number(t);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+function parseOptionalNonNegativeInt(raw: string): number | undefined {
+  const t = raw.trim();
+  if (t === "") return undefined;
+  const n = Number.parseInt(t, 10);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
+/** Build jsonb value for `lab_tests.results_print_layout` from Settings form fields. */
+export function buildPrintLayoutJsonFromFormFields(
+  fields: PrintLayoutFormFields,
+): { ok: true; value: LabResultPrintPosition | null } | { ok: false; error: string } {
+  const hasAny = [
+    fields.print_ref_x,
+    fields.print_ref_from_top,
+    fields.print_font_size,
+    fields.print_max_width,
+    fields.print_page_index,
+  ].some((s) => s.trim() !== "");
+
+  if (!hasAny) return { ok: true, value: null };
+
+  const refX = Number(fields.print_ref_x.trim());
+  const refFromTop = Number(fields.print_ref_from_top.trim());
+  if (!Number.isFinite(refX) || !Number.isFinite(refFromTop)) {
+    return {
+      ok: false,
+      error: "Print position requires valid X and Y (from top) coordinates.",
+    };
+  }
+
+  const fontSize = parseOptionalPositiveNumber(fields.print_font_size);
+  if (fields.print_font_size.trim() !== "" && fontSize === undefined) {
+    return { ok: false, error: "Font size must be a positive number or empty." };
+  }
+  const maxWidth = parseOptionalPositiveNumber(fields.print_max_width);
+  if (fields.print_max_width.trim() !== "" && maxWidth === undefined) {
+    return { ok: false, error: "Max width must be a positive number or empty." };
+  }
+  const pageIndex = parseOptionalNonNegativeInt(fields.print_page_index);
+  if (fields.print_page_index.trim() !== "" && pageIndex === undefined) {
+    return { ok: false, error: "Page index must be a whole number ≥ 0 or empty." };
+  }
+
+  const value: LabResultPrintPosition = { refX, refFromTop };
+  if (fontSize != null) value.fontSize = fontSize;
+  if (maxWidth != null) value.maxWidth = maxWidth;
+  if (pageIndex != null) value.pageIndex = pageIndex;
+  return { ok: true, value };
+}
+
+/** Parse API body `results_print_layout` (object or null). */
+export function parseResultsPrintLayoutInput(
+  raw: unknown,
+): { ok: true; value: LabResultPrintPosition | null } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  const pos = parseResultsPrintLayout(raw);
+  if (!pos) {
+    return {
+      ok: false,
+      error: "results_print_layout must be an object with numeric refX and refFromTop.",
+    };
+  }
+  return { ok: true, value: pos };
+}
+
 /** Stacked overflow when a test has no valid `results_print_layout` (first page of template only). */
 export const LAB_PRINT_FALLBACK = {
   refX: 72,

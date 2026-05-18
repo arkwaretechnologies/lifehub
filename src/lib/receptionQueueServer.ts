@@ -20,6 +20,13 @@ import {
   LAB_REQUESTS_TABLE,
   normalizeLabRequestPackageIdList,
 } from "@/lib/labRequests";
+import { attachPanelLinksToCatalogItems } from "@/lib/labTestPanelLinks";
+import {
+  buildLabRequestItemRows,
+  LAB_TEST_CATALOG_SELECT,
+  LAB_TESTS_TABLE,
+  mapLabTestCatalogItem,
+} from "@/lib/labTests";
 import { LAB_SALES_TABLE } from "@/lib/cashierPayments";
 
 const ACTIVE_STATUSES: QueueTicketStatus[] = ["Waiting", "Called", "Serving"];
@@ -510,11 +517,29 @@ async function adminCreateLabRequestWithItems(input: {
 
   const linePriority = input.itemPriority ?? "Routine";
 
-  const items = input.labTestIds.map((lab_test_id) => ({
+  const testIds = [...new Set(input.labTestIds.map((x) => x.trim()).filter(Boolean))];
+  const { data: testRows, error: catErr } = await admin
+    .from(LAB_TESTS_TABLE)
+    .select(LAB_TEST_CATALOG_SELECT);
+  if (catErr) {
+    await admin.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
+    return { labRequestId: null, error: catErr.message };
+  }
+  let catalog = ((testRows ?? []) as Record<string, unknown>[]).map((raw) => mapLabTestCatalogItem(raw));
+  const attached = await attachPanelLinksToCatalogItems(admin, catalog);
+  if (attached.error) {
+    await admin.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
+    return { labRequestId: null, error: attached.error };
+  }
+  catalog = attached.tests;
+
+  const itemSpecs = buildLabRequestItemRows(testIds, catalog);
+  const items = itemSpecs.map((row) => ({
     lab_request_id: labRequestId,
-    lab_test_id,
+    lab_test_id: row.lab_test_id,
     notes: null,
     priority: linePriority,
+    is_billable: row.is_billable,
   }));
 
   const { error: itemsErr } = await admin.from(LAB_REQUEST_ITEMS_TABLE).insert(items);

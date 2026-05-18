@@ -7,6 +7,7 @@ import {
   resolveThermalReceiptLogoSrc,
 } from "@/lib/thermalReceiptFontCss";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
+import { openThermalPrintHtml } from "@/lib/thermalPrintIframe";
 
 function escapeHtml(s: string): string {
   return s
@@ -113,28 +114,7 @@ export async function openReceptionQueueReceiptPrint(args: ReceptionQueueReceipt
 </body>
 </html>`;
 
-  const iframe = document.createElement("iframe");
-  iframe.setAttribute("title", "Queue receipt print");
-  iframe.style.position = "fixed";
-  iframe.style.right = "0";
-  iframe.style.bottom = "0";
-  iframe.style.width = "0";
-  iframe.style.height = "0";
-  iframe.style.border = "none";
-  iframe.style.visibility = "hidden";
-  /** Use srcdoc instead of a blob URL so the browser print footer does not show a long `blob:` page link. */
-  iframe.srcdoc = html;
-  document.body.appendChild(iframe);
-  iframe.onload = () => {
-    const win = iframe.contentWindow;
-    if (win != null) {
-      win.focus();
-      win.print();
-    }
-    window.setTimeout(() => {
-      iframe.remove();
-    }, 120_000);
-  };
+  await openThermalPrintHtml(html, "Queue receipt print");
 }
 
 export type ReceptionLabOrderSlipArgs = {
@@ -237,27 +217,7 @@ export async function openReceptionLabOrderSlipPrint(args: ReceptionLabOrderSlip
 </body>
 </html>`;
 
-  const iframe = document.createElement("iframe");
-  iframe.setAttribute("title", "Laboratory order slip print");
-  iframe.style.position = "fixed";
-  iframe.style.right = "0";
-  iframe.style.bottom = "0";
-  iframe.style.width = "0";
-  iframe.style.height = "0";
-  iframe.style.border = "none";
-  iframe.style.visibility = "hidden";
-  iframe.srcdoc = html;
-  document.body.appendChild(iframe);
-  iframe.onload = () => {
-    const win = iframe.contentWindow;
-    if (win != null) {
-      win.focus();
-      win.print();
-    }
-    window.setTimeout(() => {
-      iframe.remove();
-    }, 120_000);
-  };
+  await openThermalPrintHtml(html, "Laboratory order slip print");
 }
 
 /** Loads queue slip fields by ticket id (cashier reprint). */

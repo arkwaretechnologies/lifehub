@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { userHasAdminRole } from "@/lib/adminRole";
+import { userCanManageUsers } from "@/lib/adminRole";
 import { getBearerSessionUserId } from "@/lib/requireSession";
 
 export async function POST(req: Request) {
@@ -36,7 +36,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
   const adminOk =
-    sessionUserId === userId || (await userHasAdminRole(supabaseAdmin, sessionUserId));
+    sessionUserId === userId || (await userCanManageUsers(supabaseAdmin, sessionUserId));
   if (!adminOk) {
     return NextResponse.json({ error: "Forbidden." }, { status: 403 });
   }

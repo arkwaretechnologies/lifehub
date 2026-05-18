@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { assertAdminSession } from "@/lib/adminRole";
+import { assertCanManageRoles } from "@/lib/adminRole";
 
 function adminClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -26,7 +26,7 @@ export async function PATCH(
     );
   }
 
-  const forbidden = await assertAdminSession(req, supabase);
+  const forbidden = await assertCanManageRoles(req, supabase);
   if (forbidden) return forbidden;
 
   const { roleId: roleIdParam } = await context.params;
@@ -94,7 +94,7 @@ export async function DELETE(
     );
   }
 
-  const forbidden = await assertAdminSession(req, supabase);
+  const forbidden = await assertCanManageRoles(req, supabase);
   if (forbidden) return forbidden;
 
   const { roleId: roleIdParam } = await context.params;

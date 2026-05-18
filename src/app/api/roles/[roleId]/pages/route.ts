@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { assertAdminSession } from "@/lib/adminRole";
+import { assertCanManageRoles } from "@/lib/adminRole";
 import { isAllowedPageKey } from "@/lib/navPermissionCatalog";
 
 function adminClient() {
@@ -58,7 +58,7 @@ export async function PUT(
     );
   }
 
-  const forbidden = await assertAdminSession(req, supabase);
+  const forbidden = await assertCanManageRoles(req, supabase);
   if (forbidden) return forbidden;
 
   const { roleId: roleIdParam } = await context.params;

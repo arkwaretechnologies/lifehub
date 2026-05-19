@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
+import { computeImagingRequestQueueState } from "@/lib/imagingQueueSync";
+import { computeLabRequestQueueCollectionState } from "@/lib/labQueueTicketSync";
 import {
-  computeLabRequestQueueCollectionState,
-  nextLabQueueTicketStatus,
-} from "@/lib/labQueueTicketSync";
+  applyActiveDeptToNotes,
+  nextSharedQueueState,
+  parseActiveDeptFromNotes,
+} from "@/lib/queueActiveDept";
 import { queueAdminClient } from "@/lib/receptionQueueServer";
+import type { QueueTicketStatus } from "@/lib/queueReception";
 
 type Body = {
   labRequestItemId?: unknown;
@@ -83,13 +87,49 @@ export async function PATCH(req: Request) {
     allCollected = state.allCollected;
     allHasResults = state.allHasResults;
 
-    const nextStatus = nextLabQueueTicketStatus(allCollected, allHasResults);
-    const nowIso = new Date().toISOString();
-    const { error: tErr } = await admin
+    const { data: tickets, error: tErr } = await admin
       .from("queue_tickets")
-      .update({ status: nextStatus, updated_at: nowIso })
+      .select("id, notes, status, includes_lab, includes_imaging, imaging_request_id")
       .eq("lab_request_id", labRequestId);
     if (tErr) return NextResponse.json({ error: tErr.message }, { status: 500 });
+
+    const nowIso = new Date().toISOString();
+    for (const t of (tickets ?? []) as Array<{
+      id: string;
+      notes: string | null;
+      status: QueueTicketStatus;
+      includes_lab?: boolean | null;
+      includes_imaging?: boolean | null;
+      imaging_request_id?: string | null;
+    }>) {
+      const imgId = String(t.imaging_request_id ?? "").trim();
+      const hasImaging = t.includes_imaging === true || Boolean(imgId);
+      let imagingAllCaptured = true;
+      let imagingAllCompleted = true;
+      if (hasImaging && imgId) {
+        const imgState = await computeImagingRequestQueueState(admin, imgId);
+        if (imgState.error) return NextResponse.json({ error: imgState.error }, { status: 500 });
+        imagingAllCaptured = imgState.allCaptured;
+        imagingAllCompleted = imgState.allCompleted;
+      }
+      const next = nextSharedQueueState({
+        hasLab: true,
+        hasImaging,
+        labAllCollected: allCollected,
+        imagingAllCaptured,
+        allLabResults: allHasResults,
+        imagingAllCompleted,
+        currentStatus: t.status,
+        currentActive: parseActiveDeptFromNotes(t.notes),
+        source: "lab_collect",
+      });
+      const nextNotes = applyActiveDeptToNotes(t.notes ?? "", next.active);
+      const { error: tUpdErr } = await admin
+        .from("queue_tickets")
+        .update({ status: next.status, notes: nextNotes, updated_at: nowIso })
+        .eq("id", t.id);
+      if (tUpdErr) return NextResponse.json({ error: tUpdErr.message }, { status: 500 });
+    }
   }
 
   return NextResponse.json({ ok: true, row: data, allCollected, allHasResults });

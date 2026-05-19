@@ -34,6 +34,7 @@ export const SECURITY_API_ROUTE_GROUPS = {
     "/api/dashboard/summary",
     "/api/settings/laboratory/**",
     "/api/laboratory/**",
+    "/api/imaging/**",
     "/api/cashier/**",
     "/api/auth/login",
   ],

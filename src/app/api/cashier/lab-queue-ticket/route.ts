@@ -4,6 +4,7 @@ import { adminIssueCashierLaboratoryQueueTicket } from "@/lib/receptionQueueServ
 type Body = {
   encounterTransId?: string;
   labRequestIds?: string[] | null;
+  imagingRequestIds?: string[] | null;
   cashierPriorityId?: number | null;
   patient?: { id?: number; name?: string | null; contact_no?: string | null } | null;
 };
@@ -14,9 +15,15 @@ export async function POST(req: Request) {
   const labRequestIds = Array.isArray(body.labRequestIds)
     ? body.labRequestIds.filter((x): x is string => typeof x === "string" && x.trim() !== "")
     : [];
+  const imagingRequestIds = Array.isArray(body.imagingRequestIds)
+    ? body.imagingRequestIds.filter((x): x is string => typeof x === "string" && x.trim() !== "")
+    : [];
   const p = body.patient;
-  if (!encounterTransId || labRequestIds.length === 0) {
-    return NextResponse.json({ error: "encounterTransId and labRequestIds are required." }, { status: 400 });
+  if (!encounterTransId || (labRequestIds.length === 0 && imagingRequestIds.length === 0)) {
+    return NextResponse.json(
+      { error: "encounterTransId and at least one lab or imaging request id are required." },
+      { status: 400 },
+    );
   }
   if (!p || typeof p.id !== "number" || typeof p.name !== "string") {
     return NextResponse.json({ error: "patient id and name are required." }, { status: 400 });
@@ -28,6 +35,7 @@ export async function POST(req: Request) {
   const { error, result } = await adminIssueCashierLaboratoryQueueTicket({
     encounterTransId,
     labRequestIds,
+    imagingRequestIds,
     cashierPriorityId,
     patient: {
       id: p.id,

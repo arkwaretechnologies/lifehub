@@ -4,7 +4,10 @@ import { adminCompleteEntranceAfterLabIntake } from "@/lib/receptionQueueServer"
 type Body = {
   entranceTicketId?: string;
   transId?: string;
-  labRequestId?: string;
+  labRequestId?: string | null;
+  imagingRequestId?: string | null;
+  includesLab?: boolean;
+  includesImaging?: boolean;
   patient?: { id?: number; name?: string; contact_no?: string | null };
 };
 
@@ -12,9 +15,20 @@ export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as Body;
   const entranceTicketId = typeof body.entranceTicketId === "string" ? body.entranceTicketId.trim() : "";
   const transId = typeof body.transId === "string" ? body.transId.trim() : "";
-  const labRequestId = typeof body.labRequestId === "string" ? body.labRequestId.trim() : "";
-  if (!entranceTicketId || !transId || !labRequestId) {
-    return NextResponse.json({ error: "entranceTicketId, transId, and labRequestId are required." }, { status: 400 });
+  const labRequestId =
+    typeof body.labRequestId === "string" && body.labRequestId.trim() ? body.labRequestId.trim() : null;
+  const imagingRequestId =
+    typeof body.imagingRequestId === "string" && body.imagingRequestId.trim()
+      ? body.imagingRequestId.trim()
+      : null;
+  const includesLab = body.includesLab ?? Boolean(labRequestId);
+  const includesImaging = body.includesImaging ?? Boolean(imagingRequestId);
+
+  if (!entranceTicketId || !transId || (!includesLab && !includesImaging)) {
+    return NextResponse.json(
+      { error: "entranceTicketId, transId, and at least one service are required." },
+      { status: 400 },
+    );
   }
 
   const patientId = body.patient?.id;
@@ -26,6 +40,9 @@ export async function POST(req: Request) {
     entranceTicketId,
     transId,
     labRequestId,
+    imagingRequestId,
+    includesLab,
+    includesImaging,
     patient: {
       id: Number(patientId),
       name: typeof body.patient?.name === "string" ? body.patient.name : "",

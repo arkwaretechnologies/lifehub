@@ -42,10 +42,21 @@ import {
   type PhysicianFeeSaleWithStatus,
 } from "@/lib/physicianFeeSales";
 import { fetchLabRequestsWithoutLabSaleForEncounters } from "@/lib/cashierLabQueue";
+import {
+  fetchImagingRequestItemsForRequestIdsClient,
+  fetchImagingRequestsWithoutSaleForEncounters,
+  type EncounterImagingRequestSummary,
+  type ImagingRequestItemRow,
+} from "@/lib/imagingRequests";
 import { PaymentModal } from "@/components/cashier/PaymentModal";
 import { fetchActivePaymentMethods, type PaymentMethodRow } from "@/lib/paymentMethods";
 import { fetchLabTestCheckoutPricesByIds } from "@/lib/labTests";
-import { createLabSaleWithItems, generateNextDailyOrNumber, markPhysicianFeeSalesPaid } from "@/lib/cashierPayments";
+import {
+  createLabSaleWithItems,
+  generateNextDailyOrNumber,
+  markPhysicianFeeSalesPaid,
+  type LabSaleItemInsertRow,
+} from "@/lib/cashierPayments";
 import { fetchActiveDiscountTypes, type DiscountTypeRow } from "@/lib/discountTypes";
 import { ConsultationSectionTitle } from "@/components/consultation/ConsultationSectionTitle";
 import {
@@ -114,6 +125,8 @@ export default function CashierEncounterDetail() {
 
   const [openLabRequests, setOpenLabRequests] = useState<EncounterLabRequestSummary[]>([]);
   const [labItemRows, setLabItemRows] = useState<LabRequestItemDetailRow[]>([]);
+  const [openImagingRequests, setOpenImagingRequests] = useState<EncounterImagingRequestSummary[]>([]);
+  const [imagingItemRows, setImagingItemRows] = useState<ImagingRequestItemRow[]>([]);
 
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethodRow[]>([]);
   const [discountTypes, setDiscountTypes] = useState<DiscountTypeRow[]>([]);
@@ -158,9 +171,10 @@ export default function CashierEncounterDetail() {
     const qn = (encSum.encounter?.queueNo ?? "").trim();
     setPatient(pat);
 
-    const [salesRes, openLabsRes] = await Promise.all([
+    const [salesRes, openLabsRes, openImgRes] = await Promise.all([
       fetchUnpaidPhysicianFeeSalesForEncounter(encounterId),
       fetchLabRequestsWithoutLabSaleForEncounters([encounterId]),
+      fetchImagingRequestsWithoutSaleForEncounters([encounterId]),
     ]);
 
     if (salesRes.error) {
@@ -198,6 +212,19 @@ export default function CashierEncounterDetail() {
     setOpenLabRequests(openList);
     const reqIds = openList.map((r) => r.id);
     const labItemsRes = await fetchLabRequestItemDetailsForRequestIds(reqIds);
+
+    if (openImgRes.error) {
+      setLoading(false);
+      setLoadError(openImgRes.error);
+      setOpenImagingRequests([]);
+      setImagingItemRows([]);
+      return { receptionQueueNo: qn };
+    }
+    const imgList = openImgRes.byEncounter.get(encounterId) ?? [];
+    setOpenImagingRequests(imgList);
+    const imgIds = imgList.map((r) => r.id);
+    const imgItemsClient = await fetchImagingRequestItemsForRequestIdsClient(imgIds);
+
     setLoading(false);
     if (labItemsRes.error) {
       setLoadError(labItemsRes.error);
@@ -205,6 +232,12 @@ export default function CashierEncounterDetail() {
       return { receptionQueueNo: qn };
     }
     setLabItemRows(labItemsRes.items);
+    if (imgItemsClient.error) {
+      setLoadError(imgItemsClient.error);
+      setImagingItemRows([]);
+      return { receptionQueueNo: qn };
+    }
+    setImagingItemRows(imgItemsClient.rows);
     return { receptionQueueNo: qn };
   }, [encounterId]);
 
@@ -338,6 +371,28 @@ export default function CashierEncounterDetail() {
     return labOrdersForDisplay.reduce((sum, o) => sum + o.subtotal, 0);
   }, [labOrdersForDisplay]);
 
+  const imagingItemsByRequestId = useMemo(() => {
+    const m = new Map<string, ImagingRequestItemRow[]>();
+    for (const it of imagingItemRows) {
+      const list = m.get(it.imaging_request_id) ?? [];
+      list.push(it);
+      m.set(it.imaging_request_id, list);
+    }
+    return m;
+  }, [imagingItemRows]);
+
+  const imagingTotalDue = useMemo(() => {
+    return imagingItemRows.reduce((sum, it) => sum + moneyNum(it.unit_price), 0);
+  }, [imagingItemRows]);
+
+  const imagingOrdersForDisplay = useMemo(() => {
+    return openImagingRequests.map((req) => {
+      const items = imagingItemsByRequestId.get(req.id) ?? [];
+      const subtotal = items.reduce((sum, it) => sum + moneyNum(it.unit_price), 0);
+      return { req, items, subtotal };
+    });
+  }, [openImagingRequests, imagingItemsByRequestId]);
+
   /** Sum of listed line totals only (no header fallback). */
   const feeLineItemsSum = useMemo(() => {
     let s = 0;
@@ -363,10 +418,10 @@ export default function CashierEncounterDetail() {
   const feeTotalDue = feeLineItemsSum;
 
   const totalDue = useMemo(() => {
-    return feeTotalDue + labTotalDue;
-  }, [feeTotalDue, labTotalDue]);
+    return feeTotalDue + labTotalDue + imagingTotalDue;
+  }, [feeTotalDue, labTotalDue, imagingTotalDue]);
 
-  const anyUnpaid = feeSales.length > 0 || openLabRequests.length > 0;
+  const anyUnpaid = feeSales.length > 0 || openLabRequests.length > 0 || openImagingRequests.length > 0;
 
   async function handleConfirmPay(args: {
     paymentMethod: PaymentMethodRow;
@@ -415,8 +470,18 @@ export default function CashierEncounterDetail() {
         };
       });
 
+      const imagingSubtotals = openImagingRequests.map((req) => {
+        const items = imagingItemsByRequestId.get(req.id) ?? [];
+        return {
+          imagingRequestId: req.id,
+          subtotal: items.reduce((s, it) => s + moneyNum(it.unit_price), 0),
+        };
+      });
+
       const grandSubtotal =
-        feeSaleSubtotals.reduce((s, r) => s + r.subtotal, 0) + labSubtotals.reduce((s, r) => s + r.subtotal, 0);
+        feeSaleSubtotals.reduce((s, r) => s + r.subtotal, 0) +
+        labSubtotals.reduce((s, r) => s + r.subtotal, 0) +
+        imagingSubtotals.reduce((s, r) => s + r.subtotal, 0);
 
       const totalDiscount =
         args.discountMode === "amount"
@@ -441,11 +506,19 @@ export default function CashierEncounterDetail() {
       }
 
       const combinedDiscounts = allocateDiscount(
-        [...feeSaleSubtotals.map((s) => s.subtotal), ...labSubtotals.map((s) => s.subtotal)],
+        [
+          ...feeSaleSubtotals.map((s) => s.subtotal),
+          ...labSubtotals.map((s) => s.subtotal),
+          ...imagingSubtotals.map((s) => s.subtotal),
+        ],
         totalDiscount,
       );
       const feeDiscounts = combinedDiscounts.slice(0, feeSaleSubtotals.length);
-      const labDiscounts = combinedDiscounts.slice(feeSaleSubtotals.length);
+      const labDiscounts = combinedDiscounts.slice(
+        feeSaleSubtotals.length,
+        feeSaleSubtotals.length + labSubtotals.length,
+      );
+      const imagingDiscounts = combinedDiscounts.slice(feeSaleSubtotals.length + labSubtotals.length);
 
       // Update physician fee sales with allocated discounts
       const markRes2 = await markPhysicianFeeSalesPaid({
@@ -461,39 +534,81 @@ export default function CashierEncounterDetail() {
       for (let i = 0; i < openLabRequests.length; i++) {
         const req = openLabRequests[i];
         const items = labItemsByRequestId.get(req.id) ?? [];
-        const payloadItems = items.map((it) => ({
+        const payloadItems: LabSaleItemInsertRow[] = items.map((it) => ({
           lab_test_id: it.lab_test_id,
           quantity: 1,
           unit_price: labLineCheckoutUnitFee(req, items, it, priceRes.unitPriceById),
           discount: 0,
           notes: it.notes,
         }));
-        const labOrNumber = nLabs === 1 ? baseOr : `${baseOr}-L${i + 1}`;
+        if (i === 0) {
+          for (const imgReq of openImagingRequests) {
+            for (const it of imagingItemsByRequestId.get(imgReq.id) ?? []) {
+              payloadItems.push({
+                imaging_catalog_id: it.imaging_catalog_id,
+                quantity: 1,
+                unit_price: moneyNum(it.unit_price),
+                discount: 0,
+                notes: it.study_name,
+              });
+            }
+          }
+        }
+        const labOrNumber = nLabs === 1 && openImagingRequests.length === 0 ? baseOr : `${baseOr}-L${i + 1}`;
         const tenderedOnLab =
-          hasPhysicianFees ? null : i === 0 ? args.amountTendered : null;
-        const changeOnLab = hasPhysicianFees ? null : i === 0 ? args.changeAmount : null;
+          hasPhysicianFees ? null : i === 0 && openImagingRequests.length === 0 ? args.amountTendered : null;
+        const changeOnLab = hasPhysicianFees ? null : i === 0 && openImagingRequests.length === 0 ? args.changeAmount : null;
+        const labDisc = (labDiscounts[i] ?? 0) + (i === 0 ? imagingDiscounts.reduce((a, b) => a + b, 0) : 0);
 
         const saleRes = await createLabSaleWithItems({
           labRequestId: req.id,
+          imagingRequestId: i === 0 && openImagingRequests[0] ? openImagingRequests[0].id : null,
           patientId: patientIdNum(patient.patientId),
           orNumber: labOrNumber,
           paymentMethodId: args.paymentMethod.id,
           amountTendered: tenderedOnLab,
           changeAmount: changeOnLab,
           discountTypeId: args.discountMode === "pct" ? args.discountType?.id ?? null : null,
-          discountAmount: labDiscounts[i] ?? 0,
+          discountAmount: labDisc,
           items: payloadItems,
         });
         if (saleRes.error) throw new Error(saleRes.error);
+      }
+
+      if (openLabRequests.length === 0) {
+        for (let i = 0; i < openImagingRequests.length; i++) {
+          const req = openImagingRequests[i];
+          const items = imagingItemsByRequestId.get(req.id) ?? [];
+          const payloadItems = items.map((it) => ({
+            imaging_catalog_id: it.imaging_catalog_id,
+            quantity: 1,
+            unit_price: moneyNum(it.unit_price),
+            discount: 0,
+            notes: it.study_name,
+          }));
+          const imgOrNumber = openImagingRequests.length === 1 ? baseOr : `${baseOr}-I${i + 1}`;
+          const saleRes = await createLabSaleWithItems({
+            imagingRequestId: req.id,
+            patientId: patientIdNum(patient.patientId),
+            orNumber: imgOrNumber,
+            paymentMethodId: args.paymentMethod.id,
+            amountTendered: hasPhysicianFees ? null : i === 0 ? args.amountTendered : null,
+            changeAmount: hasPhysicianFees ? null : i === 0 ? args.changeAmount : null,
+            discountTypeId: args.discountMode === "pct" ? args.discountType?.id ?? null : null,
+            discountAmount: imagingDiscounts[i] ?? 0,
+            items: payloadItems,
+          });
+          if (saleRes.error) throw new Error(saleRes.error);
+        }
       }
 
       let labQueueLine = "";
       let labQueueSlip:
         | { queueDisplay: string; queueTicketId: string | null }
         | null = null;
-      if (openLabRequests.length > 0) {
+      if (openLabRequests.length > 0 || openImagingRequests.length > 0) {
         const pid = patientIdNum(patient.patientId);
-        if (pid == null) throw new Error("Patient id missing for laboratory queue ticket.");
+        if (pid == null) throw new Error("Patient id missing for diagnostic queue ticket.");
         const encSnap = await fetchEncounterSummaryByTransId(encounterId);
         const receptionQueueNoBeforePay = (encSnap.encounter?.queueNo ?? "").trim();
         const queueRes = await authenticatedFetch("/api/cashier/lab-queue-ticket", {
@@ -502,6 +617,7 @@ export default function CashierEncounterDetail() {
           body: JSON.stringify({
             encounterTransId: encounterId,
             labRequestIds: openLabRequests.map((r) => r.id),
+            imagingRequestIds: openImagingRequests.map((r) => r.id),
             cashierPriorityId: args.labQueuePriorityId,
             patient: {
               id: pid,
@@ -519,13 +635,22 @@ export default function CashierEncounterDetail() {
         const qd = (qj.queueDisplay ?? "").trim();
         const tid = (qj.queueTicketId ?? "").trim();
         setLabReceiptQueueDisplay(qd);
+        const dest =
+          openLabRequests.length > 0 && openImagingRequests.length > 0
+            ? "Laboratory & imaging"
+            : openImagingRequests.length > 0
+              ? "Imaging"
+              : "Laboratory";
         labQueueLine = qd
-          ? ` Laboratory queue: ${qd}. Collect your laboratory slip at reception.`
-          : " Laboratory queue assigned. Collect your laboratory slip at reception.";
+          ? ` ${dest} queue: ${qd}. Collect your slip at reception.`
+          : ` ${dest} queue assigned. Collect your slip at reception.`;
         if (!receptionQueueNoBeforePay && qd) {
           labQueueSlip = { queueDisplay: qd, queueTicketId: tid || null };
-        } else if (receptionQueueNoBeforePay && qd && tid) {
-          storeCashierLabQueueReprintOffer({ ticketId: tid, queueDisplay: qd });
+        } else if (receptionQueueNoBeforePay && tid) {
+          storeCashierLabQueueReprintOffer({
+            ticketId: tid,
+            queueDisplay: receptionQueueNoBeforePay,
+          });
         }
       }
 
@@ -534,6 +659,9 @@ export default function CashierEncounterDetail() {
       if (feeTotalDue > 0) paymentLines.push({ label: "Consultation charges", amount: feeTotalDue });
       if (openLabRequests.length > 0 && labTotalDue > 0) {
         paymentLines.push({ label: "Laboratory orders", amount: labTotalDue });
+      }
+      if (openImagingRequests.length > 0 && imagingTotalDue > 0) {
+        paymentLines.push({ label: "Imaging orders", amount: imagingTotalDue });
       }
 
       await openCashierAcknowledgementReceiptPrint({
@@ -693,6 +821,7 @@ export default function CashierEncounterDetail() {
         summaryRows={[
           { label: "Consultation charges", amount: feeTotalDue },
           ...(openLabRequests.length > 0 ? [{ label: "Laboratory orders", amount: labTotalDue }] : []),
+          ...(imagingOrdersForDisplay.length > 0 ? [{ label: "Imaging orders", amount: imagingTotalDue }] : []),
         ]}
         labQueuePrioritySelect={
           openLabRequests.length > 0 && queuePriorities.length > 0
@@ -711,13 +840,15 @@ export default function CashierEncounterDetail() {
           <CardContent>
             <ConsultationSectionTitle>Visit charges — unpaid</ConsultationSectionTitle>
             <Typography variant="body2" color="text.primary" sx={{ ...consultBodyTypoSx, mb: 2, display: "block" }}>
-              Consultation lines are grouped under “Consultation bill”. Each laboratory order is shown separately with its
-              own total (package sale vs per‑test laboratory sale).
+              Consultation lines are grouped under “Consultation bill”. Laboratory and imaging orders from this visit
+              are listed separately with their own totals.
             </Typography>
 
-            {feeVisitChargeRows.length === 0 && labOrdersForDisplay.length === 0 ? (
+            {feeVisitChargeRows.length === 0 &&
+            labOrdersForDisplay.length === 0 &&
+            imagingOrdersForDisplay.length === 0 ? (
               <Typography variant="body2" sx={consultBodyTypoSx}>
-                No unpaid consultation charges or laboratory orders for this visit.
+                No unpaid consultation charges, laboratory orders, or imaging orders for this visit.
               </Typography>
             ) : (
               <>
@@ -797,7 +928,7 @@ export default function CashierEncounterDetail() {
                 ) : null}
 
                 {labOrdersForDisplay.length > 0 ? (
-                  <Box sx={{ mb: 0 }}>
+                  <Box sx={{ mb: imagingOrdersForDisplay.length > 0 ? 4 : 0 }}>
                     <ConsultationSectionTitle dense sx={{ mt: 0 }}>
                       Laboratory orders
                     </ConsultationSectionTitle>
@@ -1000,6 +1131,109 @@ export default function CashierEncounterDetail() {
                   </Box>
                 ) : null}
 
+                {imagingOrdersForDisplay.length > 0 ? (
+                  <Box sx={{ mb: 0 }}>
+                    <ConsultationSectionTitle dense sx={{ mt: 0 }}>
+                      Imaging orders
+                    </ConsultationSectionTitle>
+                    <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                      {imagingOrdersForDisplay.map(({ req, items, subtotal }) => {
+                        const when = `${formatDateMMDDYYYY(req.request_date)} ${formatLabTime(req.request_time)}`;
+                        return (
+                          <Box
+                            key={req.id}
+                            sx={{
+                              border: 1,
+                              borderColor: "divider",
+                              borderRadius: 1,
+                              bgcolor: "action.hover",
+                              overflow: "hidden",
+                            }}
+                          >
+                            <Box
+                              sx={{
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "flex-start",
+                                gap: 2,
+                                flexWrap: "wrap",
+                                px: 2,
+                                py: 1.5,
+                                borderBottom: 1,
+                                borderColor: "divider",
+                              }}
+                            >
+                              <Box>
+                                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                                  Imaging order · {when}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.25 }}>
+                                  Priority: {req.priority?.trim() || "—"}
+                                  {req.remarks?.trim() ? ` · ${req.remarks.trim()}` : ""}
+                                </Typography>
+                              </Box>
+                              <Typography variant="subtitle2" sx={{ fontWeight: 800, color: "error.main" }}>
+                                Order total: {formatMoney(subtotal)}
+                              </Typography>
+                            </Box>
+                            <TableContainer>
+                              <Table size="small" sx={consultTableSx}>
+                                <TableHead>
+                                  <TableRow sx={consultTableHeadRowSx}>
+                                    <TableCell sx={consultTableHeadCellSx}>#</TableCell>
+                                    <TableCell sx={consultTableHeadCellSx}>Study</TableCell>
+                                    <TableCell align="right" sx={consultTableHeadCellSx}>
+                                      Unit fee
+                                    </TableCell>
+                                    <TableCell align="right" sx={consultTableHeadCellSx}>
+                                      Line total
+                                    </TableCell>
+                                    <TableCell sx={consultTableHeadCellSx}>Notes</TableCell>
+                                  </TableRow>
+                                </TableHead>
+                                <TableBody>
+                                  {items.length === 0 ? (
+                                    <TableRow>
+                                      <TableCell colSpan={5} sx={consultTableBodyCellSx}>
+                                        No line items loaded for this order.
+                                      </TableCell>
+                                    </TableRow>
+                                  ) : (
+                                    items.map((it, idx) => (
+                                      <TableRow key={it.id}>
+                                        <TableCell sx={consultTableBodyCellSx}>{idx + 1}</TableCell>
+                                        <TableCell sx={consultTableBodyCellSx}>
+                                          {(it.study_name ?? "").trim() || `Study ${it.imaging_catalog_id}`}
+                                          {it.view_text?.trim() ? (
+                                            <Typography
+                                              variant="caption"
+                                              color="text.secondary"
+                                              sx={{ display: "block", mt: 0.25 }}
+                                            >
+                                              View: {it.view_text.trim()}
+                                            </Typography>
+                                          ) : null}
+                                        </TableCell>
+                                        <TableCell align="right" sx={consultTableBodyCellSx}>
+                                          {formatMoney(it.unit_price)}
+                                        </TableCell>
+                                        <TableCell align="right" sx={consultTableBodyCellSx}>
+                                          {formatMoney(it.unit_price)}
+                                        </TableCell>
+                                        <TableCell sx={consultTableBodyCellSx}>{it.remarks?.trim() || "—"}</TableCell>
+                                      </TableRow>
+                                    ))
+                                  )}
+                                </TableBody>
+                              </Table>
+                            </TableContainer>
+                          </Box>
+                        );
+                      })}
+                    </Box>
+                  </Box>
+                ) : null}
+
                 <Box
                   sx={{
                     mt: 2,
@@ -1077,6 +1311,27 @@ export default function CashierEncounterDetail() {
                               </TableCell>
                               <TableCell align="right" sx={{ ...consultTableBodyCellSx, fontWeight: 700 }}>
                                 {labTotalLoading ? "…" : formatMoney(labTotalDue)}
+                              </TableCell>
+                            </TableRow>
+                          ) : null}
+                          {imagingOrdersForDisplay.map(({ req, subtotal }) => (
+                            <TableRow key={`visit-total-img-${req.id}`}>
+                              <TableCell sx={consultTableBodyCellSx}>
+                                Imaging · order · {formatDateMMDDYYYY(req.request_date)}{" "}
+                                {formatLabTime(req.request_time)}
+                              </TableCell>
+                              <TableCell align="right" sx={{ ...consultTableBodyCellSx, fontWeight: 700 }}>
+                                {formatMoney(subtotal)}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                          {imagingOrdersForDisplay.length > 1 ? (
+                            <TableRow>
+                              <TableCell sx={{ ...consultTableBodyCellSx, fontWeight: 700, color: "text.secondary" }}>
+                                Imaging orders total
+                              </TableCell>
+                              <TableCell align="right" sx={{ ...consultTableBodyCellSx, fontWeight: 700 }}>
+                                {formatMoney(imagingTotalDue)}
                               </TableCell>
                             </TableRow>
                           ) : null}

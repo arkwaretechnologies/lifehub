@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
+import { computeImagingRequestQueueState } from "@/lib/imagingQueueSync";
+import { computeLabRequestQueueCollectionState } from "@/lib/labQueueTicketSync";
 import {
-  computeLabRequestQueueCollectionState,
-  nextLabQueueTicketStatus,
-} from "@/lib/labQueueTicketSync";
+  applyActiveDeptToNotes,
+  nextSharedQueueState,
+  parseActiveDeptFromNotes,
+} from "@/lib/queueActiveDept";
 import { queueAdminClient } from "@/lib/receptionQueueServer";
 import type { QueueTicketStatus } from "@/lib/queueReception";
 
@@ -50,20 +53,51 @@ async function syncQueueAfterSpecimenChange(
   }
 
   const { allCollected, allHasResults } = state;
-  const nextStatus = nextLabQueueTicketStatus(allCollected, allHasResults);
 
   const { data: tickets, error: tErr } = await admin
     .from("queue_tickets")
-    .select("id, notes, status")
+    .select("id, notes, status, includes_lab, includes_imaging, imaging_request_id")
     .eq("lab_request_id", labRequestId);
   if (tErr) return { error: tErr.message, allCollected, allHasResults };
 
   const now = new Date().toISOString();
-  for (const t of (tickets ?? []) as Array<{ id: string; notes: string | null; status: QueueTicketStatus }>) {
-    const nextTicketNotes = setTicketSummary(t.notes, allCollected);
+  for (const t of (tickets ?? []) as Array<{
+    id: string;
+    notes: string | null;
+    status: QueueTicketStatus;
+    includes_lab?: boolean | null;
+    includes_imaging?: boolean | null;
+    imaging_request_id?: string | null;
+  }>) {
+    const imgId = String(t.imaging_request_id ?? "").trim();
+    const hasImaging = t.includes_imaging === true || Boolean(imgId);
+    let imagingAllCaptured = true;
+    let imagingAllCompleted = true;
+    if (hasImaging && imgId) {
+      const imgState = await computeImagingRequestQueueState(admin, imgId);
+      if (imgState.error) return { error: imgState.error, allCollected, allHasResults };
+      imagingAllCaptured = imgState.allCaptured;
+      imagingAllCompleted = imgState.allCompleted;
+    }
+
+    const next = nextSharedQueueState({
+      hasLab: t.includes_lab === true || true,
+      hasImaging,
+      labAllCollected: allCollected,
+      imagingAllCaptured,
+      allLabResults: allHasResults,
+      imagingAllCompleted,
+      currentStatus: t.status,
+      currentActive: parseActiveDeptFromNotes(t.notes),
+      source: "lab_collect",
+    });
+
+    const notesWithSpecimen = setTicketSummary(t.notes, allCollected);
+    const nextNotes = applyActiveDeptToNotes(notesWithSpecimen, next.active);
+
     const { error: tUpdErr } = await admin
       .from("queue_tickets")
-      .update({ notes: nextTicketNotes, status: nextStatus, updated_at: now })
+      .update({ notes: nextNotes, status: next.status, updated_at: now })
       .eq("id", t.id);
     if (tUpdErr) return { error: tUpdErr.message, allCollected, allHasResults };
   }

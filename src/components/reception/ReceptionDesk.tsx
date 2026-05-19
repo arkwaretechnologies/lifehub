@@ -47,6 +47,7 @@ import {
   completeEntranceAfterLabIntakeFromApi,
   createPatientFromApi,
   fetchReceptionQueueStateFromApi,
+  fetchReceptionQueueTicketsFromApi,
   getEntranceCounterCode,
   parseReceptionRouteFromNotes,
   patchReceptionQueueTicket,
@@ -61,7 +62,18 @@ import {
   type ReceptionTriageRoute,
 } from "@/lib/queueReception";
 import PatientAddDialog from "@/components/patient/PatientAddDialog";
-import { fetchLabCatalogGrouped, type LabCatalogSection } from "@/lib/labTests";
+import { LabOrderCatalogSections } from "@/components/laboratory/LabOrderCatalogSections";
+import {
+  applyPanelLabTestToggle,
+  collapseComponentsToPanel,
+  expandPanelTestIds,
+  fetchLabCatalogGrouped,
+  getComponentTestIds,
+  testHasPanelComponents,
+  type LabCatalogSection,
+  type LabTestCatalogItem,
+} from "@/lib/labTests";
+import { fetchActiveLabPricesByTestIds } from "@/lib/labServicePrices";
 import { fetchActiveLabPackagesWithTests, type LabPackageWithTests } from "@/lib/labPackages";
 import {
   buildImagingRequestLinesFromCatalog,
@@ -450,6 +462,7 @@ export default function ReceptionDesk() {
     bmi: "",
   });
   const [labSections, setLabSections] = useState<LabCatalogSection[]>([]);
+  const [labPriceByTestId, setLabPriceByTestId] = useState<Map<string, number>>(() => new Map());
   const [labLoading, setLabLoading] = useState(false);
   const [selectedLabTestIds, setSelectedLabTestIds] = useState<Set<string>>(new Set());
   const [labSubTab, setLabSubTab] = useState(0);
@@ -459,6 +472,87 @@ export default function ReceptionDesk() {
   const [imagingForm, setImagingForm] = useState<Record<string, ImagingLineSelection>>({});
   const [imagingCatalogError, setImagingCatalogError] = useState("");
   const labDataLoadedTicketIdRef = useRef<string | null>(null);
+  const labCatalogTests = useMemo(
+    (): LabTestCatalogItem[] => labSections.flatMap((s) => s.tests),
+    [labSections],
+  );
+  const testsCoveredBySelectedPackages = useMemo(() => {
+    const s = new Set<string>();
+    for (const pkg of labPackages) {
+      if (!selectedLabPackageIds.has(pkg.id)) continue;
+      for (const tid of pkg.labTestIds) {
+        s.add(tid);
+        for (const t of expandPanelTestIds([tid], labCatalogTests)) s.add(t);
+      }
+    }
+    return s;
+  }, [labPackages, selectedLabPackageIds, labCatalogTests]);
+
+  const toggleLabTestSelection = useCallback(
+    (testId: string) => {
+      setSelectedLabTestIds((prev) => {
+        if (testHasPanelComponents(labCatalogTests, testId)) {
+          return applyPanelLabTestToggle(testId, labCatalogTests, prev);
+        }
+        const next = new Set(prev);
+        if (next.has(testId)) next.delete(testId);
+        else next.add(testId);
+        return next;
+      });
+    },
+    [labCatalogTests],
+  );
+
+  const toggleLabPackageSelection = useCallback(
+    (pkg: LabPackageWithTests) => {
+      if (pkg.labTestIds.length === 0) return;
+      const wasOn = selectedLabPackageIds.has(pkg.id);
+      setSelectedLabPackageIds((prev) => {
+        const next = new Set(prev);
+        if (wasOn) next.delete(pkg.id);
+        else next.add(pkg.id);
+        return next;
+      });
+      setSelectedLabTestIds((sel) => {
+        const n2 = new Set(sel);
+        if (wasOn) {
+          for (const tid of pkg.labTestIds) {
+            n2.delete(tid);
+            if (testHasPanelComponents(labCatalogTests, tid)) {
+              for (const cid of getComponentTestIds(labCatalogTests, tid)) n2.delete(cid);
+            }
+          }
+        } else {
+          for (const tid of pkg.labTestIds) {
+            n2.add(tid);
+            if (testHasPanelComponents(labCatalogTests, tid)) {
+              for (const cid of getComponentTestIds(labCatalogTests, tid)) n2.delete(cid);
+            }
+          }
+        }
+        return n2;
+      });
+    },
+    [selectedLabPackageIds, labCatalogTests],
+  );
+
+  const clearLaboratoryTriageSelections = useCallback(() => {
+    setSelectedLabTestIds(new Set());
+    setSelectedLabPackageIds(new Set());
+    setImagingForm(imagingCatalog.length > 0 ? emptyImagingSelection(imagingCatalog) : {});
+    setLabSubTab(0);
+  }, [imagingCatalog]);
+
+  const handleTriageRouteChange = useCallback(
+    (route: ReceptionTriageRoute) => {
+      if (route === "consultation" && triageRoute === "laboratory") {
+        clearLaboratoryTriageSelections();
+      }
+      setTriageRoute(route);
+    },
+    [triageRoute, clearLaboratoryTriageSelections],
+  );
+
   const doctorQueueOptions = useMemo(() => parseReceptionDoctorQueueOptions(), []);
   const [doctorCounterCode, setDoctorCounterCode] = useState(() => doctorQueueOptions[0]?.code ?? "CLINIC 1");
   const patientSearchAnchorRef = useRef<HTMLDivElement | null>(null);
@@ -482,6 +576,14 @@ export default function ReceptionDesk() {
     [priorities],
   );
 
+  const applyTickets = useCallback((next: QueueTicketRow[]) => {
+    setTickets(next);
+    setTriageTicket((prev) => {
+      if (!prev) return null;
+      return next.find((t) => t.id === prev.id) ?? prev;
+    });
+  }, []);
+
   const refresh = useCallback(async () => {
     const data = await fetchReceptionQueueStateFromApi();
     setLoadError(data.error);
@@ -489,8 +591,15 @@ export default function ReceptionDesk() {
     setCounters(data.counters);
     setEntranceCounter(data.entranceCounter);
     setPriorities(data.priorities);
-    setTickets(data.tickets);
-  }, []);
+    applyTickets(data.tickets);
+  }, [applyTickets]);
+
+  /** Background refresh: updates lobby list only; leaves triage dialog and form fields intact. */
+  const refreshTicketsOnly = useCallback(async () => {
+    const data = await fetchReceptionQueueTicketsFromApi();
+    if (data.error) return;
+    applyTickets(data.tickets);
+  }, [applyTickets]);
 
   useEffect(() => {
     let cancelled = false;
@@ -510,23 +619,22 @@ export default function ReceptionDesk() {
     const idList = [...ids];
     if (idList.length === 0) return () => {};
 
-    const unsub = subscribeQueueTickets(
+    return subscribeQueueTickets(
       idList,
       () => {
-        void refresh();
+        void refreshTicketsOnly();
       },
       (subscribed) => setRtConnected(subscribed),
     );
+  }, [counters, entranceCounter, refreshTicketsOnly]);
 
+  useEffect(() => {
+    const pollMs = rtConnected ? 60_000 : 8_000;
     const poll = window.setInterval(() => {
-      void refresh();
-    }, 45_000);
-
-    return () => {
-      unsub();
-      window.clearInterval(poll);
-    };
-  }, [counters, entranceCounter, refresh]);
+      void refreshTicketsOnly();
+    }, pollMs);
+    return () => window.clearInterval(poll);
+  }, [rtConnected, refreshTicketsOnly]);
 
   const ticketsByCounter = useMemo(() => {
     const m = new Map<string, QueueTicketRow[]>();
@@ -583,6 +691,7 @@ export default function ReceptionDesk() {
       bmi: "",
     });
     setSelectedLabTestIds(new Set());
+    setLabPriceByTestId(new Map());
     setLabSubTab(0);
     setLabPackages([]);
     setSelectedLabPackageIds(new Set());
@@ -613,7 +722,14 @@ export default function ReceptionDesk() {
           fetchActiveImagingCatalog(),
         ]);
         if (cancelled) return;
-        if (!catRes.error) setLabSections(catRes.sections);
+        if (!catRes.error) {
+          setLabSections(catRes.sections);
+          const allTestIds = catRes.sections.flatMap((s) => s.tests.map((t) => t.id));
+          const pricesAll = await fetchActiveLabPricesByTestIds(allTestIds);
+          if (!cancelled && !pricesAll.error) {
+            setLabPriceByTestId(pricesAll.pricesByTestId);
+          }
+        }
         if (!pkgRes.error) setLabPackages(pkgRes.packages);
         else setLabPackages([]);
         if (!imgRes.error) {
@@ -692,13 +808,23 @@ export default function ReceptionDesk() {
           const merged = new Set<string>([...selectedLabTestIds]);
           for (const pkgId of selectedLabPackageIds) {
             const pkg = labPackages.find((p) => p.id === pkgId);
-            if (pkg) for (const tid of pkg.labTestIds) merged.add(tid);
+            if (pkg) {
+              for (const tid of pkg.labTestIds) {
+                merged.add(tid);
+                if (testHasPanelComponents(labCatalogTests, tid)) {
+                  for (const cid of getComponentTestIds(labCatalogTests, tid)) merged.delete(cid);
+                }
+              }
+            }
           }
-          if (merged.size === 0) {
-            setPatientError("Select at least one laboratory test or package.");
+          const hasImaging = Object.values(imagingForm).some((r) => r?.checked);
+          if (merged.size === 0 && !hasImaging) {
+            setPatientError("Select at least one laboratory test, package, or imaging study.");
             return;
           }
-          const labTestIds = [...merged].sort((a, b) => a.localeCompare(b));
+          const labTestIds = collapseComponentsToPanel(merged, labCatalogTests).sort((a, b) =>
+            a.localeCompare(b),
+          );
           const labPackageIds = [...selectedLabPackageIds]
             .map((sid) => Number.parseInt(sid, 10))
             .filter((n) => Number.isFinite(n) && n > 0);
@@ -723,13 +849,14 @@ export default function ReceptionDesk() {
             },
             labTestIds,
             labPackageIds,
+            imagingSelection: imagingForm,
           });
           if (prep.error) {
             setLoadError(prep.error);
             return;
           }
-          if (!prep.transId || !prep.labRequestId) {
-            setLoadError("Server did not return lab checkout identifiers.");
+          if (!prep.transId || (!prep.includesLab && !prep.includesImaging)) {
+            setLoadError("Server did not return checkout identifiers.");
             return;
           }
 
@@ -738,7 +865,10 @@ export default function ReceptionDesk() {
           const completeRes = await completeEntranceAfterLabIntakeFromApi({
             entranceTicketId,
             transId: prep.transId,
-            labRequestId: prep.labRequestId,
+            labRequestId: prep.labRequestId ?? null,
+            imagingRequestId: prep.imagingRequestId ?? null,
+            includesLab: prep.includesLab,
+            includesImaging: prep.includesImaging,
             patient: {
               id: selectedPatient.id,
               name: selectedPatient.name ?? "",
@@ -751,15 +881,21 @@ export default function ReceptionDesk() {
           }
 
           const labQueueDisplay = (completeRes.labQueueDisplay ?? "").trim();
+          const destLabel =
+            prep.includesLab && prep.includesImaging
+              ? "Laboratory & Imaging"
+              : prep.includesImaging
+                ? "Imaging"
+                : "Laboratory";
           if (labQueueDisplay) {
             await openReceptionQueueReceiptPrint({
               patientName: selectedPatient.name ?? "Patient",
-              destinationLabel: "Laboratory",
+              destinationLabel: destLabel,
               queueDisplay: labQueueDisplay,
               transId: prep.transId,
-              qrPayload: prep.labRequestId,
+              qrPayload: prep.labRequestId ?? prep.imagingRequestId ?? prep.transId,
               hideProceedTo: true,
-              footerNote: "Pay at cashier before laboratory queue display.",
+              footerNote: `Pay at cashier before ${destLabel.toLowerCase()} queue display.`,
             });
           }
 
@@ -1152,7 +1288,7 @@ export default function ReceptionDesk() {
                 <RadioGroup
                   aria-labelledby="reception-route-label"
                   value={triageRoute}
-                  onChange={(e) => setTriageRoute(e.target.value as ReceptionTriageRoute)}
+                  onChange={(e) => handleTriageRouteChange(e.target.value as ReceptionTriageRoute)}
                 >
                   <FormControlLabel value="consultation" control={<Radio />} label="Doctor consultation" />
                   <FormControlLabel value="laboratory" control={<Radio />} label="Laboratory only" />
@@ -1317,44 +1453,15 @@ export default function ReceptionDesk() {
                         }}
                       >
                         {labSubTab === 0 ? (
-                          <>
-                            {labSections.map((section) => (
-                              <Box key={String(section.category.id)} sx={{ mb: 2 }}>
-                                <Typography
-                                  variant="caption"
-                                  fontWeight={700}
-                                  color="primary"
-                                  sx={{ display: "block", mb: 0.5, textTransform: "uppercase" }}
-                                >
-                                  {section.category.name}
-                                </Typography>
-                                <Grid container spacing={1}>
-                                  {section.tests.map((test) => (
-                                    <Grid size={{ xs: 12, sm: 6 }} key={test.id}>
-                                      <FormControlLabel
-                                        control={
-                                          <Checkbox
-                                            size="small"
-                                            checked={selectedLabTestIds.has(test.id)}
-                                            onChange={() => {
-                                              setSelectedLabTestIds((prev) => {
-                                                const next = new Set(prev);
-                                                if (next.has(test.id)) next.delete(test.id);
-                                                else next.add(test.id);
-                                                return next;
-                                              });
-                                            }}
-                                          />
-                                        }
-                                        label={<Typography variant="body2">{test.name}</Typography>}
-                                        sx={{ ml: 0 }}
-                                      />
-                                    </Grid>
-                                  ))}
-                                </Grid>
-                              </Box>
-                            ))}
-                          </>
+                          <LabOrderCatalogSections
+                            layout="stack"
+                            sections={labSections}
+                            catalogTests={labCatalogTests}
+                            selectedTestIds={selectedLabTestIds}
+                            onToggleTest={toggleLabTestSelection}
+                            priceByTestId={labPriceByTestId}
+                            testsCoveredByPackages={testsCoveredBySelectedPackages}
+                          />
                         ) : null}
                         {labSubTab === 1 ? (
                           <>
@@ -1371,14 +1478,7 @@ export default function ReceptionDesk() {
                                         <Checkbox
                                           size="small"
                                           checked={selectedLabPackageIds.has(pkg.id)}
-                                          onChange={() => {
-                                            setSelectedLabPackageIds((prev) => {
-                                              const next = new Set(prev);
-                                              if (next.has(pkg.id)) next.delete(pkg.id);
-                                              else next.add(pkg.id);
-                                              return next;
-                                            });
-                                          }}
+                                          onChange={() => toggleLabPackageSelection(pkg)}
                                         />
                                       }
                                       label={

@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
 import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
+import { formatQueueTicketNotesForDisplay } from "@/lib/queueReception";
 
 const ACTIVE_QUEUE: string[] = ["Waiting", "Called", "Serving"];
 
@@ -273,7 +274,7 @@ export async function fetchDashboardSummary(admin: SupabaseClient): Promise<{ da
   const waitingQueue: DashboardWaitingRow[] = waitRows.map((w) => ({
     id: w.id,
     patientName: (w.patient_name ?? "").trim() || "—",
-    notes: (w.notes ?? "").trim() || "—",
+    notes: formatQueueTicketNotesForDisplay(w.notes),
     status: (w.status ?? "").trim() || "Waiting",
   }));
 

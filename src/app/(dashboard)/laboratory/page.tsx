@@ -24,7 +24,14 @@ import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
 import type { QueueTicketStatus } from "@/lib/queueReception";
 import type { LabQueueRow } from "@/app/api/laboratory/lab-queue/route";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
-import { canOpenLabQueueRequest, labQueueRequestButtonTooltip } from "@/lib/labQueueUi";
+import { labQueueDisplayChipColor } from "@/lib/labQueuePresentation";
+import {
+  canLabCallPatient,
+  canOpenLabQueueRequest,
+  isSpecimenCollectedOnTicket,
+  labCallButtonTooltip,
+  labQueueRequestButtonTooltip,
+} from "@/lib/labQueueUi";
 
 const statusColor: Record<
   QueueTicketStatus,
@@ -153,6 +160,7 @@ export default function LaboratoryPage() {
                   <TableCell>Queue #</TableCell>
                   <TableCell>Patient</TableCell>
                   <TableCell>Status</TableCell>
+                  <TableCell>Imaging</TableCell>
                   <TableCell>Specimen</TableCell>
                   <TableCell>Issued</TableCell>
                   <TableCell>Visit</TableCell>
@@ -166,15 +174,27 @@ export default function LaboratoryPage() {
                     <TableCell>{t.patient_name ?? "—"}</TableCell>
                     <TableCell>
                       <Chip
-                        label={t.status}
-                        color={statusColor[t.status]}
+                        label={t.lab_display_status ?? t.status}
+                        color={labQueueDisplayChipColor(t.lab_display_status ?? t.status, t.status)}
                         size="small"
                       />
                     </TableCell>
                     <TableCell>
+                      {t.includes_imaging || t.imaging_request_id ? (
+                        <Chip
+                          label={t.imaging_all_captured ? "Captured" : "Pending"}
+                          color={t.imaging_all_captured ? "success" : "default"}
+                          size="small"
+                          variant="outlined"
+                        />
+                      ) : (
+                        "—"
+                      )}
+                    </TableCell>
+                    <TableCell>
                       <Chip
-                        label={/^\[Specimen\]\s+collected_at=.+/m.test(t.notes ?? "") ? "Collected" : "Pending"}
-                        color={/^\[Specimen\]\s+collected_at=.+/m.test(t.notes ?? "") ? "success" : "default"}
+                        label={isSpecimenCollectedOnTicket(t.notes) ? "Collected" : "Pending"}
+                        color={isSpecimenCollectedOnTicket(t.notes) ? "success" : "default"}
                         size="small"
                         variant="outlined"
                       />
@@ -182,7 +202,15 @@ export default function LaboratoryPage() {
                     <TableCell>{new Date(t.issued_at).toLocaleTimeString()}</TableCell>
                     <TableCell sx={{ fontFamily: "monospace" }}>{t.encounter_id ?? "—"}</TableCell>
                     <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
-                      <Tooltip title={t.status === "Waiting" ? "Call patient" : "Only waiting tickets can be called"}>
+                      <Tooltip
+                        title={labCallButtonTooltip(t.status, {
+                          includesImaging: t.includes_imaging,
+                          specimenCollected: isSpecimenCollectedOnTicket(t.notes),
+                          labAllCollected: t.lab_all_collected,
+                          imagingAllCaptured: t.imaging_all_captured,
+                          activeDept: t.active_dept,
+                        })}
+                      >
                         <Box component="span" sx={{ display: "inline-flex" }}>
                           <Button
                             variant="contained"
@@ -196,7 +224,16 @@ export default function LaboratoryPage() {
                               )
                             }
                             onClick={() => void callPatient(t.id)}
-                            disabled={t.status !== "Waiting" || actionBusyId === t.id}
+                            disabled={
+                              (t.can_lab_call ??
+                                canLabCallPatient(t.status, {
+                                  includesImaging: t.includes_imaging,
+                                  specimenCollected: isSpecimenCollectedOnTicket(t.notes),
+                                  labAllCollected: t.lab_all_collected,
+                                  imagingAllCaptured: t.imaging_all_captured,
+                                  activeDept: t.active_dept,
+                                })) !== true || actionBusyId === t.id
+                            }
                             sx={{
                               minWidth: 108,
                               borderRadius: 999,

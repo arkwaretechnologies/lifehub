@@ -78,7 +78,8 @@ export async function generateNextDailyOrNumber(): Promise<{ orNumber: string | 
 }
 
 export type LabSaleItemInsertRow = {
-  lab_test_id: string;
+  lab_test_id?: string | null;
+  imaging_catalog_id?: string | null;
   quantity: number;
   unit_price: number;
   discount: number;
@@ -130,7 +131,8 @@ export async function markPhysicianFeeSalesPaid(args: {
 }
 
 export async function createLabSaleWithItems(args: {
-  labRequestId: string;
+  labRequestId?: string | null;
+  imagingRequestId?: string | null;
   patientId: number | null;
   /** Must be unique per row (`lab_sales.or_number` is unique). Caller supplies e.g. base OR or `BASE-L1`. */
   orNumber: string;
@@ -142,9 +144,19 @@ export async function createLabSaleWithItems(args: {
   items: LabSaleItemInsertRow[];
   notes?: string | null;
 }): Promise<{ labSaleId: string | null; error: string | null }> {
-  const labRequestId = args.labRequestId.trim();
-  if (!labRequestId) return { labSaleId: null, error: "Missing lab request id." };
-  if (args.items.length === 0) return { labSaleId: null, error: "No lab tests found for this order." };
+  const labRequestId = String(args.labRequestId ?? "").trim() || null;
+  const imagingRequestId = String(args.imagingRequestId ?? "").trim() || null;
+  if (!labRequestId && !imagingRequestId) {
+    return { labSaleId: null, error: "Missing lab or imaging request id." };
+  }
+  if (args.items.length === 0) return { labSaleId: null, error: "No billable items for this order." };
+  for (const it of args.items) {
+    const hasLab = Boolean(String(it.lab_test_id ?? "").trim());
+    const hasImg = Boolean(String(it.imaging_catalog_id ?? "").trim());
+    if (hasLab === hasImg) {
+      return { labSaleId: null, error: "Each sale line must be either a lab test or an imaging study." };
+    }
+  }
 
   const orTrimmed = args.orNumber.trim();
   if (!orTrimmed) return { labSaleId: null, error: "Missing OR number." };
@@ -165,6 +177,7 @@ export async function createLabSaleWithItems(args: {
   const salePayload = {
     patient_id: args.patientId,
     lab_request_id: labRequestId,
+    imaging_request_id: imagingRequestId,
     or_number: orTrimmed,
     sale_date: localDateYmd(now),
     sale_time: localTimeHms(now),
@@ -193,7 +206,8 @@ export async function createLabSaleWithItems(args: {
 
   const itemRows = args.items.map((it) => ({
     lab_sale_id: labSaleId,
-    lab_test_id: it.lab_test_id,
+    lab_test_id: it.lab_test_id ?? null,
+    imaging_catalog_id: it.imaging_catalog_id ?? null,
     quantity: it.quantity,
     unit_price: it.unit_price,
     discount: it.discount,

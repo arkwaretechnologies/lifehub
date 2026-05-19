@@ -993,6 +993,34 @@ function sortTestsCatalog(a: LabTestCatalogItem, b: LabTestCatalogItem): number 
   return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
 }
 
+/** Urinalysis / fecal / micro categories use `lab_tests.description` as subsection headings. */
+export function labCategoryUsesUaFecalSubgroups(category: { code?: string }): boolean {
+  const c = String(category.code ?? "").toUpperCase();
+  return c === "UA_FECAL" || c === "URINALYSIS" || c === "MICRO2" || c === "MICRO";
+}
+
+export function labCategoryUsesBloodChemTemplateSubgroups(category: { code?: string }): boolean {
+  return String(category.code ?? "").toUpperCase() === "CHEM";
+}
+
+/** Group orderable tests by trimmed `description` (subsection headings). */
+export function groupLabTestsByDescription(tests: LabTestCatalogItem[]): {
+  heading: string;
+  tests: LabTestCatalogItem[];
+}[] {
+  const order: string[] = [];
+  const byHeading = new Map<string, LabTestCatalogItem[]>();
+  for (const t of tests) {
+    const key = (t.description ?? "").trim();
+    if (!byHeading.has(key)) {
+      order.push(key);
+      byHeading.set(key, []);
+    }
+    byHeading.get(key)!.push(t);
+  }
+  return order.map((heading) => ({ heading, tests: byHeading.get(heading) ?? [] }));
+}
+
 /** Subsections for Clinical Chemistry (CHEM) modal — one block per BLOODCHEM results PDF. */
 export function groupLabTestsByBloodChemTemplate(tests: LabTestCatalogItem[]): {
   heading: string;

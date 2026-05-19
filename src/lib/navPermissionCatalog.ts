@@ -89,6 +89,16 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   },
   {
     kind: "group",
+    id: "imaging",
+    sectionHeading: "OPERATIONS",
+    label: "Imaging",
+    children: [
+      { label: "Imaging Appointments", pageKey: "imaging", href: "/imaging" },
+      { label: "Imaging Results", pageKey: "imaging/results", href: "/imaging/results" },
+    ],
+  },
+  {
+    kind: "group",
     id: "pharmacy",
     sectionHeading: "OPERATIONS",
     label: "Pharmacy",

@@ -68,14 +68,12 @@ import {
   fetchLabCatalogGrouped,
   filterLabRequestItemsForResultEntry,
   getComponentTestIds,
-  groupLabTestsByBloodChemTemplate,
   isLabPackageTestSatisfiedInUI,
-  isPanelLabTestSelectedInUI,
   testHasPanelComponents,
-  testsForLabOrderSection,
   type LabCatalogSection,
   type LabTestCatalogItem,
 } from "@/lib/labTests";
+import { LabOrderCatalogSections } from "@/components/laboratory/LabOrderCatalogSections";
 import { fetchActiveLabPricesByTestIds } from "@/lib/labServicePrices";
 import { fetchActiveLabPackagesWithTests, type LabPackageWithTests } from "@/lib/labPackages";
 import { openPrescriptionPrintWindow } from "@/lib/prescriptionPrint";
@@ -87,7 +85,6 @@ import {
   searchActiveProducts,
   type ProductCatalogRow,
 } from "@/lib/pharmacyProducts";
-import { upsertPrescriptionForEncounter } from "@/lib/pharmacyPosDb";
 import { supabase } from "@/lib/supabaseClient";
 import {
   fetchCurrentMedicationsForEncounter,
@@ -102,31 +99,8 @@ import {
   type ImagingCatalogRow,
   type ImagingLineSelection,
 } from "@/lib/imagingCatalog";
+import { imagingSelectionHasChecked } from "@/lib/imagingRequests";
 import type { LabRequestItemView } from "@/app/api/laboratory/lab-request/route";
-
-/** Urinalysis catalog uses `lab_tests.description` as subsection headings in the lab modal. */
-function labCategoryUsesUaFecalSubgroups(category: { code?: string }): boolean {
-  const c = String(category.code ?? "").toUpperCase();
-  return c === "UA_FECAL" || c === "URINALYSIS" || c === "MICRO2" || c === "MICRO";
-}
-
-function labCategoryUsesBloodChemTemplateSubgroups(category: { code?: string }): boolean {
-  return String(category.code ?? "").toUpperCase() === "CHEM";
-}
-
-function groupLabTestsByDescription(tests: LabTestCatalogItem[]): { heading: string; tests: LabTestCatalogItem[] }[] {
-  const order: string[] = [];
-  const byHeading = new Map<string, LabTestCatalogItem[]>();
-  for (const t of tests) {
-    const key = (t.description ?? "").trim();
-    if (!byHeading.has(key)) {
-      order.push(key);
-      byHeading.set(key, []);
-    }
-    byHeading.get(key)!.push(t);
-  }
-  return order.map((heading) => ({ heading, tests: byHeading.get(heading) ?? [] }));
-}
 
 const tabPanelSx = { pt: 2, minHeight: 280 };
 
@@ -283,25 +257,6 @@ const imagingCheckboxLabelSx = {
   mr: 0,
   gap: 0.5,
   "& .MuiFormControlLabel-label": { display: "inline", lineHeight: 1.35 },
-} as const;
-
-/** Checkbox + test name on one line; secondary lines use {@link labTestMetaIndentSx}. */
-const labTestCheckboxLabelSx = {
-  ...imagingCheckboxLabelSx,
-  width: "100%",
-  "& .MuiFormControlLabel-label": {
-    display: "inline-flex",
-    alignItems: "center",
-    lineHeight: 1.35,
-    flex: 1,
-    minWidth: 0,
-  },
-} as const;
-
-const labTestMetaIndentSx = {
-  display: "block",
-  pl: 3.25,
-  mt: 0.15,
 } as const;
 
 /** Room for label + text in small outlined fields (avoids clipped placeholders). */
@@ -968,12 +923,24 @@ export default function PlansTreatmentPanel({
       quantityPrescribed: Math.max(1, Math.round(Number(l.quantity.trim()) || 0)),
       sig: [l.frequency.trim(), l.notes.trim()].filter(Boolean).join(" · ") || null,
     }));
-    return upsertPrescriptionForEncounter({
-      transId,
-      patientId,
-      physicianUserId: physId,
-      rxLines,
+    const res = await authenticatedFetch("/api/consultation/prescription", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        transId,
+        patientId,
+        physicianUserId: physId,
+        rxLines,
+      }),
     });
+    const j = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      prescriptionId?: string | null;
+    };
+    if (!res.ok || j.error) {
+      return { prescriptionId: null, error: j.error ?? "Could not save prescription." };
+    }
+    return { prescriptionId: j.prescriptionId ?? null, error: null };
   }, [medicationLines, patient.patientId, profile, transId]);
 
   const printMedicationPrescription = useCallback(async () => {
@@ -1795,168 +1762,16 @@ export default function PlansTreatmentPanel({
                   ) : null}
                 </Box>
               ) : null}
-            <Box
-              sx={{
-                columnCount: { xs: 1, sm: 2, md: 3 },
-                columnGap: 2.5,
-              }}
-            >
-              {visibleLabSections.map((section) => (
-                <Box
-                  key={String(section.category.id)}
-                  sx={{
-                    breakInside: "avoid",
-                    pageBreakInside: "avoid",
-                    mb: 2.5,
-                    border: "1px solid",
-                    borderColor: "divider",
-                    borderRadius: 1,
-                    p: 1.5,
-                    bgcolor: "background.paper",
-                  }}
-                >
-                  <Typography
-                    component="h3"
-                    variant="subtitle2"
-                    fontWeight={800}
-                    color="info.main"
-                    sx={{
-                      letterSpacing: "0.06em",
-                      mb: 1.25,
-                      display: "block",
-                    }}
-                  >
-                    {section.category.name.toUpperCase()}
-                  </Typography>
-                  <Box sx={{ display: "flex", flexDirection: "column", gap: 1.25 }}>
-                    {(labCategoryUsesBloodChemTemplateSubgroups(section.category)
-                      ? groupLabTestsByBloodChemTemplate(
-                          testsForLabOrderSection(section.category, section.tests),
-                        )
-                      : labCategoryUsesUaFecalSubgroups(section.category)
-                        ? groupLabTestsByDescription(
-                            testsForLabOrderSection(section.category, section.tests),
-                          )
-                        : [
-                            {
-                              heading: "",
-                              tests: testsForLabOrderSection(section.category, section.tests),
-                            },
-                          ]
-                    ).map(({ heading, tests: subTests }) => (
-                      <Box key={`${String(section.category.id)}-${heading || "default"}`}>
-                        {heading ? (
-                          <Typography
-                            variant="caption"
-                            fontWeight={700}
-                            color="text.secondary"
-                            sx={{ display: "block", mb: 0.75, letterSpacing: "0.04em" }}
-                          >
-                            {heading}
-                          </Typography>
-                        ) : null}
-                        <Box sx={{ display: "flex", flexDirection: "column", gap: 0.25 }}>
-                          {subTests.map((test) => {
-                            const panelComponentIds = getComponentTestIds(labCatalogTests, test.id);
-                            const isPanel = panelComponentIds.length > 0;
-                            const alreadyRequested =
-                              !isNew &&
-                              (requestedTestIdSet.has(test.id) ||
-                                (isPanel &&
-                                  panelComponentIds.length > 0 &&
-                                  panelComponentIds.every((cid) =>
-                                    requestedTestIdSet.has(cid),
-                                  )));
-                            const checked =
-                              alreadyRequested ||
-                              (isPanel
-                                ? isPanelLabTestSelectedInUI(
-                                    test.id,
-                                    labCatalogTests,
-                                    selectedLabTestIds,
-                                    requestedTestIdSet,
-                                  )
-                                : selectedLabTestIds.has(test.id));
-                            const coveredByPkg = testsCoveredBySelectedPackages.has(test.id);
-                            const metaLine =
-                              !coveredByPkg &&
-                              (test.specimen_type ||
-                                test.unit ||
-                                test.requires_fasting ||
-                                test.reference_range)
-                                ? [
-                                    test.specimen_type,
-                                    test.unit ? `Unit ${test.unit}` : null,
-                                    test.requires_fasting ? "Fasting required" : null,
-                                    test.reference_range ? `Ref ${test.reference_range}` : null,
-                                  ]
-                                    .filter(Boolean)
-                                    .join(" · ")
-                                : null;
-                            return (
-                              <Box key={test.id}>
-                                <FormControlLabel
-                                  sx={labTestCheckboxLabelSx}
-                                  control={
-                                    <Checkbox
-                                      size="small"
-                                      checked={checked}
-                                      disabled={alreadyRequested}
-                                      onChange={() => {
-                                        if (alreadyRequested) return;
-                                        toggleLabTestSelection(test.id);
-                                      }}
-                                    />
-                                  }
-                                  label={
-                                    <Box
-                                      component="span"
-                                      sx={{
-                                        display: "inline-flex",
-                                        alignItems: "center",
-                                        justifyContent: "space-between",
-                                        gap: 1,
-                                        width: "100%",
-                                        minWidth: 0,
-                                      }}
-                                    >
-                                      <Typography
-                                        component="span"
-                                        variant="body2"
-                                        sx={{ textTransform: "uppercase", minWidth: 0 }}
-                                      >
-                                        {test.name}
-                                      </Typography>
-                                      <Typography
-                                        component="span"
-                                        variant="caption"
-                                        sx={{ fontWeight: 800, whiteSpace: "nowrap", flexShrink: 0 }}
-                                      >
-                                        {coveredByPkg ? "—" : money2(labPriceByTestId.get(test.id) ?? 0)}
-                                      </Typography>
-                                    </Box>
-                                  }
-                                />
-                                {coveredByPkg ? (
-                                  <Typography variant="caption" color="text.secondary" sx={labTestMetaIndentSx}>
-                                    Included in package (bundle price)
-                                  </Typography>
-                                ) : null}
-                                {metaLine ? (
-                                  <Typography variant="caption" color="text.secondary" sx={labTestMetaIndentSx}>
-                                    {metaLine}
-                                  </Typography>
-                                ) : null}
-                              </Box>
-                            );
-                          })}
-                        </Box>
-                      </Box>
-                    ))}
-                  </Box>
-                </Box>
-              ))}
-            </Box>
+            <LabOrderCatalogSections
+              layout="columns"
+              sections={labSections}
+              catalogTests={labCatalogTests}
+              selectedTestIds={selectedLabTestIds}
+              onToggleTest={toggleLabTestSelection}
+              priceByTestId={labPriceByTestId}
+              testsCoveredByPackages={testsCoveredBySelectedPackages}
+              requestedTestIds={isNew ? undefined : requestedTestIdSet}
+            />
             </Box>
           ) : null}
         </DialogContent>
@@ -2221,15 +2036,37 @@ export default function PlansTreatmentPanel({
             }
             startIcon={<SaveOutlinedIcon />}
             onClick={() => {
-              const lines = buildImagingRequestLinesFromCatalog(imagingCatalog, imagingForm);
-              setForm((f) => ({
-                ...f,
-                plan_imaging: lines.length > 0,
-                plan_notes: upsertImagingBlock(f.plan_notes ?? "", lines),
-              }));
-              imagingBaselineRef.current = { ...imagingForm };
-              window.dispatchEvent(new CustomEvent("lifehub:imaging-updated", { detail: { transId } }));
-              setImagingModalOpen(false);
+              void (async () => {
+                const lines = buildImagingRequestLinesFromCatalog(imagingCatalog, imagingForm);
+                if (lines.length > 0 && imagingSelectionHasChecked(imagingForm)) {
+                  const patientId = Number(patient.patientId);
+                  if (Number.isFinite(patientId)) {
+                    const imgRes = await authenticatedFetch("/api/imaging/imaging-request", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        encounterId: transId,
+                        patientId,
+                        selection: imagingForm,
+                        remarks: "Consultation imaging order",
+                      }),
+                    });
+                    const imgJson = (await imgRes.json().catch(() => ({}))) as { error?: string };
+                    if (!imgRes.ok || imgJson.error) {
+                      setImagingCatalogError(imgJson.error ?? "Could not save imaging request.");
+                      return;
+                    }
+                  }
+                }
+                setForm((f) => ({
+                  ...f,
+                  plan_imaging: lines.length > 0,
+                  plan_notes: upsertImagingBlock(f.plan_notes ?? "", lines),
+                }));
+                imagingBaselineRef.current = { ...imagingForm };
+                window.dispatchEvent(new CustomEvent("lifehub:imaging-updated", { detail: { transId } }));
+                setImagingModalOpen(false);
+              })();
             }}
             sx={{ textTransform: "none" }}
           >

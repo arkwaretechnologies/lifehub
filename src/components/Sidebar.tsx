@@ -160,6 +160,26 @@ const menuSections: MenuSection[] = [
         ],
       },
       {
+        kind: "group",
+        id: "imaging",
+        label: "Imaging",
+        icon: <CameraAltOutlinedIcon />,
+        children: [
+          {
+            label: "Imaging Appointments",
+            icon: <CalendarMonthOutlinedIcon />,
+            href: "/imaging",
+            pageKey: "imaging",
+          },
+          {
+            label: "Imaging Results",
+            icon: <AssessmentOutlinedIcon />,
+            href: "/imaging/results",
+            pageKey: "imaging/results",
+          },
+        ],
+      },
+      {
         kind: "link",
         label: "pharmacy",
         icon: <LocalPharmacyOutlinedIcon />,

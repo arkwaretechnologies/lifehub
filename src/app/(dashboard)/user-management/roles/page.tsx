@@ -375,7 +375,7 @@ export default function RolesPage() {
                   <Box sx={{ pl: 1, mt: 0.35 }}>
                     {c.children.map((leaf) => (
                       <FormControlLabel
-                        key={`${m.id}-${leaf.href}`}
+                        key={`${m.id}-${leaf.pageKey}`}
                         sx={{ display: "flex", ml: 0, py: 0.25 }}
                         control={
                           <Checkbox
@@ -395,7 +395,7 @@ export default function RolesPage() {
             const leaf = c;
             return (
               <FormControlLabel
-                key={`${m.id}-${leaf.href}`}
+                key={`${m.id}-${leaf.pageKey}`}
                 sx={{ display: "flex", ml: 0, py: 0.25 }}
                 control={
                   <Checkbox

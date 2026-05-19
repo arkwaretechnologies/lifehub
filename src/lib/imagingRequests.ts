@@ -1,0 +1,285 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { supabase } from "@/lib/supabaseClient";
+import {
+  buildImagingRequestLinesFromCatalog,
+  fetchActiveImagingCatalog,
+  type ImagingCatalogRow,
+  type ImagingLineSelection,
+} from "@/lib/imagingCatalog";
+
+export const IMAGING_REQUESTS_TABLE = "imaging_requests" as const;
+export const IMAGING_REQUEST_ITEMS_TABLE = "imaging_request_items" as const;
+
+export type ImagingRequestItemRow = {
+  id: string;
+  imaging_request_id: string;
+  imaging_catalog_id: string;
+  study_code: string;
+  study_name: string;
+  view_text: string | null;
+  unit_price: number;
+  status: string;
+  findings: string | null;
+  remarks: string | null;
+  image_storage_path?: string | null;
+  image_content_type?: string | null;
+  image_original_filename?: string | null;
+  image_uploaded_at?: string | null;
+};
+
+export type CreateImagingRequestInput = {
+  encounterId: string | null;
+  patientId: number | null;
+  priority?: string;
+  remarks?: string | null;
+  /** Catalog code → selection */
+  selection: Record<string, ImagingLineSelection>;
+  catalog?: ImagingCatalogRow[];
+};
+
+function localDateYmd(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function localTimeHms(d: Date): string {
+  const h = String(d.getHours()).padStart(2, "0");
+  const min = String(d.getMinutes()).padStart(2, "0");
+  const s = String(d.getSeconds()).padStart(2, "0");
+  return `${h}:${min}:${s}`;
+}
+
+export function imagingSelectionHasChecked(sel: Record<string, ImagingLineSelection>): boolean {
+  return Object.values(sel).some((r) => r?.checked);
+}
+
+export async function createImagingRequestWithItems(
+  input: CreateImagingRequestInput,
+): Promise<{ imagingRequestId: string | null; error: string | null }> {
+  if (!imagingSelectionHasChecked(input.selection)) {
+    return { imagingRequestId: null, error: "Select at least one imaging study." };
+  }
+
+  const catalog =
+    input.catalog ??
+    (await fetchActiveImagingCatalog()).rows;
+  const lines = buildImagingRequestLinesFromCatalog(catalog, input.selection);
+  if (lines.length === 0) {
+    return { imagingRequestId: null, error: "Select at least one imaging study." };
+  }
+
+  const enc = input.encounterId != null ? String(input.encounterId).trim() : "";
+  if (input.encounterId != null && enc === "") {
+    return { imagingRequestId: null, error: "Invalid encounter." };
+  }
+  if (input.encounterId == null && (input.patientId == null || !Number.isFinite(input.patientId) || input.patientId <= 0)) {
+    return { imagingRequestId: null, error: "Imaging orders require a patient." };
+  }
+
+  const now = new Date();
+  const { data: row, error: insErr } = await supabase
+    .from(IMAGING_REQUESTS_TABLE)
+    .insert({
+      encounter_id: enc === "" ? null : enc,
+      patient_id: input.patientId,
+      request_date: localDateYmd(now),
+      request_time: localTimeHms(now),
+      priority: (input.priority ?? "Routine").trim() || "Routine",
+      remarks: input.remarks?.trim() ? input.remarks.trim() : null,
+      status: "Pending",
+    })
+    .select("id")
+    .single();
+
+  if (insErr) return { imagingRequestId: null, error: insErr.message };
+  const imagingRequestId = (row as { id: string }).id;
+
+  const itemRows: Array<Record<string, unknown>> = [];
+  for (const c of catalog) {
+    const sel = input.selection[c.code];
+    if (!sel?.checked) continue;
+    itemRows.push({
+      imaging_request_id: imagingRequestId,
+      imaging_catalog_id: c.id,
+      study_code: c.code,
+      study_name: c.name,
+      view_text: c.requires_view_field ? (sel.view?.trim() || null) : null,
+      unit_price: c.default_price,
+      status: "Pending",
+    });
+  }
+
+  if (itemRows.length === 0) {
+    await supabase.from(IMAGING_REQUESTS_TABLE).delete().eq("id", imagingRequestId);
+    return { imagingRequestId: null, error: "No imaging studies to save." };
+  }
+
+  const { error: itemsErr } = await supabase.from(IMAGING_REQUEST_ITEMS_TABLE).insert(itemRows);
+  if (itemsErr) {
+    await supabase.from(IMAGING_REQUESTS_TABLE).delete().eq("id", imagingRequestId);
+    return { imagingRequestId: null, error: itemsErr.message };
+  }
+
+  return { imagingRequestId, error: null };
+}
+
+/** Service-role create (reception / server routes). */
+export async function adminCreateImagingRequestWithItems(
+  admin: SupabaseClient,
+  input: CreateImagingRequestInput,
+): Promise<{ imagingRequestId: string | null; error: string | null }> {
+  if (!imagingSelectionHasChecked(input.selection)) {
+    return { imagingRequestId: null, error: "Select at least one imaging study." };
+  }
+
+  const { rows: catalog, error: catErr } = await fetchActiveImagingCatalog();
+  if (catErr) return { imagingRequestId: null, error: catErr };
+
+  const lines = buildImagingRequestLinesFromCatalog(catalog, input.selection);
+  if (lines.length === 0) {
+    return { imagingRequestId: null, error: "Select at least one imaging study." };
+  }
+
+  const enc = input.encounterId != null ? String(input.encounterId).trim() : "";
+  if (input.encounterId != null && enc === "") {
+    return { imagingRequestId: null, error: "Invalid encounter." };
+  }
+
+  const now = new Date();
+  const { data: row, error: insErr } = await admin
+    .from(IMAGING_REQUESTS_TABLE)
+    .insert({
+      encounter_id: enc === "" ? null : enc,
+      patient_id: input.patientId,
+      request_date: localDateYmd(now),
+      request_time: localTimeHms(now),
+      priority: (input.priority ?? "Routine").trim() || "Routine",
+      remarks: input.remarks?.trim() ? input.remarks.trim() : null,
+      status: "Pending",
+    })
+    .select("id")
+    .single();
+
+  if (insErr) return { imagingRequestId: null, error: insErr.message };
+  const imagingRequestId = (row as { id: string }).id;
+
+  const itemRows: Array<Record<string, unknown>> = [];
+  for (const c of catalog) {
+    const sel = input.selection[c.code];
+    if (!sel?.checked) continue;
+    itemRows.push({
+      imaging_request_id: imagingRequestId,
+      imaging_catalog_id: c.id,
+      study_code: c.code,
+      study_name: c.name,
+      view_text: c.requires_view_field ? (sel.view?.trim() || null) : null,
+      unit_price: c.default_price,
+      status: "Pending",
+    });
+  }
+
+  const { error: itemsErr } = await admin.from(IMAGING_REQUEST_ITEMS_TABLE).insert(itemRows);
+  if (itemsErr) {
+    await admin.from(IMAGING_REQUESTS_TABLE).delete().eq("id", imagingRequestId);
+    return { imagingRequestId: null, error: itemsErr.message };
+  }
+
+  return { imagingRequestId, error: null };
+}
+
+export type EncounterImagingRequestSummary = {
+  id: string;
+  encounter_id: string;
+  request_date: string;
+  request_time: string | null;
+  priority: string;
+  remarks: string | null;
+  created_at: string;
+};
+
+/** Visit imaging orders with no `lab_sales.imaging_request_id` yet. */
+export async function fetchImagingRequestsWithoutSaleForEncounters(
+  encounterIds: string[],
+): Promise<{ byEncounter: Map<string, EncounterImagingRequestSummary[]>; error: string | null }> {
+  const ids = [...new Set(encounterIds.map((x) => x.trim()).filter(Boolean))];
+  const byEncounter = new Map<string, EncounterImagingRequestSummary[]>();
+  if (ids.length === 0) return { byEncounter, error: null };
+
+  const { data: soldRows, error: soldErr } = await supabase
+    .from("lab_sales")
+    .select("imaging_request_id")
+    .not("imaging_request_id", "is", null);
+  if (soldErr) return { byEncounter, error: soldErr.message };
+
+  const sold = new Set(
+    ((soldRows ?? []) as Array<{ imaging_request_id?: string | null }>)
+      .map((r) => String(r.imaging_request_id ?? "").trim())
+      .filter(Boolean),
+  );
+
+  const { data, error } = await supabase
+    .from(IMAGING_REQUESTS_TABLE)
+    .select("id, encounter_id, request_date, request_time, priority, remarks, created_at")
+    .in("encounter_id", ids)
+    .order("created_at", { ascending: false });
+
+  if (error) return { byEncounter, error: error.message };
+
+  for (const raw of (data ?? []) as Array<Record<string, unknown>>) {
+    const id = String(raw.id ?? "").trim();
+    const enc = String(raw.encounter_id ?? "").trim();
+    if (!id || !enc || sold.has(id)) continue;
+    const row: EncounterImagingRequestSummary = {
+      id,
+      encounter_id: enc,
+      request_date: String(raw.request_date ?? ""),
+      request_time: raw.request_time == null ? null : String(raw.request_time),
+      priority: String(raw.priority ?? "Routine"),
+      remarks: raw.remarks == null ? null : String(raw.remarks),
+      created_at: String(raw.created_at ?? ""),
+    };
+    const list = byEncounter.get(enc) ?? [];
+    list.push(row);
+    byEncounter.set(enc, list);
+  }
+
+  return { byEncounter, error: null };
+}
+
+export async function fetchImagingRequestItemsForRequestIdsClient(
+  requestIds: string[],
+): Promise<{ rows: ImagingRequestItemRow[]; error: string | null }> {
+  const ids = [...new Set(requestIds.map((x) => x.trim()).filter(Boolean))];
+  if (ids.length === 0) return { rows: [], error: null };
+
+  const { data, error } = await supabase
+    .from(IMAGING_REQUEST_ITEMS_TABLE)
+    .select(
+      "id, imaging_request_id, imaging_catalog_id, study_code, study_name, view_text, unit_price, status, findings, remarks, image_storage_path, image_content_type, image_original_filename, image_uploaded_at",
+    )
+    .in("imaging_request_id", ids);
+
+  if (error) return { rows: [], error: error.message };
+  return { rows: (data ?? []) as ImagingRequestItemRow[], error: null };
+}
+
+export async function fetchImagingRequestItemsForRequestIds(
+  admin: SupabaseClient,
+  requestIds: string[],
+): Promise<{ rows: ImagingRequestItemRow[]; error: string | null }> {
+  const ids = [...new Set(requestIds.map((x) => x.trim()).filter(Boolean))];
+  if (ids.length === 0) return { rows: [], error: null };
+
+  const { data, error } = await admin
+    .from(IMAGING_REQUEST_ITEMS_TABLE)
+    .select(
+      "id, imaging_request_id, imaging_catalog_id, study_code, study_name, view_text, unit_price, status, findings, remarks, image_storage_path, image_content_type, image_original_filename, image_uploaded_at",
+    )
+    .in("imaging_request_id", ids);
+
+  if (error) return { rows: [], error: error.message };
+  const rows = (data ?? []) as ImagingRequestItemRow[];
+  return { rows, error: null };
+}

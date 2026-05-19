@@ -1,4 +1,42 @@
 import type { QueueTicketStatus } from "@/lib/queueReception";
+import type { QueueActiveDept } from "@/lib/queueActiveDept";
+
+export function isSpecimenCollectedOnTicket(notes: string | null | undefined): boolean {
+  return /^\[Specimen\]\s+collected_at=.+/m.test(notes ?? "");
+}
+
+export type LabCallPatientOptions = {
+  includesImaging?: boolean | null;
+  specimenCollected?: boolean;
+  /** All billable/entry lab_request_items marked collected. */
+  labAllCollected?: boolean;
+  /** All imaging_request_items marked Captured (or better). */
+  imagingAllCaptured?: boolean;
+  activeDept?: QueueActiveDept;
+};
+
+/** Lab may call only while Waiting, before specimens are collected, and not while at imaging. */
+export function canLabCallPatient(status: QueueTicketStatus, opts?: LabCallPatientOptions): boolean {
+  if (opts?.activeDept === "IMAG") return false;
+  if (opts?.specimenCollected === true) return false;
+  if (opts?.labAllCollected === true) return false;
+  return status === "Waiting";
+}
+
+export function labCallButtonTooltip(status: QueueTicketStatus, opts?: LabCallPatientOptions): string {
+  if (canLabCallPatient(status, opts)) return "Call patient";
+  if (opts?.activeDept === "IMAG") {
+    return opts?.imagingAllCaptured
+      ? "Patient is at imaging — finish capturing before calling"
+      : "Patient is at imaging — mark all studies as Captured first";
+  }
+  if (opts?.activeDept === "LAB") return "Patient was already called to laboratory";
+  if (opts?.specimenCollected || opts?.labAllCollected) return "Specimen already collected";
+  if (status === "Collected") return "Specimen already collected — enter results";
+  if (status === "Completed") return "Visit completed";
+  if (status === "Called" || status === "Serving") return "Patient was already called to laboratory";
+  return "This ticket cannot be called right now";
+}
 
 /** Lab queue: open request / results only after the patient has been called. */
 export function canOpenLabQueueRequest(

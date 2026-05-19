@@ -1,8 +1,16 @@
 import { NextResponse } from "next/server";
+import { computeLabRequestQueueCollectionState } from "@/lib/labQueueTicketSync";
+import { canLabCallPatient, isSpecimenCollectedOnTicket } from "@/lib/labQueueUi";
+import { computeImagingRequestQueueState } from "@/lib/imagingQueueSync";
+import {
+  applyActiveDeptToNotes,
+  parseActiveDeptFromNotes,
+} from "@/lib/queueActiveDept";
 import {
   adminCompleteConsultationCheckin,
   adminPrepareLaboratoryCheckin,
   adminUpdateTicketStatus,
+  queueAdminClient,
   type ReceptionTriageRoute,
 } from "@/lib/receptionQueueServer";
 import { normalizeLabRequestPackageIdList } from "@/lib/labRequests";
@@ -29,6 +37,7 @@ type Body = {
   } | null;
   labTestIds?: string[] | null;
   labPackageIds?: number[] | null;
+  imagingSelection?: Record<string, { checked?: boolean; view?: string }> | null;
 };
 
 export async function PATCH(req: Request) {
@@ -102,12 +111,25 @@ export async function PATCH(req: Request) {
     const packageIds = normalizeLabRequestPackageIdList(
       Array.isArray(body.labPackageIds) ? body.labPackageIds : [],
     );
+    const imagingSelection =
+      body.imagingSelection && typeof body.imagingSelection === "object" && !Array.isArray(body.imagingSelection)
+        ? (body.imagingSelection as Record<string, { checked?: boolean; view?: string }>)
+        : {};
+    const normalizedImaging: Record<string, { checked: boolean; view: string }> = {};
+    for (const [code, row] of Object.entries(imagingSelection)) {
+      normalizedImaging[code] = {
+        checked: row?.checked === true,
+        view: typeof row?.view === "string" ? row.view : "",
+      };
+    }
+
     const { error, result } = await adminPrepareLaboratoryCheckin(ticketId, {
       triageNotes: typeof body.triageNotes === "string" ? body.triageNotes : null,
       priorNotes: typeof body.priorNotes === "string" ? body.priorNotes : null,
       patient,
       labTestIds,
       packageIds,
+      imagingSelection: normalizedImaging,
     });
     if (error) {
       return NextResponse.json({ error }, { status: 500 });
@@ -120,10 +142,89 @@ export async function PATCH(req: Request) {
   let timestamps: { called_at?: string | null; serving_at?: string | null };
 
   switch (action) {
-    case "call":
+    case "call": {
+      const admin = queueAdminClient();
+      if (admin) {
+        const { data: row, error: selErr } = await admin
+          .from("queue_tickets")
+          .select("status, includes_imaging, imaging_request_id, lab_request_id, notes")
+          .eq("id", ticketId)
+          .maybeSingle();
+        if (selErr) {
+          return NextResponse.json({ error: selErr.message }, { status: 500 });
+        }
+        const current = row as
+          | {
+              status?: QueueTicketStatus;
+              includes_imaging?: boolean | null;
+              imaging_request_id?: string | null;
+              lab_request_id?: string | null;
+              notes?: string | null;
+            }
+          | null;
+        if (current?.status) {
+          const specimenCollected = isSpecimenCollectedOnTicket(current.notes);
+          const labId = String(current.lab_request_id ?? "").trim();
+          let labAllCollected = specimenCollected;
+          if (labId) {
+            const labState = await computeLabRequestQueueCollectionState(admin, labId);
+            if (labState.error) {
+              return NextResponse.json({ error: labState.error }, { status: 500 });
+            }
+            labAllCollected = labAllCollected || labState.allCollected;
+          }
+          const imgId = String(current.imaging_request_id ?? "").trim();
+          const includesImaging = current.includes_imaging === true || Boolean(imgId);
+          let imagingAllCaptured = true;
+          if (includesImaging && imgId) {
+            const imgState = await computeImagingRequestQueueState(admin, imgId);
+            if (imgState.error) {
+              return NextResponse.json({ error: imgState.error }, { status: 500 });
+            }
+            imagingAllCaptured = imgState.allCaptured;
+          }
+          const activeDept = parseActiveDeptFromNotes(current.notes);
+          if (activeDept === "IMAG") {
+            return NextResponse.json(
+              {
+                error: imagingAllCaptured
+                  ? "Patient is at imaging — finish capturing before calling to laboratory."
+                  : "Mark all imaging studies as Captured before calling the patient to laboratory.",
+              },
+              { status: 409 },
+            );
+          }
+          if (
+            !canLabCallPatient(current.status, {
+              includesImaging,
+              specimenCollected,
+              labAllCollected,
+              imagingAllCaptured,
+            })
+          ) {
+            return NextResponse.json(
+              {
+                error: labAllCollected
+                  ? "Specimen already collected — enter results instead of calling again."
+                  : "This ticket cannot be called in its current status.",
+              },
+              { status: 409 },
+            );
+          }
+          const nextNotes = applyActiveDeptToNotes(current.notes ?? "", "LAB");
+          const { error: notesErr } = await admin
+            .from("queue_tickets")
+            .update({ notes: nextNotes })
+            .eq("id", ticketId);
+          if (notesErr) {
+            return NextResponse.json({ error: notesErr.message }, { status: 500 });
+          }
+        }
+      }
       status = "Called";
       timestamps = { called_at: now, serving_at: null };
       break;
+    }
     case "start":
       status = "Serving";
       timestamps = { serving_at: now };

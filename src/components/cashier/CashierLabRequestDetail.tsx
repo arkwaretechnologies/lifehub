@@ -37,6 +37,7 @@ import {
   labRequestUsesPackageBundling,
   labLineCheckoutUnitFee,
   labRequestCheckoutSubtotal,
+  labRequestPackagePriceTotal,
   labRequestPackagesDisplayNames,
   type LabRequestHeaderRow,
   type LabRequestItemDetailRow,
@@ -45,7 +46,17 @@ import {
 import { PaymentModal } from "@/components/cashier/PaymentModal";
 import { fetchActivePaymentMethods, type PaymentMethodRow } from "@/lib/paymentMethods";
 import { fetchLabTestCheckoutPricesByIds } from "@/lib/labTests";
-import { createLabSaleWithItems, generateNextDailyOrNumber } from "@/lib/cashierPayments";
+import {
+  createLabSaleWithItems,
+  generateNextDailyOrNumber,
+  type LabSaleItemInsertRow,
+} from "@/lib/cashierPayments";
+import {
+  fetchImagingRequestItemsForRequestIdsClient,
+  fetchImagingRequestsWithoutSaleForEncounters,
+  type EncounterImagingRequestSummary,
+  type ImagingRequestItemRow,
+} from "@/lib/imagingRequests";
 import { fetchActiveDiscountTypes, type DiscountTypeRow } from "@/lib/discountTypes";
 import { fetchQueuePriorities, type QueuePriorityRow } from "@/lib/queueReception";
 import { openCashierAcknowledgementReceiptPrint } from "@/lib/cashierAcknowledgementReceiptPrint";
@@ -90,15 +101,17 @@ export default function CashierLabRequestDetail() {
   const [patientIdStr, setPatientIdStr] = useState<string | null>(null);
   const [patientContactNo, setPatientContactNo] = useState<string | null>(null);
   const [items, setItems] = useState<LabRequestItemDetailRow[]>([]);
-
+  const [openImagingRequests, setOpenImagingRequests] = useState<EncounterImagingRequestSummary[]>([]);
+  const [imagingItemRows, setImagingItemRows] = useState<ImagingRequestItemRow[]>([]);
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethodRow[]>([]);
   const [discountTypes, setDiscountTypes] = useState<DiscountTypeRow[]>([]);
   const [payOpen, setPayOpen] = useState(false);
   const [payBusy, setPayBusy] = useState(false);
   const [payError, setPayError] = useState("");
   const [paySuccess, setPaySuccess] = useState("");
-  const [labTotalDue, setLabTotalDue] = useState<number>(0);
+  const [labUnitPriceByTestId, setLabUnitPriceByTestId] = useState<Map<string, number>>(() => new Map());
   const [labTotalLoading, setLabTotalLoading] = useState(false);
+  const [labPriceError, setLabPriceError] = useState("");
   const [payModalKey, setPayModalKey] = useState(0);
   const [queuePriorities, setQueuePriorities] = useState<QueuePriorityRow[]>([]);
   const [labQueuePriorityBanner, setLabQueuePriorityBanner] = useState<{
@@ -120,6 +133,8 @@ export default function CashierLabRequestDetail() {
     setPatientIdStr(null);
     setPatientContactNo(null);
     setItems([]);
+    setOpenImagingRequests([]);
+    setImagingItemRows([]);
 
     if (!isUuid(labRequestId)) {
       setLoadError("Invalid order reference.");
@@ -161,12 +176,33 @@ export default function CashierLabRequestDetail() {
     }
 
     const itemsRes = await fetchLabRequestItemDetailsForRequestIds([labRequestId]);
-    setLoading(false);
     if (itemsRes.error) {
+      setLoading(false);
       setLoadError(itemsRes.error);
       return { receptionQueueNo: "" };
     }
     setItems(itemsRes.items);
+
+    if (encUuid) {
+      const imgRes = await fetchImagingRequestsWithoutSaleForEncounters([encUuid]);
+      if (imgRes.error) {
+        setLoading(false);
+        setLoadError(imgRes.error);
+        return { receptionQueueNo: "" };
+      }
+      const imgList = imgRes.byEncounter.get(encUuid) ?? [];
+      setOpenImagingRequests(imgList);
+      const imgIds = imgList.map((r) => r.id);
+      const imgItemsRes = await fetchImagingRequestItemsForRequestIdsClient(imgIds);
+      if (imgItemsRes.error) {
+        setLoading(false);
+        setLoadError(imgItemsRes.error);
+        return { receptionQueueNo: "" };
+      }
+      setImagingItemRows(imgItemsRes.rows);
+    }
+
+    setLoading(false);
 
     let visitQn = "";
     if (encUuid) {
@@ -222,13 +258,119 @@ export default function CashierLabRequestDetail() {
 
   const req = header;
 
+  const imagingItemsByRequestId = useMemo(() => {
+    const m = new Map<string, ImagingRequestItemRow[]>();
+    for (const it of imagingItemRows) {
+      const list = m.get(it.imaging_request_id) ?? [];
+      list.push(it);
+      m.set(it.imaging_request_id, list);
+    }
+    return m;
+  }, [imagingItemRows]);
+
+  const imagingTotalDue = useMemo(() => {
+    return imagingItemRows.reduce((sum, it) => sum + Number(it.unit_price ?? 0), 0);
+  }, [imagingItemRows]);
+
+  const pkgPricing: LabRequestPackagePricing = useMemo(
+    () =>
+      req
+        ? { lab_packages: req.lab_packages, package_covered_test_ids: req.package_covered_test_ids }
+        : { lab_packages: [], package_covered_test_ids: [] },
+    [req],
+  );
+
+  const isPkgBundling = useMemo(() => (req ? labRequestUsesPackageBundling(req) : false), [req, pkgPricing]);
+
+  const uncoveredItems = useMemo(() => {
+    if (!isPkgBundling) return items;
+    const cov = new Set(req?.package_covered_test_ids ?? []);
+    return items.filter((it) => !cov.has(it.lab_test_id));
+  }, [isPkgBundling, items, req?.package_covered_test_ids]);
+
+  useEffect(() => {
+    const ids = [...new Set(items.map((r) => r.lab_test_id).filter(Boolean))];
+    if (ids.length === 0 && !(req && isPkgBundling)) {
+      setLabUnitPriceByTestId(new Map());
+      setLabPriceError("");
+      setLabTotalLoading(false);
+      return;
+    }
+    setLabTotalLoading(true);
+    setLabPriceError("");
+    let cancelled = false;
+    void fetchLabTestCheckoutPricesByIds(ids).then((res) => {
+      if (cancelled) return;
+      setLabTotalLoading(false);
+      if (res.error) {
+        setLabUnitPriceByTestId(new Map());
+        const byReq = new Map([[labRequestId, items]]);
+        if (req && hasUnpricedNonPackageLabLines([req], byReq, res.unitPriceById)) {
+          setLabPriceError(res.error);
+        }
+        return;
+      }
+      setLabUnitPriceByTestId(res.unitPriceById);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [items, req, isPkgBundling, labRequestId]);
+
+  const labTotalDue = useMemo(() => {
+    if (!req) return 0;
+    if (items.length === 0 && !isPkgBundling) return 0;
+    return labRequestCheckoutSubtotal(pkgPricing, items, labUnitPriceByTestId);
+  }, [req, items, isPkgBundling, pkgPricing, labUnitPriceByTestId]);
+
+  const labPackageDue = useMemo(() => labRequestPackagePriceTotal(pkgPricing), [pkgPricing]);
+
+  const labIndividualDue = useMemo(() => {
+    if (!isPkgBundling) return 0;
+    let s = 0;
+    for (const it of uncoveredItems) {
+      s += labUnitPriceByTestId.get(it.lab_test_id) ?? 0;
+    }
+    return s;
+  }, [isPkgBundling, uncoveredItems, labUnitPriceByTestId]);
+
+  const labPaySummaryRows = useMemo(() => {
+    const rows: { label: string; amount: number }[] = [];
+    if (!req) return rows;
+    const hasPkg = isPkgBundling && req.lab_packages.length > 0;
+    const hasExtra = isPkgBundling && uncoveredItems.length > 0;
+    if (hasPkg) {
+      rows.push({
+        label: req.lab_packages.length > 1 ? "Laboratory packages" : "Laboratory package",
+        amount: labPackageDue,
+      });
+    }
+    if (hasExtra) {
+      rows.push({
+        label: uncoveredItems.length > 1 ? "Additional laboratory tests" : "Additional laboratory test",
+        amount: labIndividualDue,
+      });
+    }
+    if (!isPkgBundling && labTotalDue > 0) {
+      rows.push({ label: "Laboratory tests", amount: labTotalDue });
+    }
+    if (imagingTotalDue > 0) {
+      rows.push({ label: "Imaging studies", amount: imagingTotalDue });
+    }
+    return rows;
+  }, [req, isPkgBundling, uncoveredItems.length, labPackageDue, labIndividualDue, labTotalDue, imagingTotalDue]);
+
   const anyUnpaid = useMemo(() => {
-    return !!req && items.length > 0;
-  }, [items.length, req]);
+    const hasLab = !!req && (items.length > 0 || labRequestUsesPackageBundling(req));
+    const hasImg = openImagingRequests.length > 0 && imagingItemRows.length > 0;
+    return hasLab || hasImg;
+  }, [items.length, req, openImagingRequests.length, imagingItemRows.length]);
 
   const totalDue = useMemo(() => {
-    return labTotalDue;
-  }, [labTotalDue]);
+    return labTotalDue + imagingTotalDue;
+  }, [labTotalDue, imagingTotalDue]);
+
+  const hasImagingCharges = openImagingRequests.length > 0 && imagingItemRows.length > 0;
 
   async function handleConfirmPay(args: {
     paymentMethod: PaymentMethodRow;
@@ -260,7 +402,7 @@ export default function CashierLabRequestDetail() {
         lab_packages: req.lab_packages,
         package_covered_test_ids: req.package_covered_test_ids,
       };
-      const payloadItems = items.map((it) => ({
+      const payloadItems: LabSaleItemInsertRow[] = items.map((it) => ({
         lab_test_id: it.lab_test_id,
         quantity: 1,
         unit_price: labLineCheckoutUnitFee(pkgReq, items, it, priceRes.unitPriceById),
@@ -268,8 +410,24 @@ export default function CashierLabRequestDetail() {
         notes: it.notes,
       }));
 
-      let subtotal = 0;
-      for (const it of payloadItems) subtotal += it.quantity * it.unit_price - it.discount;
+      const imagingSubtotal = imagingItemRows.reduce((s, it) => s + Number(it.unit_price ?? 0), 0);
+      for (const imgReq of openImagingRequests) {
+        for (const it of imagingItemsByRequestId.get(imgReq.id) ?? []) {
+          payloadItems.push({
+            imaging_catalog_id: it.imaging_catalog_id,
+            quantity: 1,
+            unit_price: Number(it.unit_price ?? 0),
+            discount: 0,
+            notes: it.study_name,
+          });
+        }
+      }
+
+      let labSubtotal = 0;
+      for (const it of payloadItems) {
+        if (it.lab_test_id) labSubtotal += it.quantity * it.unit_price - it.discount;
+      }
+      const subtotal = labSubtotal + imagingSubtotal;
       const totalDiscount =
         args.discountMode === "amount"
           ? Math.min(Math.max(0, args.discountAmount), subtotal)
@@ -277,6 +435,7 @@ export default function CashierLabRequestDetail() {
 
       const res = await createLabSaleWithItems({
         labRequestId,
+        imagingRequestId: openImagingRequests[0]?.id ?? null,
         patientId: req.patient_id ?? null,
         orNumber: args.orNumber,
         paymentMethodId: args.paymentMethod.id,
@@ -304,6 +463,7 @@ export default function CashierLabRequestDetail() {
           body: JSON.stringify({
             encounterTransId: encId,
             labRequestIds: [labRequestId],
+            imagingRequestIds: openImagingRequests.map((r) => r.id),
             cashierPriorityId: args.labQueuePriorityId,
             patient: {
               id: pid,
@@ -326,16 +486,22 @@ export default function CashierLabRequestDetail() {
           : " Laboratory queue assigned. Collect your laboratory slip at reception.";
         if (!receptionQueueNoBeforePay && qd) {
           labQueueSlip = { queueDisplay: qd, queueTicketId: tid || null, transId: encId };
-        } else if (receptionQueueNoBeforePay && qd && tid) {
-          storeCashierLabQueueReprintOffer({ ticketId: tid, queueDisplay: qd });
+        } else if (receptionQueueNoBeforePay && tid) {
+          storeCashierLabQueueReprintOffer({
+            ticketId: tid,
+            queueDisplay: receptionQueueNoBeforePay,
+          });
         }
       }
 
       setPayOpen(false);
-      const paymentLines = items.map((it) => ({
+      const paymentLines: { label: string; amount: number }[] = items.map((it) => ({
         label: (it.test_name ?? "").trim() || `Test ${it.lab_test_id}`,
         amount: labLineCheckoutUnitFee(pkgReq, items, it, priceRes.unitPriceById),
       }));
+      if (imagingSubtotal > 0) {
+        paymentLines.push({ label: "Imaging studies", amount: imagingSubtotal });
+      }
 
       await openCashierAcknowledgementReceiptPrint({
         facilityName: "LifeHub Medical & Diagnostic Center",
@@ -386,14 +552,23 @@ export default function CashierLabRequestDetail() {
         >
           Back to cashier
         </Button>
-        <Typography variant="h5">Payment — walk-in laboratory</Typography>
+        <Typography variant="h5">
+          {hasImagingCharges ? "Payment — walk-in laboratory & imaging" : "Payment — walk-in laboratory"}
+        </Typography>
         <Box sx={{ flex: 1 }} />
         <Button
           variant="contained"
           color="secondary"
-          disabled={loading || !!loadError || !anyUnpaid || paymentMethods.length === 0 || labTotalLoading}
+          disabled={
+            loading ||
+            !!loadError ||
+            !!labPriceError ||
+            !anyUnpaid ||
+            paymentMethods.length === 0 ||
+            labTotalLoading
+          }
           onClick={() => {
-            setPayError("");
+            setPayError(labPriceError);
             setPaySuccess("");
             setLabReceiptQueueDisplay("");
             setPayModalKey((k) => k + 1);
@@ -401,29 +576,6 @@ export default function CashierLabRequestDetail() {
             if (encounterTransId && queuePriorities.length > 0) {
               setLabQueuePrioritySel(queuePriorities[0]!.id);
             }
-            if (items.length === 0) {
-              setLabTotalDue(0);
-              return;
-            }
-            setLabTotalLoading(true);
-            const allLabTestIds = [...new Set(items.map((r) => r.lab_test_id).filter(Boolean))];
-            const headSnap = header;
-            const itemsSnap = items;
-            void fetchLabTestCheckoutPricesByIds(allLabTestIds).then((res) => {
-              setLabTotalLoading(false);
-              const pricing: LabRequestPackagePricing =
-                headSnap != null
-                  ? { lab_packages: headSnap.lab_packages, package_covered_test_ids: headSnap.package_covered_test_ids }
-                  : { lab_packages: [], package_covered_test_ids: [] };
-              const byReq = new Map([[labRequestId, itemsSnap]]);
-              if (res.error && hasUnpricedNonPackageLabLines(headSnap ? [headSnap] : [], byReq, res.unitPriceById)) {
-                setPayError(res.error);
-                setLabTotalDue(0);
-                return;
-              }
-              setPayError("");
-              setLabTotalDue(labRequestCheckoutSubtotal(pricing, itemsSnap, res.unitPriceById));
-            });
           }}
           sx={{ textTransform: "none" }}
         >
@@ -447,6 +599,12 @@ export default function CashierLabRequestDetail() {
       {loadError ? (
         <Alert severity="error" sx={{ mb: 2 }}>
           {loadError}
+        </Alert>
+      ) : null}
+
+      {labPriceError ? (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {labPriceError}
         </Alert>
       ) : null}
 
@@ -489,7 +647,7 @@ export default function CashierLabRequestDetail() {
       <PaymentModal
         key={payModalKey}
         open={payOpen}
-        title="Pay — laboratory order"
+        title={hasImagingCharges ? "Pay — laboratory & imaging" : "Pay — laboratory order"}
         paymentMethods={paymentMethods}
         discountTypes={discountTypes}
         busy={payBusy}
@@ -501,17 +659,7 @@ export default function CashierLabRequestDetail() {
         }}
         onClose={() => setPayOpen(false)}
         totalDue={totalDue}
-        summaryRows={[
-          {
-            label:
-              req && labRequestUsesPackageBundling(req)
-                ? req.lab_packages.length > 1
-                  ? "Laboratory packages"
-                  : "Laboratory package"
-                : "Laboratory tests",
-            amount: labTotalDue,
-          },
-        ]}
+        summaryRows={labPaySummaryRows}
         labQueuePrioritySelect={
           encounterTransId && queuePriorities.length > 0
             ? {
@@ -547,16 +695,18 @@ export default function CashierLabRequestDetail() {
             <CardContent>
               <ConsultationSectionTitle>Laboratory order — unpaid</ConsultationSectionTitle>
               <Typography variant="body2" color="text.primary" sx={{ ...consultBodyTypoSx, mb: 2, display: "block" }}>
-                {labRequestUsesPackageBundling(req)
-                  ? "Laboratory package on this order — pay at the register."
-                  : "Tests on this order that still need to be paid at the register."}
+                {isPkgBundling && uncoveredItems.length > 0
+                  ? "Laboratory package and additional tests on this order — pay at the register."
+                  : isPkgBundling
+                    ? "Laboratory package on this order — pay at the register."
+                    : "Tests on this order that still need to be paid at the register."}
               </Typography>
 
               <Typography variant="subtitle2" sx={{ mb: 0.5, fontWeight: 700 }}>
                 Lab order · {formatDateMMDDYYYY(req.request_date)} {formatLabTime(req.request_time)} ·{" "}
                 {req.priority ?? "—"}
               </Typography>
-              {req.lab_packages.length > 0 && !labRequestUsesPackageBundling(req) ? (
+              {req.lab_packages.length > 0 && !isPkgBundling ? (
                 <Typography variant="body2" sx={{ ...consultBodyTypoSx, mb: req.remarks?.trim() ? 0.5 : 1 }}>
                   Package{req.lab_packages.length > 1 ? "s" : ""}:{" "}
                   <Box component="span" sx={{ fontWeight: 700 }}>
@@ -575,47 +725,89 @@ export default function CashierLabRequestDetail() {
                   <TableHead>
                     <TableRow sx={consultTableHeadRowSx}>
                       <TableCell sx={consultTableHeadCellSx}>
-                        {labRequestUsesPackageBundling(req) ? "Package" : "Test"}
+                        {isPkgBundling ? "Package / test" : "Test"}
                       </TableCell>
                       <TableCell sx={consultTableHeadCellSx}>Priority</TableCell>
                       <TableCell sx={consultTableHeadCellSx}>Notes</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {labRequestUsesPackageBundling(req) ? (
-                      req.lab_packages.map((pkg) => (
-                        <TableRow key={`walkin-lab-pkg-${req.id}-${pkg.id}`}>
-                          <TableCell sx={consultTableBodyCellSx}>
-                            <Typography variant="body2" fontWeight={700}>
-                              {pkg.name}
-                            </Typography>
-                            {pkg.description?.trim() ? (
+                    {isPkgBundling ? (
+                      <>
+                        {req.lab_packages.map((pkg) => (
+                          <TableRow key={`walkin-lab-pkg-${req.id}-${pkg.id}`}>
+                            <TableCell sx={consultTableBodyCellSx}>
+                              <Typography variant="body2" fontWeight={700}>
+                                {pkg.name}
+                              </Typography>
+                              {pkg.description?.trim() ? (
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                  sx={{ display: "block", mt: 0.5, whiteSpace: "pre-wrap" }}
+                                >
+                                  {pkg.description.trim()}
+                                </Typography>
+                              ) : null}
                               <Typography
                                 variant="caption"
-                                color="text.secondary"
-                                sx={{ display: "block", mt: 0.5, whiteSpace: "pre-wrap" }}
+                                color="primary.main"
+                                sx={{ display: "block", mt: 0.5, fontWeight: 700 }}
                               >
-                                {pkg.description.trim()}
+                                Package price PHP{" "}
+                                {formatMoneyDisplay(Number.isFinite(pkg.package_price) ? pkg.package_price : 0)}
                               </Typography>
-                            ) : null}
-                            <Typography variant="caption" color="primary.main" sx={{ display: "block", mt: 0.5, fontWeight: 700 }}>
-                              Package price PHP{" "}
-                              {formatMoneyDisplay(Number.isFinite(pkg.package_price) ? pkg.package_price : 0)}
-                            </Typography>
-                          </TableCell>
-                          <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
-                            {req.priority ?? "—"}
-                          </TableCell>
-                          <TableCell sx={consultTableBodyCellSx}>
-                            {[
-                              req.clinical_diagnosis?.trim(),
-                              req.remarks?.trim(),
-                            ]
-                              .filter(Boolean)
-                              .join(" · ") || "—"}
-                          </TableCell>
-                        </TableRow>
-                      ))
+                            </TableCell>
+                            <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
+                              {req.priority ?? "—"}
+                            </TableCell>
+                            <TableCell sx={consultTableBodyCellSx}>
+                              {[
+                                req.clinical_diagnosis?.trim(),
+                                req.remarks?.trim(),
+                              ]
+                                .filter(Boolean)
+                                .join(" · ") || "—"}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                        {uncoveredItems.map((it) => {
+                          const unit = labUnitPriceByTestId.get(it.lab_test_id) ?? 0;
+                          return (
+                            <TableRow key={`walkin-lab-extra-${it.id}`}>
+                              <TableCell sx={consultTableBodyCellSx}>
+                                <Typography variant="body2" fontWeight={700}>
+                                  {(it.test_name ?? "").trim() || `Test ${it.lab_test_id}`}
+                                </Typography>
+                                {unit > 0 ? (
+                                  <Typography
+                                    variant="caption"
+                                    color="primary.main"
+                                    sx={{ display: "block", mt: 0.5, fontWeight: 700 }}
+                                  >
+                                    PHP {formatMoneyDisplay(unit)}
+                                  </Typography>
+                                ) : labTotalLoading ? (
+                                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+                                    Loading price…
+                                  </Typography>
+                                ) : null}
+                              </TableCell>
+                              <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
+                                {it.priority ?? req.priority ?? "—"}
+                              </TableCell>
+                              <TableCell sx={consultTableBodyCellSx}>{it.notes?.trim() || "—"}</TableCell>
+                            </TableRow>
+                          );
+                        })}
+                        {req.lab_packages.length === 0 && uncoveredItems.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={3} sx={consultTableBodyCellSx}>
+                              No line items.
+                            </TableCell>
+                          </TableRow>
+                        ) : null}
+                      </>
                     ) : items.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={3} sx={consultTableBodyCellSx}>
@@ -640,6 +832,65 @@ export default function CashierLabRequestDetail() {
               </TableContainer>
             </CardContent>
           </Card>
+
+          {hasImagingCharges ? (
+            <Card sx={{ mt: 2 }}>
+              <CardContent>
+                <ConsultationSectionTitle>Imaging order — unpaid</ConsultationSectionTitle>
+                <Typography variant="body2" color="text.primary" sx={{ ...consultBodyTypoSx, mb: 2, display: "block" }}>
+                  Imaging studies on this visit that still need to be paid at the register.
+                </Typography>
+                {openImagingRequests.map((imgReq) => {
+                  const imgItems = imagingItemsByRequestId.get(imgReq.id) ?? [];
+                  return (
+                    <Box key={imgReq.id} sx={{ mb: imgItems.length > 0 ? 2 : 0 }}>
+                      <Typography variant="subtitle2" sx={{ mb: 0.5, fontWeight: 700 }}>
+                        Imaging order · {formatDateMMDDYYYY(imgReq.request_date)}{" "}
+                        {formatLabTime(imgReq.request_time)} · {imgReq.priority ?? "—"}
+                      </Typography>
+                      {imgReq.remarks?.trim() ? (
+                        <Typography variant="body2" sx={{ ...consultBodyTypoSx, mb: 1 }}>
+                          {imgReq.remarks}
+                        </Typography>
+                      ) : null}
+                      <TableContainer>
+                        <Table size="small" sx={consultTableSx}>
+                          <TableHead>
+                            <TableRow sx={consultTableHeadRowSx}>
+                              <TableCell sx={consultTableHeadCellSx}>Study</TableCell>
+                              <TableCell sx={consultTableHeadCellSx}>Price</TableCell>
+                              <TableCell sx={consultTableHeadCellSx}>Notes</TableCell>
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {imgItems.length === 0 ? (
+                              <TableRow>
+                                <TableCell colSpan={3} sx={consultTableBodyCellSx}>
+                                  No line items.
+                                </TableCell>
+                              </TableRow>
+                            ) : (
+                              imgItems.map((it) => (
+                                <TableRow key={it.id}>
+                                  <TableCell sx={consultTableBodyCellSx}>
+                                    {(it.study_name ?? "").trim() || `Study ${it.imaging_catalog_id}`}
+                                  </TableCell>
+                                  <TableCell sx={consultTableBodyCellSx}>
+                                    PHP {formatMoneyDisplay(Number(it.unit_price ?? 0))}
+                                  </TableCell>
+                                  <TableCell sx={consultTableBodyCellSx}>{it.remarks?.trim() || "—"}</TableCell>
+                                </TableRow>
+                              ))
+                            )}
+                          </TableBody>
+                        </Table>
+                      </TableContainer>
+                    </Box>
+                  );
+                })}
+              </CardContent>
+            </Card>
+          ) : null}
         </>
       ) : null}
     </Box>

@@ -49,8 +49,11 @@ import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { mergeAutoFlagIntoLabResultRow } from "@/lib/labResultAutoFlag";
 import { openLabResultsPrintWindow } from "@/lib/labResultsPrint";
 import {
+  canLabCallPatient,
   canOpenLabQueueRequest,
   canOpenLabResultsQueueTicket,
+  isSpecimenCollectedOnTicket,
+  labCallButtonTooltip,
   labQueueRequestButtonTooltip,
 } from "@/lib/labQueueUi";
 
@@ -651,7 +654,15 @@ export default function LabResultsPage() {
                             </Box>
                           </Box>
                           <Box sx={{ mt: 1, display: "flex", justifyContent: "flex-end", gap: 1, flexWrap: "wrap" }}>
-                            <Tooltip title={t.status === "Waiting" ? "Call patient" : "Only waiting tickets can be called"}>
+                            <Tooltip
+                              title={labCallButtonTooltip(t.status, {
+                                includesImaging: t.includes_imaging,
+                                specimenCollected: isSpecimenCollectedOnTicket(t.notes),
+                                labAllCollected: t.lab_all_collected,
+                                imagingAllCaptured: t.imaging_all_captured,
+                                activeDept: t.active_dept,
+                              })}
+                            >
                               <span>
                                 <Button
                                   variant="contained"
@@ -668,7 +679,16 @@ export default function LabResultsPage() {
                                     e.stopPropagation();
                                     void callPatient(t.id);
                                   }}
-                                  disabled={t.status !== "Waiting" || actionBusyId === t.id}
+                                  disabled={
+                                    (t.can_lab_call ??
+                                      canLabCallPatient(t.status, {
+                                        includesImaging: t.includes_imaging,
+                                        specimenCollected: isSpecimenCollectedOnTicket(t.notes),
+                                        labAllCollected: t.lab_all_collected,
+                                        imagingAllCaptured: t.imaging_all_captured,
+                                        activeDept: t.active_dept,
+                                      })) !== true || actionBusyId === t.id
+                                  }
                                   sx={{ borderRadius: 999, textTransform: "none", fontWeight: 700 }}
                                 >
                                   Call

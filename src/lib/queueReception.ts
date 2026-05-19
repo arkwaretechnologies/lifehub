@@ -226,6 +226,18 @@ export async function announceQueueNumber(
   announceQueueNumberSpeechSynthesis(display, counterName, patientName);
 }
 
+function counterIdInSet(counterId: unknown, idSet: Set<string>): boolean {
+  if (counterId == null || counterId === "") return false;
+  const s = String(counterId);
+  if (idSet.has(s)) return true;
+  const n = Number(counterId);
+  if (!Number.isFinite(n)) return false;
+  for (const id of idSet) {
+    if (Number(id) === n) return true;
+  }
+  return false;
+}
+
 export function subscribeQueueTickets(
   counterIds: string[],
   onEvent: (reason: "change") => void,
@@ -236,16 +248,25 @@ export function subscribeQueueTickets(
   }
 
   const idSet = new Set(counterIds.map((x) => String(x)));
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const notify = () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null;
+      onEvent("change");
+    }, 300);
+  };
+
   const channel = supabase
-    .channel("lifehub_reception_queue_tickets")
+    .channel(`lifehub_reception_queue_tickets_${[...idSet].sort().join("_")}`)
     .on(
       "postgres_changes",
       { event: "*", schema: "public", table: "queue_tickets" },
       (payload) => {
         const row = (payload.new ?? payload.old) as { counter_id?: string | number } | null;
-        const cid = row?.counter_id != null && row.counter_id !== "" ? String(row.counter_id) : "";
-        if (cid && idSet.has(cid)) {
-          onEvent("change");
+        if (row && counterIdInSet(row.counter_id, idSet)) {
+          notify();
         }
       },
     )
@@ -254,8 +275,24 @@ export function subscribeQueueTickets(
     });
 
   return () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
     void supabase.removeChannel(channel);
   };
+}
+
+export async function fetchReceptionQueueTicketsFromApi(): Promise<{
+  tickets: QueueTicketRow[];
+  error: string | null;
+}> {
+  const res = await authenticatedFetch("/api/reception/queue-tickets", { cache: "no-store" });
+  const json = (await res.json().catch(() => ({}))) as { error?: string; tickets?: QueueTicketRow[] };
+  if (!res.ok) {
+    return {
+      tickets: [],
+      error: typeof json.error === "string" ? json.error : `Request failed (${res.status})`,
+    };
+  }
+  return { tickets: json.tickets ?? [], error: null };
 }
 
 export type ReceptionQueueApiResult = {
@@ -348,7 +385,10 @@ export type ReceptionConsultationCheckinApiResult = {
 export type ReceptionPrepareLabApiResult = {
   error: string | null;
   transId?: string;
-  labRequestId?: string;
+  labRequestId?: string | null;
+  imagingRequestId?: string | null;
+  includesLab?: boolean;
+  includesImaging?: boolean;
 };
 
 export async function patchReceptionQueueTicket(
@@ -478,6 +518,7 @@ export async function prepareReceptionLabCheckinFromApi(body: {
   patient: { id: number; name: string; contact_no: string | null };
   labTestIds: string[];
   labPackageIds?: number[];
+  imagingSelection?: Record<string, { checked: boolean; view: string }>;
 }): Promise<ReceptionPrepareLabApiResult> {
   const res = await authenticatedFetch("/api/reception/queue-ticket", {
     method: "PATCH",
@@ -490,12 +531,16 @@ export async function prepareReceptionLabCheckinFromApi(body: {
       patient: body.patient,
       labTestIds: body.labTestIds,
       labPackageIds: body.labPackageIds ?? [],
+      imagingSelection: body.imagingSelection ?? {},
     }),
   });
   const json = (await res.json().catch(() => ({}))) as {
     error?: string;
     transId?: string;
-    labRequestId?: string;
+    labRequestId?: string | null;
+    imagingRequestId?: string | null;
+    includesLab?: boolean;
+    includesImaging?: boolean;
   };
   if (!res.ok) {
     return { error: json.error ?? `Request failed (${res.status})` };
@@ -503,14 +548,20 @@ export async function prepareReceptionLabCheckinFromApi(body: {
   return {
     error: null,
     transId: json.transId,
-    labRequestId: json.labRequestId,
+    labRequestId: json.labRequestId ?? null,
+    imagingRequestId: json.imagingRequestId ?? null,
+    includesLab: json.includesLab ?? Boolean(json.labRequestId),
+    includesImaging: json.includesImaging ?? Boolean(json.imagingRequestId),
   };
 }
 
 export async function completeEntranceAfterLabIntakeFromApi(body: {
   entranceTicketId: string;
   transId: string;
-  labRequestId: string;
+  labRequestId?: string | null;
+  imagingRequestId?: string | null;
+  includesLab?: boolean;
+  includesImaging?: boolean;
   patient: { id: number; name: string; contact_no: string | null };
 }): Promise<{
   error: string | null;
@@ -524,7 +575,10 @@ export async function completeEntranceAfterLabIntakeFromApi(body: {
     body: JSON.stringify({
       entranceTicketId: body.entranceTicketId,
       transId: body.transId,
-      labRequestId: body.labRequestId,
+      labRequestId: body.labRequestId ?? null,
+      imagingRequestId: body.imagingRequestId ?? null,
+      includesLab: body.includesLab,
+      includesImaging: body.includesImaging,
       patient: body.patient,
     }),
   });
@@ -576,6 +630,33 @@ export async function finalizeReceptionLabCheckinFromApi(body: {
     destinationQueueDisplay: json.destinationQueueDisplay,
     destinationCounterCode: json.destinationCounterCode,
   };
+}
+
+const QUEUE_NOTE_ID_SEGMENT = /^(?:trans_id|lab requests?|imaging requests?)\b/i;
+
+/** Dashboard / queue UI: hide internal UUIDs and tag lines; keep human queue-location notes. */
+export function formatQueueTicketNotesForDisplay(raw: string | null | undefined): string {
+  let s = (raw ?? "").trim();
+  if (!s) return "—";
+
+  s = s.replace(/\s*·\s*trans_id\s+[0-9a-f-]{8,}/gi, "");
+  s = s.replace(/\btrans_id\s+[0-9a-f-]{8,}/gi, "");
+  s = s.replace(/\s*·\s*Lab requests?:\s*(?:[0-9a-f-]{8,}(?:\s*,\s*)?)+/gi, "");
+  s = s.replace(/\s*·\s*Imaging requests?:\s*(?:[0-9a-f-]{8,}(?:\s*,\s*)?)+/gi, "");
+
+  s = s
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*\[(?:Active|Specimen)\]\b/i.test(line))
+    .join("\n");
+
+  const parts = s
+    .split(/\s*·\s*/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .filter((p) => !QUEUE_NOTE_ID_SEGMENT.test(p));
+
+  const joined = parts.join(" · ").trim();
+  return joined || "—";
 }
 
 /** Parses `Reception route: …` line appended at check-in. */

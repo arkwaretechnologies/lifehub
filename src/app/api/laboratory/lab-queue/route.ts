@@ -1,13 +1,19 @@
 import { NextResponse } from "next/server";
 import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
-import { adminLabRequestIdsWithLabSales, queueAdminClient } from "@/lib/receptionQueueServer";
+import {
+  adminLabRequestIdsWithLabSales,
+  adminUnpaidLabRequestIdsOnCounter,
+  labQueueCode,
+} from "@/lib/diagnosticQueueServer";
+import { computeImagingRequestQueueState } from "@/lib/imagingQueueSync";
+import { computeLabRequestQueueCollectionState } from "@/lib/labQueueTicketSync";
+import { canLabCallPatient } from "@/lib/labQueueUi";
+import { getLabQueueDisplayStatus, labQueueDisplayChipColor } from "@/lib/labQueuePresentation";
+import { parseActiveDeptFromNotes, type QueueActiveDept } from "@/lib/queueActiveDept";
+import { adminFilterLabQueueTicketsForLabDisplay, queueAdminClient } from "@/lib/receptionQueueServer";
 import type { QueueTicketStatus } from "@/lib/queueReception";
 
 const ACTIVE_STATUSES: QueueTicketStatus[] = ["Waiting", "Called", "Collected", "Serving"];
-
-function labQueueCode(): string {
-  return (process.env.NEXT_PUBLIC_RECEPTION_LAB_QUEUE_CODE ?? "LAB").trim().toUpperCase();
-}
 
 function isoDateDaysAgo(days: number): string {
   const d = new Date();
@@ -27,10 +33,18 @@ export type LabQueueRow = {
   serving_at: string | null;
   encounter_id: string | null;
   lab_request_id: string | null;
+  imaging_request_id: string | null;
+  includes_lab: boolean | null;
+  includes_imaging: boolean | null;
   notes: string | null;
   /** From linked `lab_requests` when present. */
   request_date?: string | null;
   request_time?: string | null;
+  lab_all_collected?: boolean;
+  imaging_all_captured?: boolean;
+  active_dept?: QueueActiveDept;
+  can_lab_call?: boolean;
+  lab_display_status?: string;
 };
 
 const LAB_REQUEST_UUID_RE =
@@ -190,6 +204,9 @@ async function fetchLabRequestQueueRowsForPatientSearch(
       serving_at: null,
       encounter_id: r.encounter_id,
       lab_request_id: r.id,
+      imaging_request_id: null,
+      includes_lab: true,
+      includes_imaging: false,
       notes: null,
       request_date: r.request_date,
       request_time: r.request_time,
@@ -259,10 +276,10 @@ export async function GET(req: Request) {
   let base = admin
     .from("queue_tickets")
     .select(
-      "id, queue_display, patient_name, status, ticket_date, issued_at, called_at, serving_at, encounter_id, lab_request_id, notes",
+      "id, queue_display, patient_name, status, ticket_date, issued_at, called_at, serving_at, encounter_id, lab_request_id, imaging_request_id, includes_lab, includes_imaging, notes",
       { count: "exact" },
     )
-    .eq("counter_id", counterId)
+    .eq("includes_lab", true)
     .order("issued_at", { ascending: true });
 
   // Default view: today's active tickets. Search can request a broader scope.
@@ -334,7 +351,60 @@ export async function GET(req: Request) {
   }
 
   const rawRows = (data ?? []) as LabQueueRow[];
-  let rows = await enrichLabQueueRows(admin, rawRows);
+  const { rows: visibleRows, error: visErr } = await adminFilterLabQueueTicketsForLabDisplay(admin, rawRows);
+  if (visErr) {
+    return NextResponse.json({ error: visErr }, { status: 500 });
+  }
+  let rows = await enrichLabQueueRows(admin, visibleRows);
+
+  const captureByImgId = new Map<string, boolean>();
+  const imgIdsForState = [
+    ...new Set(rows.map((r) => String(r.imaging_request_id ?? "").trim()).filter(Boolean)),
+  ];
+  for (const imgId of imgIdsForState) {
+    const st = await computeImagingRequestQueueState(admin, imgId);
+    if (!st.error) captureByImgId.set(imgId, st.allCaptured);
+  }
+
+  rows = await Promise.all(
+    rows.map(async (r) => {
+      const labId = String(r.lab_request_id ?? "").trim();
+      let labAllCollected = false;
+      if (labId) {
+        const st = await computeLabRequestQueueCollectionState(admin, labId);
+        labAllCollected = !st.error && st.allCollected;
+      }
+      const specimenCollected = /^\[Specimen\]\s+collected_at=.+/m.test(r.notes ?? "");
+      const imgId = String(r.imaging_request_id ?? "").trim();
+      const includesImaging = r.includes_imaging === true || Boolean(imgId);
+      const imagingAllCaptured = !includesImaging || !imgId ? true : (captureByImgId.get(imgId) ?? false);
+      const activeDept = parseActiveDeptFromNotes(r.notes);
+      const lab_display_status = getLabQueueDisplayStatus({
+        status: r.status,
+        includes_lab: r.includes_lab,
+        includes_imaging: r.includes_imaging,
+        lab_all_collected: labAllCollected,
+        specimen_collected: specimenCollected,
+        imaging_all_captured: imagingAllCaptured,
+        active_dept: activeDept,
+      });
+      const can_lab_call = canLabCallPatient(r.status, {
+        includesImaging,
+        specimenCollected,
+        labAllCollected,
+        imagingAllCaptured,
+        activeDept,
+      });
+      return {
+        ...r,
+        lab_all_collected: labAllCollected,
+        imaging_all_captured: imagingAllCaptured,
+        active_dept: activeDept,
+        can_lab_call,
+        lab_display_status,
+      };
+    }),
+  );
 
   let totalCount = count ?? rows.length;
   if (scope === "all" && q.length >= 2 && page === 0) {

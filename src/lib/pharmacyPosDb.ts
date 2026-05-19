@@ -1244,17 +1244,20 @@ export type UpsertRxLineInput = {
   sig: string | null;
 };
 
-export async function upsertPrescriptionForEncounter(args: {
-  transId: string;
-  patientId: number;
-  physicianUserId: number | null;
-  rxLines: UpsertRxLineInput[];
-}): Promise<{ prescriptionId: string | null; error: string | null }> {
+export async function upsertPrescriptionForEncounterWithClient(
+  client: SupabaseClient,
+  args: {
+    transId: string;
+    patientId: number;
+    physicianUserId: number | null;
+    rxLines: UpsertRxLineInput[];
+  },
+): Promise<{ prescriptionId: string | null; error: string | null }> {
   const now = new Date().toISOString();
   const today = now.slice(0, 10);
   const rxNumber = `RX-${args.transId.slice(0, 8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
 
-  const { data: existing, error: exErr } = await supabase
+  const { data: existing, error: exErr } = await client
     .from(PRESCRIPTIONS_TABLE)
     .select("id")
     .eq("encounter_id", args.transId)
@@ -1264,19 +1267,19 @@ export async function upsertPrescriptionForEncounter(args: {
   let prescriptionId: string;
   if (existing) {
     prescriptionId = (existing as { id: string }).id;
-    const { error: uErr } = await supabase
+    const { error: uErr } = await client
       .from(PRESCRIPTIONS_TABLE)
       .update({
         patient_id: args.patientId,
         physician_id: args.physicianUserId,
         prescribed_date: today,
         updated_at: now,
-        status: "Active",
+        status: "Pending",
       })
       .eq("id", prescriptionId);
     if (uErr) return { prescriptionId: null, error: uErr.message };
   } else {
-    const { data: ins, error: iErr } = await supabase
+    const { data: ins, error: iErr } = await client
       .from(PRESCRIPTIONS_TABLE)
       .insert({
         encounter_id: args.transId,
@@ -1284,7 +1287,7 @@ export async function upsertPrescriptionForEncounter(args: {
         physician_id: args.physicianUserId,
         prescribed_date: today,
         rx_number: rxNumber,
-        status: "Active",
+        status: "Pending",
         created_at: now,
         updated_at: now,
       })
@@ -1294,14 +1297,14 @@ export async function upsertPrescriptionForEncounter(args: {
     prescriptionId = (ins as { id: string }).id;
   }
 
-  const { error: delErr } = await supabase
+  const { error: delErr } = await client
     .from(PHARMACY_PRESCRIPTION_ITEMS_TABLE)
     .delete()
     .eq("prescription_id", prescriptionId);
   if (delErr) return { prescriptionId: null, error: delErr.message };
 
   const productIds = args.rxLines.map((l) => l.productId).filter(Boolean);
-  const { data: products, error: prErr } = await supabase
+  const { data: products, error: prErr } = await client
     .from(PRODUCTS_TABLE)
     .select("id, generic_name, brand_name, strength, dosage_form")
     .in("id", productIds);
@@ -1323,11 +1326,20 @@ export async function upsertPrescriptionForEncounter(args: {
   });
 
   if (itemRows.length > 0) {
-    const { error: insErr } = await supabase.from(PHARMACY_PRESCRIPTION_ITEMS_TABLE).insert(itemRows);
+    const { error: insErr } = await client.from(PHARMACY_PRESCRIPTION_ITEMS_TABLE).insert(itemRows);
     if (insErr) return { prescriptionId: null, error: insErr.message };
   }
 
   return { prescriptionId, error: null };
+}
+
+export async function upsertPrescriptionForEncounter(args: {
+  transId: string;
+  patientId: number;
+  physicianUserId: number | null;
+  rxLines: UpsertRxLineInput[];
+}): Promise<{ prescriptionId: string | null; error: string | null }> {
+  return upsertPrescriptionForEncounterWithClient(supabase, args);
 }
 
 export type PharmacyCategoryRow = {

@@ -148,6 +148,7 @@ export default function CashierHome() {
   const [encounterFrom, setEncounterFrom] = useState("");
   const [encounterTo, setEncounterTo] = useState("");
   const [encounterChiefSearch, setEncounterChiefSearch] = useState("");
+  const visitSearchInputRef = useRef<HTMLInputElement>(null);
 
   const [referringNameByUserId, setReferringNameByUserId] = useState<Map<string, string>>(() => new Map());
 
@@ -197,6 +198,11 @@ export default function CashierHome() {
 
   useEffect(() => {
     setLabQueueReprintOffer(peekCashierLabQueueReprintOffer());
+  }, []);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => visitSearchInputRef.current?.focus(), 150);
+    return () => window.clearTimeout(t);
   }, []);
 
   useEffect(() => {
@@ -654,6 +660,7 @@ export default function CashierHome() {
             <TextField
               id="cashier-patient-search"
               name="cashier_visit_search"
+              inputRef={visitSearchInputRef}
               hiddenLabel
               placeholder="Encounter ID, lab order QR code, or patient name…"
               value={searchInput}

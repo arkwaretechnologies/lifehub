@@ -108,6 +108,11 @@ export const PERMISSION_MODULES: PermissionModule[] = [
       { label: "Stocks", pageKey: "pharmacy/stocks", href: "/pharmacy" },
       { label: "Product management", pageKey: "pharmacy/products", href: "/pharmacy" },
       { label: "Suppliers", pageKey: "pharmacy/suppliers", href: "/pharmacy" },
+      {
+        label: "Approve line authorization requests",
+        pageKey: "pharmacy/approve-line-requests",
+        href: "/pharmacy",
+      },
     ],
   },
   {
@@ -231,6 +236,14 @@ export function hasPharmacyCapability(
   const s = pageKeys instanceof Set ? pageKeys : new Set(pageKeys);
   if (hasLegacyPharmacyFullModuleAccess(s)) return true;
   return s.has(feature);
+}
+
+/** Explicit only — not granted by legacy `pharmacy` umbrella access. */
+export function canApprovePharmacyLineRequests(
+  pageKeys: ReadonlySet<string> | Iterable<string>,
+): boolean {
+  const s = pageKeys instanceof Set ? pageKeys : new Set(pageKeys);
+  return s.has("pharmacy/approve-line-requests");
 }
 
 /** `/pharmacy` hub: Overview (`pharmacy`), any capability, or legacy single-key pharmacy. */

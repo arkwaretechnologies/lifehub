@@ -30,6 +30,8 @@ import {
   List,
   ListItemButton,
   ListItemText,
+  FormControlLabel,
+  Switch,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import RemoveIcon from "@mui/icons-material/Remove";
@@ -54,6 +56,7 @@ import {
   openPharmacySaleReceiptPrint,
   pharmacyReceiptLineFromCart,
 } from "@/lib/pharmacySaleReceiptPrint";
+import { openPharmacyShiftReadingPrint } from "@/lib/pharmacyShiftReadingPrint";
 import { LIFEHUB_LOGO_SRC } from "@/lib/lifehubLogo";
 import type { ProductPosRow } from "@/lib/pharmacyPosDb";
 import { fetchActiveDiscountTypes, type DiscountTypeRow } from "@/lib/discountTypes";
@@ -80,7 +83,6 @@ import {
   openPharmacyShift,
   recordXReadingForShift,
   searchPosProducts,
-  type ShiftReadingSnapshot,
   listPharmacyCategories,
   insertPharmacyCategory,
   insertProductForPos,
@@ -95,6 +97,18 @@ import {
   searchPharmacySalesByOrApi,
   voidPharmacySaleApi,
 } from "@/lib/pharmacySalesApi";
+import SupervisorPasswordDialog, {
+  type SupervisorCartAction,
+} from "@/components/pharmacy/SupervisorPasswordDialog";
+import LineAuthorizationRequestDialog from "@/components/pharmacy/LineAuthorizationRequestDialog";
+import {
+  cartLineToSnapshot,
+  createCartLineRequestApi,
+  fetchCartLineRequestApi,
+  subscribeCartLineRequestsForUser,
+  type PharmacyCartLineRequestRow,
+} from "@/lib/pharmacyCartLineRequests";
+import type { CartLineRequestAction } from "@/lib/pharmacyLineRequestServer";
 
 type CartLine = {
   key: string;
@@ -345,6 +359,26 @@ export default function PharmacyPosWorkspace() {
   const [returnReason, setReturnReason] = useState("");
   const [returnQtyDraft, setReturnQtyDraft] = useState<Record<string, string>>({});
 
+  /** Supervisor gate for cart +/- and delete. */
+  const [supervisorDialog, setSupervisorDialog] = useState<{
+    action: SupervisorCartAction;
+    line: CartLine;
+  } | null>(null);
+  const [supervisorRequestBusy, setSupervisorRequestBusy] = useState(false);
+  const [supervisorRequestErr, setSupervisorRequestErr] = useState<string | null>(null);
+
+  /** Remote line authorization request flow. */
+  const [lineAuthDialogLine, setLineAuthDialogLine] = useState<CartLine | null>(null);
+  const [lineAuthBusy, setLineAuthBusy] = useState(false);
+  const [lineAuthErr, setLineAuthErr] = useState<string | null>(null);
+  const [pendingByLineKey, setPendingByLineKey] = useState<
+    Record<string, { requestId: string; action: CartLineRequestAction }>
+  >({});
+  const [waitRequest, setWaitRequest] = useState<PharmacyCartLineRequestRow | null>(null);
+  const [approvedQtyLineKey, setApprovedQtyLineKey] = useState<string | null>(null);
+  const [approvedQtyDraft, setApprovedQtyDraft] = useState("1");
+  const [approvedQtyErr, setApprovedQtyErr] = useState<string | null>(null);
+
   const searchRef = useRef<HTMLInputElement>(null);
   const posRootRef = useRef<HTMLDivElement>(null);
   /** MUI Dialog portals to body by default; in browser fullscreen only this subtree is visible. */
@@ -362,6 +396,7 @@ export default function PharmacyPosWorkspace() {
   const addLineQtyInputRef = useRef<HTMLInputElement | null>(null);
   /** After open, first digit (keyboard or numpad) replaces default `1` like a POS register. */
   const addLineQtyFreshRef = useRef(true);
+  const resolvedLineRequestIdsRef = useRef<Set<string>>(new Set());
   const payCashInputRef = useRef<HTMLInputElement | null>(null);
   /** After open, first digit (keyboard or numpad) replaces the pre-filled total. */
   const payCashFreshRef = useRef(true);
@@ -405,6 +440,7 @@ export default function PharmacyPosWorkspace() {
   const [prodUom, setProdUom] = useState("tablet");
   const [prodPrice, setProdPrice] = useState("");
   const [prodBarcode, setProdBarcode] = useState("");
+  const [prodRequiresRx, setProdRequiresRx] = useState(false);
   const [catalogMsg, setCatalogMsg] = useState<string | null>(null);
 
   const refreshShift = useCallback(async () => {
@@ -627,6 +663,206 @@ export default function PharmacyPosWorkspace() {
   }, [denomQty, countGcashPeso, countDebitPeso]);
 
   const totals = useMemo(() => computePosCartTotals(cart, posDiscount), [cart, posDiscount]);
+
+  const cartLineLabel = useCallback((line: CartLine) => {
+    const p = line.product;
+    return `${p.generic_name}${p.brand_name ? ` (${p.brand_name})` : ""}`;
+  }, []);
+
+  const applySupervisorCartAction = useCallback(
+    (line: CartLine, action: SupervisorCartAction) => {
+      if (action === "delete") {
+        setCart((c) => c.filter((x) => x.key !== line.key));
+        setPosInfo(`Removed ${cartLineLabel(line)} from cart.`);
+        return;
+      }
+      if (action === "increment") {
+        setCart((c) =>
+          c.map((x) => (x.key === line.key ? { ...x, qty: x.qty + 1 } : x)),
+        );
+        return;
+      }
+      setCart((c) =>
+        c.map((x) =>
+          x.key === line.key ? { ...x, qty: Math.max(1, x.qty - 1) } : x,
+        ),
+      );
+    },
+    [cartLineLabel],
+  );
+
+  const openSupervisorForCart = useCallback(
+    (line: CartLine, action: SupervisorCartAction) => {
+      if (pendingByLineKey[line.key]) return;
+      setSupervisorRequestErr(null);
+      setSupervisorDialog({ action, line });
+    },
+    [pendingByLineKey],
+  );
+
+  const supervisorActionToRequestAction = useCallback(
+    (action: SupervisorCartAction): CartLineRequestAction =>
+      action === "delete" ? "delete" : "quantity_change",
+    [],
+  );
+
+  const submitCartLineRequest = useCallback(
+    async (
+      line: CartLine,
+      action: CartLineRequestAction,
+      note?: string,
+    ): Promise<{ ok: boolean; error?: string }> => {
+      const { request, error } = await createCartLineRequestApi({
+        action,
+        cart_line_key: line.key,
+        line_snapshot: cartLineToSnapshot(line),
+        note: note || undefined,
+      });
+      if (error || !request) {
+        return { ok: false, error: error ?? "Failed to submit request." };
+      }
+      setPendingByLineKey((prev) => ({
+        ...prev,
+        [line.key]: { requestId: request.id, action: request.action },
+      }));
+      setWaitRequest(request);
+      setPosInfo("Line authorization request sent. Waiting for approval…");
+      return { ok: true };
+    },
+    [],
+  );
+
+  const handleSupervisorVerified = useCallback(() => {
+    if (!supervisorDialog) return;
+    const { line, action } = supervisorDialog;
+    setSupervisorDialog(null);
+    setSupervisorRequestErr(null);
+    applySupervisorCartAction(line, action);
+  }, [supervisorDialog, applySupervisorCartAction]);
+
+  const handleSupervisorRequestApproval = useCallback(async () => {
+    if (!supervisorDialog) return;
+    const { line, action } = supervisorDialog;
+    setSupervisorRequestBusy(true);
+    setSupervisorRequestErr(null);
+    const requestAction = supervisorActionToRequestAction(action);
+    const intentNote =
+      action === "increment"
+        ? "Requested: increase quantity"
+        : action === "decrement"
+          ? "Requested: decrease quantity"
+          : "Requested: remove line";
+    const { ok, error } = await submitCartLineRequest(line, requestAction, intentNote);
+    setSupervisorRequestBusy(false);
+    if (!ok) {
+      setSupervisorRequestErr(error ?? "Failed to submit request.");
+      return;
+    }
+    setSupervisorDialog(null);
+    setSupervisorRequestErr(null);
+  }, [supervisorDialog, supervisorActionToRequestAction, submitCartLineRequest]);
+
+  const handleLineAuthSubmit = useCallback(
+    async (action: CartLineRequestAction, note: string) => {
+      if (!lineAuthDialogLine) return;
+      const line = lineAuthDialogLine;
+      setLineAuthBusy(true);
+      setLineAuthErr(null);
+      const { ok, error } = await submitCartLineRequest(line, action, note || undefined);
+      setLineAuthBusy(false);
+      if (!ok) {
+        setLineAuthErr(error ?? "Failed to submit.");
+        return;
+      }
+      setLineAuthDialogLine(null);
+      setLineAuthErr(null);
+    },
+    [lineAuthDialogLine, submitCartLineRequest],
+  );
+
+  const handleResolvedRequest = useCallback((row: PharmacyCartLineRequestRow) => {
+    if (row.status === "pending") return;
+    if (resolvedLineRequestIdsRef.current.has(row.id)) return;
+    resolvedLineRequestIdsRef.current.add(row.id);
+
+    const key = row.cart_line_key;
+    setPendingByLineKey((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    setWaitRequest((w) => (w?.id === row.id ? null : w));
+
+    if (row.status === "rejected") {
+      setCheckoutErr("Line authorization request was rejected.");
+      return;
+    }
+    if (row.status !== "approved") return;
+
+    if (row.action === "delete") {
+      setCart((c) => c.filter((x) => x.key !== key));
+      setPosInfo("Line authorization approved — item removed from cart.");
+      return;
+    }
+
+    const snapQty = row.line_snapshot?.qty;
+    const seedQty =
+      typeof snapQty === "number" && Number.isFinite(snapQty) && snapQty >= 1
+        ? Math.round(snapQty)
+        : 1;
+    setApprovedQtyLineKey(key);
+    setApprovedQtyDraft(String(seedQty));
+    setApprovedQtyErr(null);
+    setPosInfo("Line authorization approved — enter the new quantity.");
+  }, []);
+
+  const sessionUserId =
+    profile != null && typeof profile.user_id === "number" && Number.isFinite(profile.user_id)
+      ? profile.user_id
+      : null;
+
+  useEffect(() => {
+    if (sessionUserId == null) return;
+    return subscribeCartLineRequestsForUser(sessionUserId, handleResolvedRequest);
+  }, [sessionUserId, handleResolvedRequest]);
+
+  /** Poll while waiting — realtime may not reach browser anon client without RLS. */
+  useEffect(() => {
+    const requestId = waitRequest?.id;
+    if (!requestId) return;
+
+    let cancelled = false;
+    const poll = async () => {
+      const { request, error } = await fetchCartLineRequestApi(requestId);
+      if (cancelled || error || !request) return;
+      if (request.status !== "pending") {
+        handleResolvedRequest(request);
+      }
+    };
+
+    void poll();
+    const timer = setInterval(() => void poll(), 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [waitRequest?.id, handleResolvedRequest]);
+
+  const confirmApprovedNewQty = useCallback(() => {
+    if (!approvedQtyLineKey) return;
+    const raw = approvedQtyDraft.trim().replace(/\D/g, "");
+    const n = Math.round(Number.parseInt(raw || "0", 10));
+    if (!Number.isFinite(n) || n < 1) {
+      setApprovedQtyErr("Enter a quantity of 1 or more.");
+      return;
+    }
+    setCart((c) =>
+      c.map((x) => (x.key === approvedQtyLineKey ? { ...x, qty: n } : x)),
+    );
+    setApprovedQtyLineKey(null);
+    setApprovedQtyErr(null);
+    setPosInfo(`Quantity updated to ${n}.`);
+  }, [approvedQtyLineKey, approvedQtyDraft]);
 
   const payChangeDue = useMemo(() => {
     const tendered = parseMoneyAmount(amountTendered);
@@ -1057,29 +1293,6 @@ export default function PharmacyPosWorkspace() {
     profile,
   ]);
 
-  const printReadingWindow = (title: string, snap: ShiftReadingSnapshot) => {
-    const w = window.open("", "_blank");
-    if (!w) return;
-    const rows = Object.entries(snap.paymentBreakdown || {})
-      .map(([k, v]) => `<tr><td>${k}</td><td align="right">PHP ${Number(v).toFixed(2)}</td></tr>`)
-      .join("");
-    w.document.write(`<!DOCTYPE html><html><head><title>${title}</title>
-      <style>body{font-family:system-ui,sans-serif;padding:16px;} table{border-collapse:collapse;width:100%} td{padding:4px;border-bottom:1px solid #eee}</style>
-      </head><body>
-      <img src="${LIFEHUB_LOGO_SRC}" alt="LifeHub" style="height:40px;object-fit:contain" />
-      <h2>${title}</h2>
-      <p>Shift: ${snap.shiftId.slice(0, 8)}…</p>
-      <p>Beginning cash: PHP ${snap.beginningCash.toFixed(2)}</p>
-      <p>Gross sales: PHP ${snap.grossSales.toFixed(2)}</p>
-      <p>Transactions: ${snap.transactionCount}</p>
-      <p>Expected drawer: ${snap.expectedCashDrawer != null ? `PHP ${snap.expectedCashDrawer.toFixed(2)}` : "—"}</p>
-      <table>${rows}</table>
-      </body></html>`);
-    w.document.close();
-    w.focus();
-    w.print();
-  };
-
   const runXReading = useCallback(async () => {
     if (!shiftId) return;
     const { snapshot, error } = await aggregateShiftSales(shiftId);
@@ -1092,8 +1305,13 @@ export default function PharmacyPosWorkspace() {
       setCheckoutErr(r.error);
       return;
     }
-    printReadingWindow("X-Reading (interim)", snapshot);
-  }, [shiftId, servedBy]);
+    openPharmacyShiftReadingPrint({
+      readingType: "X",
+      snapshot,
+      branchCode: profile?.branch_code ?? null,
+      cashierName: profile?.fullname ?? null,
+    });
+  }, [shiftId, servedBy, profile?.branch_code, profile?.fullname]);
 
   const holdCurrentSale = useCallback(() => {
     if (cart.length === 0) {
@@ -1376,12 +1594,20 @@ export default function PharmacyPosWorkspace() {
       setCheckoutErr(err.error);
       return;
     }
-    if (snapBefore) printReadingWindow("Z-Reading (close shift)", snapBefore);
+    if (snapBefore) {
+      openPharmacyShiftReadingPrint({
+        readingType: "Z",
+        snapshot: { ...snapBefore, closedAt: new Date().toISOString() },
+        actualCash: actual,
+        branchCode: profile?.branch_code ?? null,
+        cashierName: profile?.fullname ?? null,
+      });
+    }
     setShiftDialogOpen(false);
     setZActualCash("");
     setShiftId(null);
     setShiftOpenModal(true);
-  }, [shiftId, servedBy, zActualCash]);
+  }, [shiftId, servedBy, zActualCash, profile?.branch_code, profile?.fullname]);
 
   const openCatalog = useCallback(async () => {
     const { rows, error } = await listPharmacyCategories();
@@ -1417,6 +1643,7 @@ export default function PharmacyPosWorkspace() {
       unitPrice: price,
       unitCost: price * 0.7,
       barcode: prodBarcode || null,
+      requiresPrescription: prodRequiresRx,
     });
     setCatalogMsg(r.error ?? "Product added.");
     if (!r.error) {
@@ -1425,8 +1652,9 @@ export default function PharmacyPosWorkspace() {
       setProdStrength("");
       setProdPrice("");
       setProdBarcode("");
+      setProdRequiresRx(false);
     }
-  }, [prodCategoryId, prodGeneric, prodBrand, prodStrength, prodUom, prodPrice, prodBarcode]);
+  }, [prodCategoryId, prodGeneric, prodBrand, prodStrength, prodUom, prodPrice, prodBarcode, prodRequiresRx]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1722,11 +1950,14 @@ export default function PharmacyPosWorkspace() {
             Cart
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            <strong>Void paid sale</strong> (F7) cancels a whole receipt · <strong>Return / refund</strong> brings stock back for some or all lines
+            Cart edits need supervisor authorization · <strong>Request line authorization</strong> when no supervisor is at the register ·{" "}
+            <strong>Void paid sale</strong> (F7) cancels a whole receipt · <strong>Return / refund</strong> on completed sales
           </Typography>
           <Stack spacing={1} sx={{ flex: 1, overflow: "auto" }}>
-            {cart.map((line) => (
-              <Paper key={line.key} variant="outlined" sx={{ p: 1 }}>
+            {cart.map((line) => {
+              const isPending = Boolean(pendingByLineKey[line.key]);
+              return (
+              <Paper key={line.key} variant="outlined" sx={{ p: 1, opacity: isPending ? 0.85 : 1 }}>
                 <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
                   <Box sx={{ minWidth: 0 }}>
                     <Typography variant="body2" fontWeight={600} noWrap>
@@ -1735,17 +1966,17 @@ export default function PharmacyPosWorkspace() {
                     <Typography variant="caption" color="text.secondary" display="block" noWrap>
                       ₱{line.product.unit_price.toFixed(2)} × {line.qty}
                     </Typography>
+                    {isPending && (
+                      <Chip label="Pending approval" size="small" color="warning" sx={{ mt: 0.5, height: 20, fontSize: 10 }} />
+                    )}
                   </Box>
                   <Stack direction="row" alignItems="center" spacing={0.5}>
                     <IconButton
                       size="small"
+                      disabled={isPending}
                       onClick={(ev) => {
                         ev.stopPropagation();
-                        setCart((c) =>
-                          c.map((x) =>
-                            x.key === line.key ? { ...x, qty: Math.max(1, x.qty - 1) } : x,
-                          ),
-                        );
+                        openSupervisorForCart(line, "decrement");
                       }}
                     >
                       <RemoveIcon fontSize="small" />
@@ -1755,11 +1986,10 @@ export default function PharmacyPosWorkspace() {
                     </Typography>
                     <IconButton
                       size="small"
+                      disabled={isPending}
                       onClick={(ev) => {
                         ev.stopPropagation();
-                        setCart((c) =>
-                          c.map((x) => (x.key === line.key ? { ...x, qty: x.qty + 1 } : x)),
-                        );
+                        openSupervisorForCart(line, "increment");
                       }}
                     >
                       <AddIcon fontSize="small" />
@@ -1767,17 +1997,31 @@ export default function PharmacyPosWorkspace() {
                     <IconButton
                       size="small"
                       color="error"
+                      disabled={isPending}
                       onClick={(ev) => {
                         ev.stopPropagation();
-                        setCart((c) => c.filter((x) => x.key !== line.key));
+                        openSupervisorForCart(line, "delete");
                       }}
                     >
                       <DeleteOutlineIcon fontSize="small" />
                     </IconButton>
                   </Stack>
                 </Stack>
+                <Button
+                  size="small"
+                  variant="text"
+                  sx={{ mt: 0.5, fontSize: 11, textTransform: "none", p: 0, minHeight: 0 }}
+                  disabled={isPending}
+                  onClick={() => {
+                    setLineAuthErr(null);
+                    setLineAuthDialogLine(line);
+                  }}
+                >
+                  Request line authorization
+                </Button>
               </Paper>
-            ))}
+            );
+            })}
             {cart.length === 0 && (
               <Typography variant="body2" color="text.secondary">
                 Cart is empty — search or scan to add items.
@@ -3148,6 +3392,16 @@ export default function PharmacyPosWorkspace() {
               value={prodBarcode}
               onChange={(e) => setProdBarcode(e.target.value)}
             />
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={prodRequiresRx}
+                  onChange={(_, c) => setProdRequiresRx(c)}
+                  color="primary"
+                />
+              }
+              label="Requires Rx (prescription)"
+            />
             <Button variant="contained" onClick={() => void saveProduct()}>
               Add product
             </Button>
@@ -3160,6 +3414,98 @@ export default function PharmacyPosWorkspace() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setCatalogOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      <SupervisorPasswordDialog
+        open={supervisorDialog != null}
+        action={supervisorDialog?.action ?? "delete"}
+        productLabel={supervisorDialog ? cartLineLabel(supervisorDialog.line) : ""}
+        onClose={() => {
+          setSupervisorDialog(null);
+          setSupervisorRequestErr(null);
+        }}
+        onVerified={() => handleSupervisorVerified()}
+        onRequestApproval={() => void handleSupervisorRequestApproval()}
+        requestBusy={supervisorRequestBusy}
+        requestError={supervisorRequestErr}
+        container={posDialogContainer}
+      />
+
+      <LineAuthorizationRequestDialog
+        open={lineAuthDialogLine != null}
+        productLabel={lineAuthDialogLine ? cartLineLabel(lineAuthDialogLine) : ""}
+        currentQty={lineAuthDialogLine?.qty ?? 1}
+        busy={lineAuthBusy}
+        error={lineAuthErr}
+        onClose={() => {
+          if (lineAuthBusy) return;
+          setLineAuthDialogLine(null);
+          setLineAuthErr(null);
+        }}
+        onSubmit={(action, note) => void handleLineAuthSubmit(action, note)}
+        container={posDialogContainer}
+      />
+
+      <Dialog
+        container={posDialogContainer}
+        open={waitRequest != null}
+        disableEscapeKeyDown
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Waiting for approval</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary">
+            Your line authorization request was sent. An approver will respond from their dashboard
+            notifications. This screen will update automatically.
+          </Typography>
+          {waitRequest && (
+            <Typography variant="body2" sx={{ mt: 2 }}>
+              <strong>{waitRequest.line_snapshot.generic_name}</strong>
+              {" — "}
+              {waitRequest.action === "delete" ? "remove line" : "change quantity"}
+            </Typography>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        container={posDialogContainer}
+        open={approvedQtyLineKey != null}
+        maxWidth="xs"
+        fullWidth
+        onClose={() => setApprovedQtyLineKey(null)}
+      >
+        <DialogTitle>New quantity</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Authorization approved. Enter the new quantity for this line.
+          </Typography>
+          {approvedQtyErr && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {approvedQtyErr}
+            </Alert>
+          )}
+          <TextField
+            label="Quantity"
+            fullWidth
+            value={approvedQtyDraft}
+            onChange={(e) => {
+              setApprovedQtyErr(null);
+              setApprovedQtyDraft(e.target.value.replace(/\D/g, "").slice(0, 6));
+            }}
+            inputProps={{ inputMode: "numeric" }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") confirmApprovedNewQty();
+            }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setApprovedQtyLineKey(null)}>Cancel</Button>
+          <Button variant="contained" onClick={confirmApprovedNewQty}>
+            Apply
+          </Button>
         </DialogActions>
       </Dialog>
     </Box>

@@ -1,0 +1,241 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Badge,
+  Box,
+  Button,
+  CircularProgress,
+  IconButton,
+  List,
+  ListItem,
+  ListItemText,
+  Popover,
+  Stack,
+  Typography,
+} from "@mui/material";
+import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
+import { useAuth } from "@/components/AuthProvider";
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
+import { canApprovePharmacyLineRequests } from "@/lib/navPermissionCatalog";
+import {
+  playNotificationChime,
+  primeNotificationSound,
+  resumeNotificationAudio,
+} from "@/lib/notificationSound";
+import {
+  approveCartLineRequestApi,
+  rejectCartLineRequestApi,
+  subscribeNotificationsForUser,
+} from "@/lib/pharmacyCartLineRequests";
+import { NOTIFICATION_TYPE_PHARMACY_CART_LINE, type NotificationRow } from "@/lib/pharmacyLineRequestServer";
+
+const POLL_MS = 5000;
+
+export default function NotificationBell() {
+  const { profile, menuAccess } = useAuth();
+  const userId =
+    profile != null && typeof profile.user_id === "number" ? profile.user_id : null;
+
+  const canApprove =
+    menuAccess.rbac && canApprovePharmacyLineRequests(menuAccess.pageKeys);
+
+  const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+  const [notifications, setNotifications] = useState<NotificationRow[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [actionBusyId, setActionBusyId] = useState<string | null>(null);
+  /** null = first fetch (no chime); then tracks unread ids we've already announced. */
+  const seenUnreadIdsRef = useRef<Set<string> | null>(null);
+
+  const load = useCallback(async () => {
+    if (!canApprove || userId == null) return;
+    setLoading(true);
+    try {
+      const res = await authenticatedFetch("/api/notifications?limit=30", { cache: "no-store" });
+      const json = (await res.json().catch(() => null)) as
+        | { notifications?: NotificationRow[]; unreadCount?: number; error?: string }
+        | null;
+      if (!res.ok || !json) return;
+      const list = json.notifications ?? [];
+      const unread = json.unreadCount ?? list.filter((n) => !n.read_at).length;
+      const unreadIds = new Set(list.filter((n) => !n.read_at).map((n) => n.id));
+
+      if (seenUnreadIdsRef.current === null) {
+        seenUnreadIdsRef.current = unreadIds;
+      } else {
+        let hasNew = false;
+        for (const id of unreadIds) {
+          if (!seenUnreadIdsRef.current.has(id)) {
+            hasNew = true;
+            break;
+          }
+        }
+        seenUnreadIdsRef.current = unreadIds;
+        if (hasNew) {
+          void playNotificationChime();
+        }
+      }
+
+      setNotifications(list);
+      setUnreadCount(unread);
+    } finally {
+      setLoading(false);
+    }
+  }, [canApprove, userId]);
+
+  useEffect(() => {
+    if (!canApprove) return;
+    primeNotificationSound();
+  }, [canApprove]);
+
+  useEffect(() => {
+    if (!canApprove || userId == null) return;
+    seenUnreadIdsRef.current = null;
+    void load();
+    const poll = setInterval(() => void load(), POLL_MS);
+    const unsub = subscribeNotificationsForUser(userId, () => void load());
+    return () => {
+      clearInterval(poll);
+      unsub();
+    };
+  }, [canApprove, userId, load]);
+
+  if (!canApprove) {
+    return (
+      <IconButton sx={{ color: "text.secondary" }} disabled aria-label="Notifications unavailable">
+        <NotificationsNoneIcon />
+      </IconButton>
+    );
+  }
+
+  const handleApprove = async (requestId: string, notifId: string) => {
+    setActionBusyId(notifId);
+    const { error } = await approveCartLineRequestApi(requestId);
+    setActionBusyId(null);
+    if (!error) {
+      await authenticatedFetch(`/api/notifications/${encodeURIComponent(notifId)}`, {
+        method: "PATCH",
+      });
+      void load();
+    }
+  };
+
+  const handleReject = async (requestId: string, notifId: string) => {
+    setActionBusyId(notifId);
+    const { error } = await rejectCartLineRequestApi(requestId);
+    setActionBusyId(null);
+    if (!error) {
+      await authenticatedFetch(`/api/notifications/${encodeURIComponent(notifId)}`, {
+        method: "PATCH",
+      });
+      void load();
+    }
+  };
+
+  return (
+    <>
+      <IconButton
+        sx={{ color: "text.secondary" }}
+        aria-label="Notifications"
+        onClick={(e) => {
+          primeNotificationSound();
+          void resumeNotificationAudio();
+          setAnchorEl(e.currentTarget);
+          void load();
+        }}
+      >
+        <Badge
+          badgeContent={unreadCount > 0 ? unreadCount : undefined}
+          color="error"
+          sx={{
+            "& .MuiBadge-badge": {
+              fontSize: 10,
+              height: 18,
+              minWidth: 18,
+            },
+          }}
+        >
+          <NotificationsNoneIcon />
+        </Badge>
+      </IconButton>
+      <Popover
+        open={Boolean(anchorEl)}
+        anchorEl={anchorEl}
+        onClose={() => setAnchorEl(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+        transformOrigin={{ vertical: "top", horizontal: "right" }}
+        slotProps={{ paper: { sx: { width: 360, maxHeight: 480 } } }}
+      >
+        <Box sx={{ px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}>
+          <Typography variant="subtitle2" fontWeight={700}>
+            Notifications
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            Click anywhere on the page once to enable alert sounds.
+          </Typography>
+        </Box>
+        {loading && notifications.length === 0 ? (
+          <Box sx={{ p: 3, display: "flex", justifyContent: "center" }}>
+            <CircularProgress size={28} />
+          </Box>
+        ) : notifications.length === 0 ? (
+          <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>
+            No notifications.
+          </Typography>
+        ) : (
+          <List dense disablePadding sx={{ overflow: "auto", maxHeight: 400 }}>
+            {notifications.map((n) => {
+              const requestId =
+                n.type === NOTIFICATION_TYPE_PHARMACY_CART_LINE
+                  ? (n.payload?.requestId as string | undefined)
+                  : undefined;
+              const busy = actionBusyId === n.id;
+              return (
+                <ListItem
+                  key={n.id}
+                  sx={{
+                    flexDirection: "column",
+                    alignItems: "stretch",
+                    bgcolor: n.read_at ? undefined : "action.hover",
+                    borderBottom: 1,
+                    borderColor: "divider",
+                  }}
+                >
+                  <ListItemText
+                    primary={n.title}
+                    secondary={n.body}
+                    primaryTypographyProps={{ variant: "body2", fontWeight: 600 }}
+                    secondaryTypographyProps={{ variant: "caption" }}
+                  />
+                  {requestId && n.type === NOTIFICATION_TYPE_PHARMACY_CART_LINE && !n.read_at && (
+                    <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+                      <Button
+                        size="small"
+                        variant="contained"
+                        color="success"
+                        disabled={busy}
+                        onClick={() => void handleApprove(requestId, n.id)}
+                      >
+                        Approve
+                      </Button>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        color="error"
+                        disabled={busy}
+                        onClick={() => void handleReject(requestId, n.id)}
+                      >
+                        Reject
+                      </Button>
+                    </Stack>
+                  )}
+                </ListItem>
+              );
+            })}
+          </List>
+        )}
+      </Popover>
+    </>
+  );
+}

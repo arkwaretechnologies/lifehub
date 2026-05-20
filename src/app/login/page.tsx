@@ -268,34 +268,20 @@ export default function LoginPage() {
             >
               <Typography
                 variant="h6"
-                sx={{
-                  color: alpha("#fff", 0.76),
-                  fontFamily: "var(--font-inter), 'Segoe UI', sans-serif",
-                  fontWeight: 400,
-                  fontSize: { xs: "1rem", sm: "1.15rem", md: "1.3rem" },
-                  letterSpacing: "0.14em",
-                  lineHeight: 1,
-                  mb: 0.5,
-                  textShadow: "0 4px 16px rgba(0, 0, 0, 0.24)",
-                }}
-              >
-                Your health
-              </Typography>
-              <Typography
-                variant="h6"
+                component="p"
                 sx={{
                   color: "#FFFFFF",
-                  mt: 0,
-                  fontFamily: "var(--font-inter), 'Segoe UI', sans-serif",
+                  fontFamily: "var(--font-montserrat), 'Inter', sans-serif",
                   fontWeight: 600,
-                  fontSize: { xs: "1.25rem", sm: "1.55rem", md: "1.85rem" },
-                  letterSpacing: { xs: "0.12em", md: "0.14em" },
-                  lineHeight: 1,
+                  fontSize: { xs: "1.1rem", sm: "1.35rem", md: "1.55rem" },
+                  letterSpacing: { xs: "0.1em", md: "0.12em" },
+                  lineHeight: 1.2,
                   textTransform: "uppercase",
                   textShadow: "0 7px 22px rgba(0, 0, 0, 0.32)",
+                  whiteSpace: { xs: "normal", sm: "nowrap" },
                 }}
               >
-                has a home
+                Your health has a home
               </Typography>
             </Box>
           </Box>

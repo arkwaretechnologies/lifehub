@@ -8,7 +8,6 @@ import {
   IconButton,
   Box,
   Avatar,
-  Badge,
   alpha,
   Menu,
   MenuItem,
@@ -26,7 +25,7 @@ import {
   CircularProgress,
 } from "@mui/material";
 import MenuIcon from "@mui/icons-material/Menu";
-import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
+import NotificationBell from "@/components/NotificationBell";
 import LogoutIcon from "@mui/icons-material/Logout";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import CloseIcon from "@mui/icons-material/Close";
@@ -212,21 +211,7 @@ export default function TopBar({ onMenuToggle }: TopBarProps) {
               </Typography>
             </Box>
 
-            <IconButton sx={{ color: "text.secondary" }}>
-              <Badge
-                badgeContent={3}
-                color="error"
-                sx={{
-                  "& .MuiBadge-badge": {
-                    fontSize: 10,
-                    height: 18,
-                    minWidth: 18,
-                  },
-                }}
-              >
-                <NotificationsNoneIcon />
-              </Badge>
-            </IconButton>
+            <NotificationBell />
 
             <IconButton sx={{ color: "text.secondary", display: { xs: "none", md: "inline-flex" } }}>
               <MoreHorizIcon fontSize="small" />

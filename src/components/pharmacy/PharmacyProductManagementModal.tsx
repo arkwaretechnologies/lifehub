@@ -26,7 +26,10 @@ import {
   Paper,
   FormControlLabel,
   Switch,
+  Chip,
+  InputAdornment,
 } from "@mui/material";
+import SearchOutlinedIcon from "@mui/icons-material/SearchOutlined";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import SaveOutlinedIcon from "@mui/icons-material/SaveOutlined";
 import CloseOutlinedIcon from "@mui/icons-material/CloseOutlined";
@@ -36,12 +39,17 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import {
   deletePharmacyCategoryIfNoProducts,
   fetchProductCountsByPharmacyCategory,
+  formatProductOptionLabel,
   insertPharmacyCategory,
   insertProductForPos,
   listPharmacyCategories,
+  listProductsForAdmin,
   listSuppliers,
+  searchProductsForAdmin,
   updatePharmacyCategory,
+  updateProductForAdmin,
   type PharmacyCategoryRow,
+  type ProductAdminRow,
   type SupplierRow,
 } from "@/lib/pharmacyPosDb";
 
@@ -122,6 +130,11 @@ const PHARMACY_UNITS = [
 ] as const;
 
 const CATEGORY_ROWS_PER_PAGE_OPTIONS = [5, 10, 25] as const;
+const PRODUCT_ROWS_PER_PAGE_OPTIONS = [5, 10, 25] as const;
+
+function formatPhp(n: number): string {
+  return n.toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 
 type Props = {
   open: boolean;
@@ -167,6 +180,24 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
   const [prodVatExempt, setProdVatExempt] = useState(false);
   const [prodVatRate, setProdVatRate] = useState("12");
   const [prodIsActive, setProdIsActive] = useState(true);
+  const [editingProductId, setEditingProductId] = useState<string | null>(null);
+
+  const [productSearchQuery, setProductSearchQuery] = useState("");
+  const [productSearchDebounced, setProductSearchDebounced] = useState("");
+  const [productRows, setProductRows] = useState<ProductAdminRow[]>([]);
+  const [productSearchResults, setProductSearchResults] = useState<ProductAdminRow[] | null>(null);
+  const [productTotalCount, setProductTotalCount] = useState(0);
+  const [productLoading, setProductLoading] = useState(false);
+  const [productLoadErr, setProductLoadErr] = useState<string | null>(null);
+  const [productPage, setProductPage] = useState(0);
+  const [productRowsPerPage, setProductRowsPerPage] = useState(10);
+  const [showInactiveProducts, setShowInactiveProducts] = useState(false);
+
+  const categoryNameById = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const c of categories) m.set(c.id, c.name);
+    return m;
+  }, [categories]);
 
   const loadSuppliers = useCallback(async () => {
     const { rows, error } = await listSuppliers();
@@ -198,23 +229,146 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
     setProductCountByCategoryId(countsRes.error ? {} : countsRes.countsByCategoryId);
   }, []);
 
+  const loadProducts = useCallback(async () => {
+    setProductLoading(true);
+    setProductLoadErr(null);
+    const q = productSearchDebounced.trim();
+    if (q.length >= 2) {
+      const { rows, error } = await searchProductsForAdmin(q, {
+        includeInactive: showInactiveProducts,
+      });
+      setProductLoading(false);
+      if (error) {
+        setProductLoadErr(error);
+        setProductSearchResults([]);
+        setProductRows([]);
+        setProductTotalCount(0);
+        return;
+      }
+      setProductLoadErr(null);
+      setProductSearchResults(rows);
+      setProductRows([]);
+      setProductTotalCount(rows.length);
+      return;
+    }
+    setProductSearchResults(null);
+    const { rows, totalCount, error } = await listProductsForAdmin({
+      page: productPage,
+      pageSize: productRowsPerPage,
+      includeInactive: showInactiveProducts,
+    });
+    setProductLoading(false);
+    if (error) {
+      setProductLoadErr(error);
+      setProductRows([]);
+      setProductTotalCount(0);
+      return;
+    }
+    setProductLoadErr(null);
+    setProductRows(rows);
+    setProductTotalCount(totalCount);
+  }, [productSearchDebounced, productPage, productRowsPerPage, showInactiveProducts]);
+
+  const resetProductForm = useCallback(() => {
+    setEditingProductId(null);
+    setProdBarcode("");
+    setProdGeneric("");
+    setProdBrand("");
+    setProdStrength("");
+    setProdDosageForm("");
+    setProdUom("tablet");
+    setProdCost("");
+    setProdRetail("");
+    setProdDescription("");
+    setProdSupplierId("");
+    setProdRequiresRx(false);
+    setProdReorderLevel("");
+    setProdReorderQty("");
+    setProdVatExempt(false);
+    setProdVatRate("12");
+    setProdIsActive(true);
+    setProdMsg(null);
+    if (categories.length > 0) setProdCategoryId(categories[0]!.id);
+    else setProdCategoryId("");
+  }, [categories]);
+
+  const applyProductToForm = useCallback((p: ProductAdminRow) => {
+    setEditingProductId(p.id);
+    setProdCategoryId(p.category_id);
+    setProdBarcode(p.barcode ?? "");
+    setProdGeneric(p.generic_name);
+    setProdBrand(p.brand_name ?? "");
+    setProdStrength(p.strength ?? "");
+    setProdDosageForm(p.dosage_form ?? "");
+    setProdUom(p.unit_of_measure || "tablet");
+    setProdCost(String(p.unit_cost));
+    setProdRetail(String(p.unit_price));
+    setProdDescription(p.description ?? "");
+    setProdSupplierId(p.supplier_id ?? "");
+    setProdRequiresRx(p.requires_prescription === true);
+    setProdReorderLevel(p.reorder_level != null ? String(p.reorder_level) : "");
+    setProdReorderQty(p.reorder_quantity != null ? String(p.reorder_quantity) : "");
+    setProdVatExempt(p.vat_exempt === true);
+    setProdVatRate(p.vat_exempt ? "0" : String(p.vat_rate ?? 12));
+    setProdIsActive(p.is_active !== false);
+    setProdMsg(null);
+  }, []);
+
+  const startEditProduct = useCallback(
+    (p: ProductAdminRow) => {
+      applyProductToForm(p);
+      setTab(1);
+    },
+    [applyProductToForm],
+  );
+
   useEffect(() => {
     if (!open) return;
     void loadCategories();
     void loadSuppliers();
   }, [open, loadCategories, loadSuppliers]);
 
+  useEffect(() => {
+    const t = setTimeout(() => setProductSearchDebounced(productSearchQuery), 300);
+    return () => clearTimeout(t);
+  }, [productSearchQuery]);
+
+  useEffect(() => {
+    setProductPage(0);
+  }, [productSearchDebounced, showInactiveProducts]);
+
+  useEffect(() => {
+    if (!open || tab !== 0) return;
+    void loadProducts();
+  }, [open, tab, loadProducts]);
+
   /** Refetch whenever the Categories tab is shown (fresh list from DB). */
   useEffect(() => {
-    if (!open || tab !== 1) return;
+    if (!open || tab !== 2) return;
     void loadCategories();
   }, [open, tab, loadCategories]);
 
   /** Refresh suppliers when Item setup is visible (e.g. after adding one from Suppliers modal elsewhere). */
   useEffect(() => {
-    if (!open || tab !== 0) return;
+    if (!open || tab !== 1) return;
     void loadSuppliers();
   }, [open, tab, loadSuppliers]);
+
+  const displayedProducts = useMemo(() => {
+    if (productSearchResults !== null) {
+      const start = productPage * productRowsPerPage;
+      return productSearchResults.slice(start, start + productRowsPerPage);
+    }
+    return productRows;
+  }, [productSearchResults, productRows, productPage, productRowsPerPage]);
+
+  const productTableCount =
+    productSearchResults !== null ? productSearchResults.length : productTotalCount;
+
+  useEffect(() => {
+    const maxPage = Math.max(0, Math.ceil(productTableCount / productRowsPerPage) - 1);
+    if (productPage > maxPage) setProductPage(maxPage);
+  }, [productTableCount, productRowsPerPage, productPage]);
 
   const paginatedCategories = useMemo(() => {
     const start = catPage * catRowsPerPage;
@@ -239,6 +393,7 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
       setNewCatName("");
       setNewCatCodeManual(false);
       setEditingId(null);
+      setEditingProductId(null);
       setProdBarcode("");
       setProdGeneric("");
       setProdBrand("");
@@ -258,12 +413,23 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
       setProdVatExempt(false);
       setProdVatRate("12");
       setProdIsActive(true);
+      setProdCategoryId("");
       setCatMsg(null);
       setCategoriesLoadError(null);
       setCatLoading(false);
       setCatPage(0);
       setCatRowsPerPage(10);
       setProductCountByCategoryId({});
+      setProductSearchQuery("");
+      setProductSearchDebounced("");
+      setProductRows([]);
+      setProductSearchResults(null);
+      setProductTotalCount(0);
+      setProductLoading(false);
+      setProductLoadErr(null);
+      setProductPage(0);
+      setProductRowsPerPage(10);
+      setShowInactiveProducts(false);
     }
   }, [open]);
 
@@ -357,7 +523,7 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
         return;
       }
     }
-    const r = await insertProductForPos({
+    const payload = {
       categoryId: prodCategoryId as number,
       genericName: prodGeneric.trim(),
       brandName: prodBrand.trim() || null,
@@ -375,39 +541,194 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
       vatExempt: prodVatExempt,
       vatRate: prodVatExempt ? 0 : vatRateNum,
       isActive: prodIsActive,
-    });
+    };
+
+    if (editingProductId) {
+      const r = await updateProductForAdmin(editingProductId, payload);
+      setProdMsg(r.error ?? "Product updated.");
+      if (!r.error) {
+        resetProductForm();
+        setTab(0);
+        void loadProducts();
+        void loadCategories();
+      }
+      return;
+    }
+
+    const r = await insertProductForPos(payload);
     setProdMsg(r.error ?? "Product added.");
     if (!r.error) {
-      setProdBarcode("");
-      setProdGeneric("");
-      setProdBrand("");
-      setProdStrength("");
-      setProdDosageForm("");
-      setProdDescription("");
-      setProdSupplierId("");
-      setProdRequiresRx(false);
-      setProdReorderLevel("");
-      setProdReorderQty("");
-      setProdVatExempt(false);
-      setProdVatRate("12");
-      setProdIsActive(true);
-      setProdCost("");
-      setProdRetail("");
+      resetProductForm();
       void loadCategories();
+      void loadProducts();
     }
   };
+
+  const isProdSuccessMsg =
+    prodMsg === "Product added." || prodMsg === "Product updated.";
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="lg" fullWidth>
       <DialogTitle>Product Management</DialogTitle>
       <DialogContent sx={{ overflow: "visible", pt: 1 }}>
         <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ borderBottom: 1, borderColor: "divider", mb: 2 }}>
+          <Tab label="Products" />
           <Tab label="Item setup" />
           <Tab label="Categories" />
         </Tabs>
 
         {tab === 0 && (
           <Stack spacing={2} sx={{ mt: 1 }}>
+            <Typography variant="body2" color="text.secondary">
+              Search by item name, brand, or barcode. Use Edit to change details on the Item setup tab.
+            </Typography>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }}>
+              <TextField
+                variant="outlined"
+                size="small"
+                label="Search products"
+                value={productSearchQuery}
+                onChange={(e) => setProductSearchQuery(e.target.value)}
+                fullWidth
+                placeholder="Name, brand, or barcode (min. 2 characters)"
+                InputLabelProps={{ shrink: true }}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <SearchOutlinedIcon fontSize="small" color="action" />
+                    </InputAdornment>
+                  ),
+                }}
+                sx={CAT_FIELD_SX}
+              />
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={showInactiveProducts}
+                    onChange={(_, c) => setShowInactiveProducts(c)}
+                    color="primary"
+                  />
+                }
+                label="Show inactive"
+                sx={{ flexShrink: 0, m: 0 }}
+              />
+            </Stack>
+            {productLoadErr && (
+              <Alert severity="error" onClose={() => setProductLoadErr(null)}>
+                Could not load products: {productLoadErr}
+              </Alert>
+            )}
+            <TableContainer component={Paper} variant="outlined">
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Item</TableCell>
+                    <TableCell>Barcode</TableCell>
+                    <TableCell>Category</TableCell>
+                    <TableCell align="right">Retail (PHP)</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell align="right">Actions</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {productLoading && (
+                    <TableRow>
+                      <TableCell colSpan={6} align="center" sx={{ py: 3 }}>
+                        <CircularProgress size={28} />
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  {!productLoading &&
+                    displayedProducts.map((p) => (
+                      <TableRow key={p.id}>
+                        <TableCell>
+                          <Typography variant="body2">{formatProductOptionLabel(p)}</Typography>
+                        </TableCell>
+                        <TableCell>{p.barcode ?? "—"}</TableCell>
+                        <TableCell>{categoryNameById.get(p.category_id) ?? "—"}</TableCell>
+                        <TableCell align="right">{formatPhp(p.unit_price)}</TableCell>
+                        <TableCell>
+                          <Chip
+                            size="small"
+                            label={p.is_active === false ? "Inactive" : "Active"}
+                            color={p.is_active === false ? "default" : "success"}
+                            variant={p.is_active === false ? "outlined" : "filled"}
+                          />
+                        </TableCell>
+                        <TableCell align="right">
+                          <IconButton
+                            size="small"
+                            onClick={() => startEditProduct(p)}
+                            title="Edit product"
+                          >
+                            <EditOutlinedIcon fontSize="small" />
+                          </IconButton>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  {!productLoading &&
+                    displayedProducts.length === 0 &&
+                    !productLoadErr &&
+                    (productSearchDebounced.trim().length >= 2 ? (
+                      <TableRow>
+                        <TableCell colSpan={6}>
+                          <Typography variant="body2" color="text.secondary">
+                            No products match your search.
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      <TableRow>
+                        <TableCell colSpan={6}>
+                          <Typography variant="body2" color="text.secondary">
+                            No products yet — add one on Item setup.
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+            <TablePagination
+              component="div"
+              count={productTableCount}
+              page={productPage}
+              onPageChange={(_, newPage) => setProductPage(newPage)}
+              rowsPerPage={productRowsPerPage}
+              onRowsPerPageChange={(e) => {
+                setProductRowsPerPage(Number.parseInt(e.target.value, 10));
+                setProductPage(0);
+              }}
+              rowsPerPageOptions={[...PRODUCT_ROWS_PER_PAGE_OPTIONS]}
+              labelRowsPerPage="Rows per page"
+              sx={{
+                "& .MuiTablePagination-toolbar": { textTransform: "none" },
+                "& .MuiTablePagination-select": { textTransform: "none" },
+                "& .MuiTablePagination-selectLabel, & .MuiTablePagination-displayedRows": {
+                  textTransform: "none",
+                },
+              }}
+            />
+          </Stack>
+        )}
+
+        {tab === 1 && (
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            {editingProductId && (
+              <Stack
+                direction={{ xs: "column", sm: "row" }}
+                spacing={1}
+                alignItems={{ sm: "center" }}
+                justifyContent="space-between"
+              >
+                <Alert severity="info" sx={{ flex: 1 }}>
+                  Editing: {prodGeneric.trim() || "product"}
+                </Alert>
+                <Button variant="outlined" size="small" onClick={resetProductForm} sx={{ flexShrink: 0 }}>
+                  New product
+                </Button>
+              </Stack>
+            )}
             <Typography variant="body2" color="text.secondary">
               Fields match the products table: category, supplier, identifiers, pricing, VAT, reorder, and flags.
             </Typography>
@@ -509,6 +830,19 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
                 sx={ITEM_FORM_FIELD_SX}
               />
             </Stack>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={prodRequiresRx}
+                  onChange={(_, c) => setProdRequiresRx(c)}
+                  color="primary"
+                />
+              }
+              label="Requires Rx (prescription)"
+            />
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: -1.5, mb: 0.5 }}>
+              Turn on if this item cannot be sold without a prescription.
+            </Typography>
             <TextField
               select
               variant="outlined"
@@ -568,16 +902,6 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
               <FormControlLabel
                 control={
                   <Switch
-                    checked={prodRequiresRx}
-                    onChange={(_, c) => setProdRequiresRx(c)}
-                    color="primary"
-                  />
-                }
-                label="Requires prescription"
-              />
-              <FormControlLabel
-                control={
-                  <Switch
                     checked={prodVatExempt}
                     onChange={(_, c) => {
                       setProdVatExempt(c);
@@ -623,17 +947,17 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
               />
             </Stack>
             {prodMsg && (
-              <Alert severity={prodMsg === "Product added." ? "success" : "error"} onClose={() => setProdMsg(null)}>
+              <Alert severity={isProdSuccessMsg ? "success" : "error"} onClose={() => setProdMsg(null)}>
                 {prodMsg}
               </Alert>
             )}
             <Button variant="contained" onClick={() => void saveProduct()}>
-              Save product
+              {editingProductId ? "Update product" : "Save product"}
             </Button>
           </Stack>
         )}
 
-        {tab === 1 && (
+        {tab === 2 && (
           <Stack spacing={2} sx={{ mt: 1 }}>
             <Typography variant="subtitle2" fontWeight={700}>
               New category

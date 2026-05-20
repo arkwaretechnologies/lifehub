@@ -52,6 +52,31 @@ export type ProductPosRow = ProductCatalogRow & {
   category_id: number;
 };
 
+/** Full row for Product Management admin (list / edit). */
+export const PRODUCT_ADMIN_SELECT =
+  "id, category_id, generic_name, brand_name, strength, dosage_form, description, unit_of_measure, unit_price, unit_cost, barcode, supplier_id, requires_prescription, reorder_level, reorder_quantity, vat_exempt, vat_rate, is_active" as const;
+
+export type ProductAdminRow = {
+  id: string;
+  category_id: number;
+  generic_name: string;
+  brand_name: string | null;
+  strength: string | null;
+  dosage_form: string | null;
+  description: string | null;
+  unit_of_measure: string;
+  unit_price: number;
+  unit_cost: number;
+  barcode: string | null;
+  supplier_id: number | null;
+  requires_prescription: boolean | null;
+  reorder_level: number | null;
+  reorder_quantity: number | null;
+  vat_exempt: boolean | null;
+  vat_rate: number | null;
+  is_active: boolean | null;
+};
+
 function isActiveRow(v: boolean | null | undefined): boolean {
   return v !== false;
 }
@@ -296,6 +321,13 @@ export type ShiftReadingSnapshot = {
   nonCashSales: number;
   paymentBreakdown: Record<string, number>;
   expectedCashDrawer?: number | null;
+  subtotal: number;
+  vatAmount: number;
+  discountAmount: number;
+  beginningOr: string | null;
+  endingOr: string | null;
+  voidTransactionCount: number;
+  voidAmount: number;
 };
 
 export async function aggregateShiftSales(shiftId: string): Promise<{
@@ -312,16 +344,29 @@ export async function aggregateShiftSales(shiftId: string): Promise<{
 
   const { data: sales, error: sErr } = await supabase
     .from(PHARMACY_SALES_TABLE)
-    .select("total_amount, payment_method, amount_tendered, change_amount")
+    .select(
+      "total_amount, payment_method, amount_tendered, change_amount, or_number, subtotal, vat_amount, discount_amount",
+    )
     .eq("shift_id", shiftId)
     .eq("status", "Completed");
   if (sErr) return { snapshot: null, error: sErr.message };
 
+  const { data: voidSales, error: voidErr } = await supabase
+    .from(PHARMACY_SALES_TABLE)
+    .select("total_amount")
+    .eq("shift_id", shiftId)
+    .eq("status", "Voided");
+  if (voidErr) return { snapshot: null, error: voidErr.message };
+
   let gross = 0;
+  let subtotal = 0;
+  let vatAmount = 0;
+  let discountAmount = 0;
   let cashSales = 0;
   let nonCashSales = 0;
   let txn = 0;
   const breakdown: Record<string, number> = {};
+  const orNumbers: string[] = [];
   const beginning = Number((shiftRow as { beginning_cash: number }).beginning_cash) || 0;
 
   for (const row of sales ?? []) {
@@ -330,10 +375,19 @@ export async function aggregateShiftSales(shiftId: string): Promise<{
       payment_method: string | null;
       amount_tendered: number | null;
       change_amount: number | null;
+      or_number: string | null;
+      subtotal: number | null;
+      vat_amount: number | null;
+      discount_amount: number | null;
     };
     const total = Number(r.total_amount) || 0;
     gross += total;
+    subtotal += Number(r.subtotal) || total;
+    vatAmount += Number(r.vat_amount) || 0;
+    discountAmount += Number(r.discount_amount) || 0;
     txn += 1;
+    const or = (r.or_number ?? "").trim();
+    if (or) orNumbers.push(or);
     const pm = (r.payment_method ?? "UNKNOWN").trim() || "UNKNOWN";
     breakdown[pm] = (breakdown[pm] ?? 0) + total;
     const pmLower = pm.toLowerCase();
@@ -343,6 +397,16 @@ export async function aggregateShiftSales(shiftId: string): Promise<{
       nonCashSales += total;
     }
   }
+
+  orNumbers.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const beginningOr = orNumbers[0] ?? null;
+  const endingOr = orNumbers.length > 0 ? orNumbers[orNumbers.length - 1] : null;
+
+  let voidAmount = 0;
+  for (const row of voidSales ?? []) {
+    voidAmount += Number((row as { total_amount: number | null }).total_amount) || 0;
+  }
+  const voidTransactionCount = voidSales?.length ?? 0;
 
   let cashInDrawer = beginning;
   for (const row of sales ?? []) {
@@ -371,6 +435,13 @@ export async function aggregateShiftSales(shiftId: string): Promise<{
     nonCashSales,
     paymentBreakdown: breakdown,
     expectedCashDrawer: cashInDrawer,
+    subtotal,
+    vatAmount,
+    discountAmount,
+    beginningOr,
+    endingOr,
+    voidTransactionCount,
+    voidAmount,
   };
   return { snapshot, error: null };
 }
@@ -1613,7 +1684,25 @@ export async function applyPharmacyStockOut(args: {
   return { error: null };
 }
 
-export async function insertProductForPos(row: {
+export async function insertProductForPos(row: ProductAdminWriteRow): Promise<{
+  productId: string | null;
+  error: string | null;
+}> {
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from(PRODUCTS_TABLE)
+    .insert({
+      ...productWriteToDbColumns(row),
+      created_at: now,
+      updated_at: now,
+    })
+    .select("id")
+    .single();
+  if (error) return { productId: null, error: error.message };
+  return { productId: (data as { id: string }).id, error: null };
+}
+
+export type ProductAdminWriteRow = {
   categoryId: number;
   genericName: string;
   brandName?: string | null;
@@ -1631,8 +1720,9 @@ export async function insertProductForPos(row: {
   vatExempt?: boolean | null;
   vatRate?: number | null;
   isActive?: boolean | null;
-}): Promise<{ productId: string | null; error: string | null }> {
-  const now = new Date().toISOString();
+};
+
+function productWriteToDbColumns(row: ProductAdminWriteRow): Record<string, unknown> {
   const vatExempt = row.vatExempt ?? false;
   const vatRate =
     row.vatRate != null && Number.isFinite(row.vatRate)
@@ -1640,33 +1730,105 @@ export async function insertProductForPos(row: {
       : vatExempt
         ? 0
         : 12;
+  return {
+    category_id: row.categoryId,
+    generic_name: row.genericName.trim(),
+    brand_name: row.brandName ?? null,
+    strength: row.strength ?? null,
+    dosage_form: row.dosageForm ?? null,
+    description: row.description?.trim() || null,
+    unit_of_measure: row.unitOfMeasure.trim(),
+    unit_price: row.unitPrice,
+    unit_cost: row.unitCost,
+    barcode: row.barcode?.trim() || null,
+    supplier_id: row.supplierId != null && Number.isFinite(row.supplierId) ? row.supplierId : null,
+    requires_prescription: row.requiresPrescription ?? false,
+    reorder_level: row.reorderLevel != null && Number.isFinite(row.reorderLevel) ? row.reorderLevel : null,
+    reorder_quantity: row.reorderQuantity != null && Number.isFinite(row.reorderQuantity) ? row.reorderQuantity : null,
+    vat_exempt: vatExempt,
+    vat_rate: vatRate,
+    is_active: row.isActive ?? true,
+  };
+}
+
+export async function listProductsForAdmin(opts: {
+  page: number;
+  pageSize: number;
+  includeInactive?: boolean;
+}): Promise<{ rows: ProductAdminRow[]; totalCount: number; error: string | null }> {
+  const pageSize = Math.min(Math.max(1, opts.pageSize), 100);
+  const page = Math.max(0, opts.page);
+  const from = page * pageSize;
+  const to = from + pageSize - 1;
+
+  let q = supabase.from(PRODUCTS_TABLE).select(PRODUCT_ADMIN_SELECT, { count: "exact" });
+  if (!opts.includeInactive) {
+    q = q.or(ACTIVE_PRODUCTS_OR);
+  }
+  const { data, error, count } = await q.order("generic_name", { ascending: true }).range(from, to);
+
+  if (error) {
+    return { rows: [], totalCount: 0, error: error.message };
+  }
+  return { rows: (data ?? []) as ProductAdminRow[], totalCount: count ?? 0, error: null };
+}
+
+export async function searchProductsForAdmin(
+  rawQuery: string,
+  opts?: { limit?: number; includeInactive?: boolean },
+): Promise<{ rows: ProductAdminRow[]; error: string | null }> {
+  const safe = sanitizeSearchToken(rawQuery);
+  if (safe.length < 2) {
+    return { rows: [], error: null };
+  }
+  const cap = Math.min(Math.max(1, opts?.limit ?? 200), 200);
+  const pattern = `%${safe}%`;
+
+  let q = supabase
+    .from(PRODUCTS_TABLE)
+    .select(PRODUCT_ADMIN_SELECT)
+    .or(`generic_name.ilike.${pattern},brand_name.ilike.${pattern},barcode.ilike.${pattern}`);
+  if (!opts?.includeInactive) {
+    q = q.or(ACTIVE_PRODUCTS_OR);
+  }
+  const { data, error } = await q.order("generic_name", { ascending: true }).limit(cap);
+
+  if (error) {
+    return { rows: [], error: error.message };
+  }
+  return { rows: (data ?? []) as ProductAdminRow[], error: null };
+}
+
+export async function fetchProductForAdmin(
+  id: string,
+): Promise<{ product: ProductAdminRow | null; error: string | null }> {
+  const trimmed = id.trim();
+  if (!trimmed) return { product: null, error: null };
+
   const { data, error } = await supabase
     .from(PRODUCTS_TABLE)
-    .insert({
-      category_id: row.categoryId,
-      generic_name: row.genericName.trim(),
-      brand_name: row.brandName ?? null,
-      strength: row.strength ?? null,
-      dosage_form: row.dosageForm ?? null,
-      description: row.description?.trim() || null,
-      unit_of_measure: row.unitOfMeasure.trim(),
-      unit_price: row.unitPrice,
-      unit_cost: row.unitCost,
-      barcode: row.barcode?.trim() || null,
-      supplier_id: row.supplierId != null && Number.isFinite(row.supplierId) ? row.supplierId : null,
-      requires_prescription: row.requiresPrescription ?? false,
-      reorder_level: row.reorderLevel != null && Number.isFinite(row.reorderLevel) ? row.reorderLevel : null,
-      reorder_quantity: row.reorderQuantity != null && Number.isFinite(row.reorderQuantity) ? row.reorderQuantity : null,
-      vat_exempt: vatExempt,
-      vat_rate: vatRate,
-      is_active: row.isActive ?? true,
-      created_at: now,
-      updated_at: now,
-    })
-    .select("id")
-    .single();
-  if (error) return { productId: null, error: error.message };
-  return { productId: (data as { id: string }).id, error: null };
+    .select(PRODUCT_ADMIN_SELECT)
+    .eq("id", trimmed)
+    .maybeSingle();
+
+  if (error) return { product: null, error: error.message };
+  if (!data) return { product: null, error: null };
+  return { product: data as ProductAdminRow, error: null };
+}
+
+export async function updateProductForAdmin(
+  id: string,
+  row: ProductAdminWriteRow,
+): Promise<{ error: string | null }> {
+  const trimmed = id.trim();
+  if (!trimmed) return { error: "Product id is required." };
+
+  const patch = {
+    ...productWriteToDbColumns(row),
+    updated_at: new Date().toISOString(),
+  };
+  const { error } = await supabase.from(PRODUCTS_TABLE).update(patch).eq("id", trimmed);
+  return { error: error?.message ?? null };
 }
 
 export type SupplierRow = {

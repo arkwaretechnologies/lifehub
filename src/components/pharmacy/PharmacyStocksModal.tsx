@@ -403,23 +403,9 @@ export default function PharmacyStocksModal({ open, onClose }: Props) {
         setBusy(false);
         return;
       }
-      if (!drNumber.trim()) {
-        setActionErr("DR number is required for stock in.");
-        setBusy(false);
-        return;
-      }
-      if (!drDate.trim()) {
-        setActionErr("DR date is required for stock in.");
-        setBusy(false);
-        return;
-      }
-      if (stockInSupplierId === "") {
-        setActionErr("Select a supplier for this delivery (from Suppliers).");
-        setBusy(false);
-        return;
-      }
-      const supplierRow = suppliers.find((s) => s.id === stockInSupplierId);
-      if (!supplierRow) {
+      const supplierRow =
+        stockInSupplierId === "" ? null : suppliers.find((s) => s.id === stockInSupplierId);
+      if (stockInSupplierId !== "" && !supplierRow) {
         setActionErr("Selected supplier is no longer available — refresh and pick again.");
         setBusy(false);
         void loadSuppliers();
@@ -434,9 +420,9 @@ export default function PharmacyStocksModal({ open, onClose }: Props) {
         unitCost: uc != null && Number.isFinite(uc) ? uc : null,
         notes: notes.trim() || null,
         performedBy,
-        drNumber: drNumber.trim(),
-        drDate: drDate.trim(),
-        supplierDr: supplierRow.name.trim(),
+        drNumber: drNumber.trim() || null,
+        drDate: drDate.trim() || null,
+        supplierDr: supplierRow?.name.trim() || null,
       });
       if (error) setActionErr(error);
       else {
@@ -721,23 +707,21 @@ export default function PharmacyStocksModal({ open, onClose }: Props) {
                   </Typography>
                   <TextField
                     variant="outlined"
-                    label="DR number"
+                    label="DR number (optional)"
                     value={drNumber}
                     onChange={(e) => setDrNumber(e.target.value)}
                     fullWidth
-                    required
                     InputLabelProps={{ shrink: true }}
                     helperText="Delivery Receipt document number from the supplier"
                     sx={STOCK_ADJ_OUTLINED_SX}
                   />
                   <TextField
                     variant="outlined"
-                    label="DR date"
+                    label="DR date (optional)"
                     type="date"
                     value={drDate}
                     onChange={(e) => setDrDate(e.target.value)}
                     fullWidth
-                    required
                     InputLabelProps={{ shrink: true }}
                     sx={STOCK_ADJ_OUTLINED_SX}
                   />
@@ -752,13 +736,13 @@ export default function PharmacyStocksModal({ open, onClose }: Props) {
                       <strong>Stock in</strong> to reload the list (or close and reopen this window).
                     </Alert>
                   )}
-                  <FormControl fullWidth required variant="outlined" sx={STOCK_ADJ_OUTLINED_SX}>
+                  <FormControl fullWidth variant="outlined" sx={STOCK_ADJ_OUTLINED_SX}>
                     <InputLabel id="stock-in-supplier-label" shrink>
-                      Supplier (on DR)
+                      Supplier (on DR, optional)
                     </InputLabel>
                     <Select
                       labelId="stock-in-supplier-label"
-                      label="Supplier (on DR)"
+                      label="Supplier (on DR, optional)"
                       notched
                       displayEmpty
                       value={stockInSupplierId === "" ? "" : String(stockInSupplierId)}

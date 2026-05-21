@@ -1564,20 +1564,19 @@ export async function applyPharmacyStockIn(args: {
   /** Optional; stored on stock lot (new lots) and pharmacy_stock_ins. */
   notes?: string | null;
   performedBy?: string | null;
-  drNumber: string;
-  drDate: string;
-  supplierDr: string;
+  drNumber?: string | null;
+  drDate?: string | null;
+  supplierDr?: string | null;
 }): Promise<{ stockId: string | null; error: string | null }> {
   const qty = Number(args.quantity);
   if (!Number.isFinite(qty) || qty <= 0) return { stockId: null, error: "Quantity must be positive." };
   const exp = args.expiryDate.trim().slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(exp)) return { stockId: null, error: "Expiry date is required (YYYY-MM-DD)." };
-  const drN = args.drNumber.trim();
-  const drD = args.drDate.trim().slice(0, 10);
-  const sup = args.supplierDr.trim();
-  if (!drN) return { stockId: null, error: "DR number is required." };
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(drD)) return { stockId: null, error: "DR date is required (YYYY-MM-DD)." };
-  if (!sup) return { stockId: null, error: "Supplier (on DR) is required." };
+  const drN = args.drNumber?.trim() || null;
+  const drDRaw = args.drDate?.trim().slice(0, 10) ?? "";
+  const drD = drDRaw && /^\d{4}-\d{2}-\d{2}$/.test(drDRaw) ? drDRaw : null;
+  if (args.drDate?.trim() && !drD) return { stockId: null, error: "DR date must be YYYY-MM-DD when provided." };
+  const sup = args.supplierDr?.trim() || null;
 
   const now = new Date().toISOString();
   const { data: existing, error: exErr } = await supabase

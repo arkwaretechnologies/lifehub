@@ -31,14 +31,21 @@ import {
   Paper,
   Chip,
   Snackbar,
+  IconButton,
+  Tooltip,
 } from "@mui/material";
+import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import { alpha } from "@mui/material/styles";
 import { useAuth } from "@/components/AuthProvider";
 import type { ProductPosRow } from "@/lib/pharmacyPosDb";
 import {
   applyPharmacyStockIn,
   applyPharmacyStockOut,
+  correctPharmacyStockLotQuantity,
+  deletePharmacyStockLot,
   fetchProductByBarcode,
+  updatePharmacyStockLotDetails,
   fetchStockLotsForProduct,
   formatProductOptionLabel,
   getClosestStockExpiryYmd,
@@ -161,6 +168,18 @@ export default function PharmacyStocksModal({ open, onClose }: Props) {
   const [notes, setNotes] = useState("");
   const [lotsPage, setLotsPage] = useState(0);
   const [lotsRowsPerPage, setLotsRowsPerPage] = useState(10);
+
+  const [editLot, setEditLot] = useState<StockLotRow | null>(null);
+  const [editExpiry, setEditExpiry] = useState("");
+  const [editBatch, setEditBatch] = useState("");
+  const [editQty, setEditQty] = useState("");
+  const [editNote, setEditNote] = useState("");
+  const [editBusy, setEditBusy] = useState(false);
+  const [editErr, setEditErr] = useState<string | null>(null);
+
+  const [deleteLot, setDeleteLot] = useState<StockLotRow | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteErr, setDeleteErr] = useState<string | null>(null);
 
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -375,6 +394,102 @@ export default function PharmacyStocksModal({ open, onClose }: Props) {
         }
       })();
     }
+  };
+
+  const openEditLot = (lot: StockLotRow) => {
+    setEditLot(lot);
+    setEditExpiry(lot.expiry_date?.trim().slice(0, 10) ?? "");
+    setEditBatch(lot.batch_no ?? "");
+    setEditQty(String(Number(lot.quantity)));
+    setEditNote("");
+    setEditErr(null);
+  };
+
+  const closeEditLot = () => {
+    setEditLot(null);
+    setEditErr(null);
+  };
+
+  const saveEditLot = async () => {
+    if (!selProduct || !editLot) return;
+    const note = editNote.trim();
+    if (!note) {
+      setEditErr("Reason / note is required for lot changes.");
+      return;
+    }
+    const targetQty = Number(editQty);
+    if (!Number.isFinite(targetQty) || targetQty < 0) {
+      setEditErr("Enter a valid quantity (0 or more).");
+      return;
+    }
+    const exp = editExpiry.trim().slice(0, 10);
+    if (editExpiry.trim() && !/^\d{4}-\d{2}-\d{2}$/.test(exp)) {
+      setEditErr("Expiry must be YYYY-MM-DD when provided.");
+      return;
+    }
+
+    setEditBusy(true);
+    setEditErr(null);
+
+    const prevExp = editLot.expiry_date?.trim().slice(0, 10) ?? "";
+    const prevBatch = editLot.batch_no ?? "";
+    const detailsChanged = exp !== prevExp || editBatch.trim() !== prevBatch.trim();
+
+    if (detailsChanged) {
+      const { error } = await updatePharmacyStockLotDetails({
+        stockId: editLot.id,
+        productId: selProduct.id,
+        expiryDate: exp || null,
+        batchNo: editBatch.trim() || null,
+      });
+      if (error) {
+        setEditErr(error);
+        setEditBusy(false);
+        return;
+      }
+    }
+
+    const currentQty = Number(editLot.quantity) || 0;
+    if (Math.abs(targetQty - currentQty) >= 1e-9) {
+      const { error } = await correctPharmacyStockLotQuantity({
+        stockId: editLot.id,
+        productId: selProduct.id,
+        newQuantity: targetQty,
+        notes: note,
+        performedBy,
+      });
+      if (error) {
+        setEditErr(error);
+        setEditBusy(false);
+        return;
+      }
+    } else if (!detailsChanged) {
+      setEditErr("Change expiry, batch, or quantity before saving.");
+      setEditBusy(false);
+      return;
+    }
+
+    closeEditLot();
+    await refreshLots(selProduct.id);
+    setEditBusy(false);
+  };
+
+  const confirmDeleteLot = async () => {
+    if (!selProduct || !deleteLot) return;
+    setDeleteBusy(true);
+    setDeleteErr(null);
+    const { error } = await deletePharmacyStockLot({
+      stockId: deleteLot.id,
+      productId: selProduct.id,
+    });
+    if (error) {
+      setDeleteErr(error);
+      setDeleteBusy(false);
+      return;
+    }
+    setDeleteLot(null);
+    await refreshLots(selProduct.id);
+    setDeleteBusy(false);
   };
 
   const submit = async () => {
@@ -604,12 +719,15 @@ export default function PharmacyStocksModal({ open, onClose }: Props) {
                         <TableCell>Lot / expiry</TableCell>
                         <TableCell>Batch</TableCell>
                         <TableCell align="right">Qty</TableCell>
+                        <TableCell align="right" width={96}>
+                          Actions
+                        </TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
                       {lots.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={3}>
+                          <TableCell colSpan={4}>
                             <Typography variant="body2" color="text.secondary">
                               No lots yet — use Stock in to receive with an expiry date.
                             </Typography>
@@ -621,6 +739,34 @@ export default function PharmacyStocksModal({ open, onClose }: Props) {
                             <TableCell>{l.expiry_date ?? "—"}</TableCell>
                             <TableCell>{l.batch_no ?? "—"}</TableCell>
                             <TableCell align="right">{Number(l.quantity).toFixed(0)}</TableCell>
+                            <TableCell align="right">
+                              <Tooltip title="Edit lot">
+                                <IconButton
+                                  size="small"
+                                  aria-label="Edit lot"
+                                  onClick={() => openEditLot(l)}
+                                  disabled={busy || editBusy || deleteBusy}
+                                >
+                                  <EditOutlinedIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
+                              <Tooltip title="Delete lot (zero qty, no sales history)">
+                                <span>
+                                  <IconButton
+                                    size="small"
+                                    aria-label="Delete lot"
+                                    color="error"
+                                    onClick={() => {
+                                      setDeleteLot(l);
+                                      setDeleteErr(null);
+                                    }}
+                                    disabled={busy || editBusy || deleteBusy}
+                                  >
+                                    <DeleteOutlineIcon fontSize="small" />
+                                  </IconButton>
+                                </span>
+                              </Tooltip>
+                            </TableCell>
                           </TableRow>
                         ))
                       )}
@@ -850,6 +996,108 @@ export default function PharmacyStocksModal({ open, onClose }: Props) {
         <Button onClick={onClose}>Close</Button>
         <Button variant="contained" disabled={!selProduct || busy} onClick={() => void submit()}>
           Save adjustment
+        </Button>
+      </DialogActions>
+    </Dialog>
+
+    <Dialog open={editLot != null} onClose={closeEditLot} maxWidth="sm" fullWidth>
+      <DialogTitle>Edit lot</DialogTitle>
+      <DialogContent>
+        <Stack spacing={2} sx={{ mt: 0.5 }}>
+          <TextField
+            variant="outlined"
+            label="Expiry date (optional)"
+            type="date"
+            value={editExpiry}
+            onChange={(e) => setEditExpiry(e.target.value)}
+            fullWidth
+            InputLabelProps={{ shrink: true }}
+            sx={STOCK_ADJ_OUTLINED_SX}
+          />
+          <TextField
+            variant="outlined"
+            label="Batch no. (optional)"
+            value={editBatch}
+            onChange={(e) => setEditBatch(e.target.value)}
+            fullWidth
+            InputLabelProps={{ shrink: true }}
+            sx={STOCK_ADJ_OUTLINED_SX}
+          />
+          <TextField
+            variant="outlined"
+            label="Quantity on hand"
+            value={editQty}
+            onChange={(e) => setEditQty(e.target.value.replace(/[^\d.]/g, ""))}
+            fullWidth
+            required
+            InputLabelProps={{ shrink: true }}
+            helperText="Changes are recorded as stock in or stock out (audit trail)."
+            sx={STOCK_ADJ_OUTLINED_SX}
+          />
+          <TextField
+            variant="outlined"
+            label="Reason / note"
+            value={editNote}
+            onChange={(e) => setEditNote(e.target.value)}
+            fullWidth
+            required
+            multiline
+            minRows={2}
+            InputLabelProps={{ shrink: true }}
+            sx={STOCK_NOTES_FIELD_SX}
+          />
+          {editErr && (
+            <Alert severity="error" onClose={() => setEditErr(null)}>
+              {editErr}
+            </Alert>
+          )}
+        </Stack>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, pb: 2 }}>
+        <Button onClick={closeEditLot} disabled={editBusy}>
+          Cancel
+        </Button>
+        <Button variant="contained" disabled={editBusy} onClick={() => void saveEditLot()}>
+          {editBusy ? "Saving…" : "Save lot"}
+        </Button>
+      </DialogActions>
+    </Dialog>
+
+    <Dialog
+      open={deleteLot != null}
+      onClose={() => !deleteBusy && setDeleteLot(null)}
+      maxWidth="xs"
+      fullWidth
+    >
+      <DialogTitle>Delete lot?</DialogTitle>
+      <DialogContent>
+        <Stack spacing={1.5}>
+          <Typography variant="body2">
+            {deleteLot && (
+              <>
+                Expiry <strong>{deleteLot.expiry_date ?? "—"}</strong>, batch{" "}
+                <strong>{deleteLot.batch_no ?? "—"}</strong>, qty{" "}
+                <strong>{Number(deleteLot.quantity).toFixed(0)}</strong>.
+              </>
+            )}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Only lots with <strong>zero</strong> quantity and no POS sale history can be removed. Otherwise use Edit or
+            Stock out to correct quantity.
+          </Typography>
+          {deleteErr && (
+            <Alert severity="error" onClose={() => setDeleteErr(null)}>
+              {deleteErr}
+            </Alert>
+          )}
+        </Stack>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, pb: 2 }}>
+        <Button onClick={() => setDeleteLot(null)} disabled={deleteBusy}>
+          Cancel
+        </Button>
+        <Button variant="contained" color="error" disabled={deleteBusy} onClick={() => void confirmDeleteLot()}>
+          {deleteBusy ? "Deleting…" : "Delete"}
         </Button>
       </DialogActions>
     </Dialog>

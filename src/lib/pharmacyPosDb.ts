@@ -1620,13 +1620,14 @@ export async function applyPharmacyStockIn(args: {
     stockId = (ins as { id: string }).id;
   }
 
+  // DB columns may still be NOT NULL; use "" for omitted text DR fields. dr_date stays null when omitted (run migration).
   const { error: inErr } = await supabase.from(PHARMACY_STOCK_INS_TABLE).insert({
     product_id: args.productId.trim(),
     stock_id: stockId,
     quantity: qty,
-    dr_number: drN,
+    dr_number: drN ?? "",
     dr_date: drD,
-    supplier_dr: sup,
+    supplier_dr: sup ?? "",
     notes: args.notes?.trim() || null,
     performed_by: args.performedBy ?? null,
   });
@@ -1681,6 +1682,174 @@ export async function applyPharmacyStockOut(args: {
   if (outErr) return { error: outErr.message };
 
   return { error: null };
+}
+
+const LOT_CORRECTION_NOTE_PREFIX = "Lot correction";
+
+/** Update expiry / batch on an existing lot (not quantity). */
+export async function updatePharmacyStockLotDetails(args: {
+  stockId: string;
+  productId: string;
+  expiryDate: string | null;
+  batchNo: string | null;
+}): Promise<{ error: string | null }> {
+  const expRaw = args.expiryDate?.trim().slice(0, 10) ?? "";
+  const exp = expRaw ? expRaw : null;
+  if (exp && !/^\d{4}-\d{2}-\d{2}$/.test(exp)) {
+    return { error: "Expiry must be YYYY-MM-DD when provided." };
+  }
+
+  let conflictQ = supabase
+    .from(STOCK_TABLE)
+    .select("id")
+    .eq("product_id", args.productId.trim())
+    .neq("id", args.stockId);
+  conflictQ = exp === null ? conflictQ.is("expiry_date", null) : conflictQ.eq("expiry_date", exp);
+  const { data: conflict, error: cErr } = await conflictQ.maybeSingle();
+  if (cErr) return { error: cErr.message };
+  if (conflict) {
+    return { error: "Another lot already uses this expiry date for this product." };
+  }
+
+  const now = new Date().toISOString();
+  const { error } = await supabase
+    .from(STOCK_TABLE)
+    .update({
+      expiry_date: exp,
+      batch_no: args.batchNo?.trim() || null,
+      updated_at: now,
+    })
+    .eq("id", args.stockId)
+    .eq("product_id", args.productId.trim());
+  return { error: error?.message ?? null };
+}
+
+/** Set lot quantity via stock-in / stock-out audit rows (or direct update when lot has no expiry). */
+export async function correctPharmacyStockLotQuantity(args: {
+  stockId: string;
+  productId: string;
+  newQuantity: number;
+  notes: string;
+  performedBy?: string | null;
+}): Promise<{ error: string | null }> {
+  const target = Number(args.newQuantity);
+  if (!Number.isFinite(target) || target < 0) return { error: "Quantity must be zero or positive." };
+
+  const { data: row, error: fErr } = await supabase
+    .from(STOCK_TABLE)
+    .select("id, product_id, quantity, expiry_date, batch_no")
+    .eq("id", args.stockId)
+    .eq("product_id", args.productId.trim())
+    .maybeSingle();
+  if (fErr) return { error: fErr.message };
+  if (!row) return { error: "Stock lot not found." };
+
+  const lot = row as StockLotRow;
+  const current = Number(lot.quantity) || 0;
+  const delta = target - current;
+  if (Math.abs(delta) < 1e-9) return { error: null };
+
+  const note = `${LOT_CORRECTION_NOTE_PREFIX}: ${args.notes.trim()}`;
+  const exp = lot.expiry_date?.trim().slice(0, 10) ?? null;
+
+  if (delta > 0) {
+    if (exp) {
+      const { error } = await applyPharmacyStockIn({
+        productId: args.productId,
+        quantity: delta,
+        expiryDate: exp,
+        batchNo: lot.batch_no,
+        notes: note,
+        performedBy: args.performedBy,
+        drNumber: null,
+        drDate: null,
+        supplierDr: null,
+      });
+      return { error };
+    }
+    const now = new Date().toISOString();
+    const { error: upErr } = await supabase
+      .from(STOCK_TABLE)
+      .update({ quantity: target, updated_at: now })
+      .eq("id", args.stockId);
+    if (upErr) return { error: upErr.message };
+    const { error: inErr } = await supabase.from(PHARMACY_STOCK_INS_TABLE).insert({
+      product_id: args.productId.trim(),
+      stock_id: args.stockId,
+      quantity: delta,
+      dr_number: "",
+      dr_date: null,
+      supplier_dr: "",
+      notes: note,
+      performed_by: args.performedBy ?? null,
+    });
+    return { error: inErr?.message ?? null };
+  }
+
+  const outQty = -delta;
+  if (exp) {
+    const { error } = await applyPharmacyStockOut({
+      stockId: args.stockId,
+      productId: args.productId,
+      quantity: outQty,
+      movementType: "STOCK_OUT",
+      notes: note,
+      performedBy: args.performedBy,
+    });
+    return { error };
+  }
+  const now = new Date().toISOString();
+  const { error: upErr } = await supabase
+    .from(STOCK_TABLE)
+    .update({ quantity: target, updated_at: now })
+    .eq("id", args.stockId);
+  if (upErr) return { error: upErr.message };
+  const { error: outErr } = await supabase.from(PHARMACY_STOCK_OUTS_TABLE).insert({
+    product_id: args.productId.trim(),
+    stock_id: args.stockId,
+    quantity: outQty,
+    reason_type: "STOCK_OUT",
+    notes: note,
+    performed_by: args.performedBy ?? null,
+  });
+  return { error: outErr?.message ?? null };
+}
+
+/** Remove a zero-quantity lot with no POS movement history. */
+export async function deletePharmacyStockLot(args: {
+  stockId: string;
+  productId: string;
+}): Promise<{ error: string | null }> {
+  const { data: row, error: fErr } = await supabase
+    .from(STOCK_TABLE)
+    .select("id, quantity")
+    .eq("id", args.stockId)
+    .eq("product_id", args.productId.trim())
+    .maybeSingle();
+  if (fErr) return { error: fErr.message };
+  if (!row) return { error: "Stock lot not found." };
+  const onHand = Number((row as { quantity: number }).quantity) || 0;
+  if (onHand > 1e-9) {
+    return { error: `Cannot delete: lot still has ${onHand} on hand. Set quantity to 0 first.` };
+  }
+
+  const { count, error: mErr } = await supabase
+    .from(STOCK_MOVEMENTS_TABLE)
+    .select("id", { count: "exact", head: true })
+    .eq("stock_id", args.stockId);
+  if (mErr) return { error: mErr.message };
+  if (count && count > 0) {
+    return {
+      error: "Cannot delete: this lot was used in sales. Leave it at zero quantity instead.",
+    };
+  }
+
+  const { error } = await supabase
+    .from(STOCK_TABLE)
+    .delete()
+    .eq("id", args.stockId)
+    .eq("product_id", args.productId.trim());
+  return { error: error?.message ?? null };
 }
 
 export async function insertProductForPos(row: ProductAdminWriteRow): Promise<{

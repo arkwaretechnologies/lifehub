@@ -1999,6 +1999,132 @@ export async function updateProductForAdmin(
   return { error: error?.message ?? null };
 }
 
+export type ProductRemoveOutcome = "deleted" | "deactivated";
+
+type ProductReferenceCounts = {
+  saleItems: number;
+  prescriptionItems: number;
+  stockMovements: number;
+};
+
+async function countProductReferences(
+  productId: string,
+  db: SupabaseClient = supabase,
+): Promise<{ counts: ProductReferenceCounts; error: string | null }> {
+  const [saleRes, rxRes, movRes] = await Promise.all([
+    db
+      .from(PHARMACY_SALE_ITEMS_TABLE)
+      .select("id", { count: "exact", head: true })
+      .eq("product_id", productId),
+    db
+      .from(PHARMACY_PRESCRIPTION_ITEMS_TABLE)
+      .select("id", { count: "exact", head: true })
+      .eq("product_id", productId),
+    db
+      .from(STOCK_MOVEMENTS_TABLE)
+      .select("id", { count: "exact", head: true })
+      .eq("product_id", productId),
+  ]);
+
+  if (saleRes.error) return { counts: { saleItems: 0, prescriptionItems: 0, stockMovements: 0 }, error: saleRes.error.message };
+  if (rxRes.error) return { counts: { saleItems: 0, prescriptionItems: 0, stockMovements: 0 }, error: rxRes.error.message };
+  if (movRes.error) return { counts: { saleItems: 0, prescriptionItems: 0, stockMovements: 0 }, error: movRes.error.message };
+
+  return {
+    counts: {
+      saleItems: saleRes.count ?? 0,
+      prescriptionItems: rxRes.count ?? 0,
+      stockMovements: movRes.count ?? 0,
+    },
+    error: null,
+  };
+}
+
+function productMustDeactivate(counts: ProductReferenceCounts, stockOnHand: number): boolean {
+  return (
+    counts.saleItems > 0 ||
+    counts.prescriptionItems > 0 ||
+    counts.stockMovements > 0 ||
+    stockOnHand > 1e-9
+  );
+}
+
+async function deactivateProductForAdmin(
+  productId: string,
+  db: SupabaseClient = supabase,
+): Promise<{ error: string | null }> {
+  const { error } = await db
+    .from(PRODUCTS_TABLE)
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .eq("id", productId);
+  return { error: error?.message ?? null };
+}
+
+/** Remove zero-qty stock lots with no movement history before hard-deleting a product. */
+async function deleteOrphanZeroStockLotsForProduct(productId: string): Promise<{ error: string | null }> {
+  const { data: lots, error } = await supabase
+    .from(STOCK_TABLE)
+    .select("id, quantity")
+    .eq("product_id", productId);
+  if (error) return { error: error.message };
+
+  for (const raw of lots ?? []) {
+    const lot = raw as { id: string; quantity: number };
+    const onHand = Number(lot.quantity) || 0;
+    if (onHand > 1e-9) continue;
+    const { error: delErr } = await deletePharmacyStockLot({ stockId: lot.id, productId });
+    if (delErr?.includes("used in sales")) continue;
+    if (delErr) return { error: delErr };
+  }
+  return { error: null };
+}
+
+/**
+ * Removes a duplicate product when safe (hard delete), or sets inactive when sales/stock/history exist.
+ * Past sale reports keep line-item FKs and product names intact when deactivated.
+ */
+export async function removeProductForAdmin(
+  productId: string,
+  db: SupabaseClient = supabase,
+): Promise<{ outcome: ProductRemoveOutcome | null; error: string | null }> {
+  const trimmed = productId.trim();
+  if (!trimmed) return { outcome: null, error: "Product id is required." };
+
+  const { product, error: loadErr } = await fetchProductForAdmin(trimmed);
+  if (loadErr) return { outcome: null, error: loadErr };
+  if (!product) return { outcome: null, error: "Product not found." };
+
+  const { counts, error: countErr } = await countProductReferences(trimmed, db);
+  if (countErr) return { outcome: null, error: countErr };
+
+  const { qty: stockOnHand, error: stockErr } = await getProductStockOnHand(trimmed, db);
+  if (stockErr) return { outcome: null, error: stockErr };
+
+  if (productMustDeactivate(counts, stockOnHand)) {
+    const { error } = await deactivateProductForAdmin(trimmed, db);
+    if (error) return { outcome: null, error };
+    return { outcome: "deactivated", error: null };
+  }
+
+  const lotCleanup = await deleteOrphanZeroStockLotsForProduct(trimmed);
+  if (lotCleanup.error) return { outcome: null, error: lotCleanup.error };
+
+  const { error: delErr } = await db.from(PRODUCTS_TABLE).delete().eq("id", trimmed);
+  if (!delErr) return { outcome: "deleted", error: null };
+
+  const { error: deactivateErr } = await deactivateProductForAdmin(trimmed, db);
+  if (deactivateErr) {
+    return {
+      outcome: null,
+      error: `${delErr.message} Could not deactivate as fallback.`,
+    };
+  }
+  return {
+    outcome: "deactivated",
+    error: `Product could not be permanently removed (${delErr.message}). It was deactivated instead.`,
+  };
+}
+
 export type SupplierRow = {
   id: number;
   name: string;

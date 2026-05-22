@@ -48,6 +48,7 @@ import {
   searchProductsForAdmin,
   updatePharmacyCategory,
   updateProductForAdmin,
+  removeProductForAdmin,
   type PharmacyCategoryRow,
   type ProductAdminRow,
   type SupplierRow,
@@ -192,6 +193,9 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
   const [productPage, setProductPage] = useState(0);
   const [productRowsPerPage, setProductRowsPerPage] = useState(10);
   const [showInactiveProducts, setShowInactiveProducts] = useState(false);
+  const [productListMsg, setProductListMsg] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ProductAdminRow | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   const categoryNameById = useMemo(() => {
     const m = new Map<number, string>();
@@ -322,6 +326,47 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
     [applyProductToForm],
   );
 
+  const requestDeleteProduct = useCallback((p: ProductAdminRow) => {
+    setDeleteTarget(p);
+  }, []);
+
+  const confirmRemoveProduct = useCallback(async () => {
+    if (!deleteTarget) return;
+    setDeleteBusy(true);
+    setProductListMsg(null);
+    const { outcome, error } = await removeProductForAdmin(deleteTarget.id);
+    setDeleteBusy(false);
+    const target = deleteTarget;
+    setDeleteTarget(null);
+
+    if (!outcome) {
+      setProductLoadErr(error ?? "Could not remove product.");
+      return;
+    }
+
+    setProductLoadErr(null);
+    if (editingProductId === target.id) {
+      resetProductForm();
+      setTab(0);
+    }
+
+    if (outcome === "deleted") {
+      setProductListMsg(
+        error
+          ? `Product removed. ${error}`
+          : "Product permanently removed.",
+      );
+    } else {
+      setProductListMsg(
+        error ??
+          "Product deactivated and hidden from POS. Past sales and reports are unchanged.",
+      );
+    }
+
+    void loadProducts();
+    void loadCategories();
+  }, [deleteTarget, editingProductId, resetProductForm, loadProducts, loadCategories]);
+
   useEffect(() => {
     if (!open) return;
     void loadCategories();
@@ -430,6 +475,9 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
       setProductPage(0);
       setProductRowsPerPage(10);
       setShowInactiveProducts(false);
+      setProductListMsg(null);
+      setDeleteTarget(null);
+      setDeleteBusy(false);
     }
   }, [open]);
 
@@ -618,6 +666,18 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
                 Could not load products: {productLoadErr}
               </Alert>
             )}
+            {productListMsg && (
+              <Alert
+                severity={
+                  productListMsg.includes("deactivated") || productListMsg.includes("removed")
+                    ? "success"
+                    : "info"
+                }
+                onClose={() => setProductListMsg(null)}
+              >
+                {productListMsg}
+              </Alert>
+            )}
             <TableContainer component={Paper} variant="outlined">
               <Table size="small">
                 <TableHead>
@@ -656,13 +716,23 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
                           />
                         </TableCell>
                         <TableCell align="right">
-                          <IconButton
-                            size="small"
-                            onClick={() => startEditProduct(p)}
-                            title="Edit product"
-                          >
-                            <EditOutlinedIcon fontSize="small" />
-                          </IconButton>
+                          <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+                            <IconButton
+                              size="small"
+                              onClick={() => startEditProduct(p)}
+                              title="Edit product"
+                            >
+                              <EditOutlinedIcon fontSize="small" />
+                            </IconButton>
+                            <IconButton
+                              size="small"
+                              color="error"
+                              onClick={() => requestDeleteProduct(p)}
+                              title="Delete product"
+                            >
+                              <DeleteOutlineIcon fontSize="small" />
+                            </IconButton>
+                          </Stack>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -724,9 +794,48 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
                 <Alert severity="info" sx={{ flex: 1 }}>
                   Editing: {prodGeneric.trim() || "product"}
                 </Alert>
-                <Button variant="outlined" size="small" onClick={resetProductForm} sx={{ flexShrink: 0 }}>
-                  New product
-                </Button>
+                <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
+                  <Button
+                    variant="outlined"
+                    color="error"
+                    size="small"
+                    onClick={() => {
+                      if (!editingProductId) return;
+                      const row =
+                        productRows.find((r) => r.id === editingProductId) ??
+                        productSearchResults?.find((r) => r.id === editingProductId);
+                      if (row) {
+                        requestDeleteProduct(row);
+                        return;
+                      }
+                      requestDeleteProduct({
+                        id: editingProductId,
+                        category_id: prodCategoryId === "" ? 0 : prodCategoryId,
+                        generic_name: prodGeneric.trim() || "product",
+                        brand_name: prodBrand.trim() || null,
+                        strength: prodStrength.trim() || null,
+                        dosage_form: prodDosageForm.trim() || null,
+                        description: null,
+                        unit_of_measure: prodUom,
+                        unit_price: 0,
+                        unit_cost: 0,
+                        barcode: null,
+                        supplier_id: null,
+                        requires_prescription: false,
+                        reorder_level: null,
+                        reorder_quantity: null,
+                        vat_exempt: false,
+                        vat_rate: 12,
+                        is_active: prodIsActive,
+                      });
+                    }}
+                  >
+                    Delete product
+                  </Button>
+                  <Button variant="outlined" size="small" onClick={resetProductForm}>
+                    New product
+                  </Button>
+                </Stack>
               </Stack>
             )}
             <Typography variant="body2" color="text.secondary">
@@ -1159,6 +1268,38 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
       <DialogActions sx={{ px: 3, pb: 2 }}>
         <Button onClick={onClose}>Close</Button>
       </DialogActions>
+
+      <Dialog
+        open={deleteTarget != null}
+        onClose={() => !deleteBusy && setDeleteTarget(null)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Delete product?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mt: 0.5 }}>
+            {deleteTarget ? formatProductOptionLabel(deleteTarget) : ""}
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
+            Duplicates with no sales, stock, or inventory history are removed permanently. Products
+            that were sold or have stock are deactivated instead so past sales reports and receipts
+            stay correct.
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setDeleteTarget(null)} disabled={deleteBusy}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="error"
+            disabled={deleteBusy}
+            onClick={() => void confirmRemoveProduct()}
+          >
+            {deleteBusy ? "Removing…" : "Delete"}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Dialog>
   );
 }

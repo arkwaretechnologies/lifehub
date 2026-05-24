@@ -36,6 +36,8 @@ import CloseOutlinedIcon from "@mui/icons-material/CloseOutlined";
 import VisibilityOffOutlinedIcon from "@mui/icons-material/VisibilityOffOutlined";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import UploadFileOutlinedIcon from "@mui/icons-material/UploadFileOutlined";
+import PharmacyProductImportDialog from "@/components/pharmacy/PharmacyProductImportDialog";
 import {
   deletePharmacyCategoryIfNoProducts,
   fetchProductCountsByPharmacyCategory,
@@ -627,9 +629,25 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
 
         {tab === 0 && (
           <Stack spacing={2} sx={{ mt: 1 }}>
-            <Typography variant="body2" color="text.secondary">
-              Search by item name, brand, or barcode. Use Edit to change details on the Item setup tab.
-            </Typography>
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              spacing={1}
+              alignItems={{ sm: "center" }}
+              justifyContent="space-between"
+            >
+              <Typography variant="body2" color="text.secondary" sx={{ flex: 1 }}>
+                Search by item name, brand, or barcode. Use Edit to change details on the Item setup tab.
+              </Typography>
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={<UploadFileOutlinedIcon />}
+                onClick={() => setImportDialogOpen(true)}
+                sx={{ flexShrink: 0 }}
+              >
+                Import from Excel
+              </Button>
+            </Stack>
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }}>
               <TextField
                 variant="outlined"

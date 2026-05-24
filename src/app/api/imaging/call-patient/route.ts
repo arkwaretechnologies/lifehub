@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isLabReadyForImaging, parsePartialLabReleaseFromNotes } from "@/lib/labPartialCollection";
 import { computeLabRequestQueueCollectionState } from "@/lib/labQueueTicketSync";
 import { computeImagingRequestQueueState } from "@/lib/imagingQueueSync";
 import {
@@ -70,19 +71,37 @@ export async function POST(req: Request) {
     }
   }
 
+  const labId = String(ticket.lab_request_id ?? "").trim();
+  const includesLab = ticket.includes_lab === true || Boolean(labId);
+  let labAllCollected = true;
+  if (includesLab && labId) {
+    const labState = await computeLabRequestQueueCollectionState(admin, labId);
+    if (labState.error) return NextResponse.json({ error: labState.error }, { status: 500 });
+    labAllCollected = labState.allCollected;
+  }
+  const labReady = isLabReadyForImaging({
+    includesLab,
+    labAllCollected,
+    labPartialReleased: parsePartialLabReleaseFromNotes(ticket.notes),
+  });
+
+  if (ticket.status === "Waiting" && includesLab && !labReady) {
+    return NextResponse.json(
+      {
+        error:
+          "Laboratory collection is still pending. Mark specimens collected or use Partially collected on the lab request.",
+      },
+      { status: 409 },
+    );
+  }
+
   if (ticket.status !== "Waiting" && ticket.status !== "Called") {
     if (ticket.status === "Collected") {
-      const labId = String(ticket.lab_request_id ?? "").trim();
-      const includesLab = ticket.includes_lab === true || Boolean(labId);
-      if (includesLab && labId) {
-        const labState = await computeLabRequestQueueCollectionState(admin, labId);
-        if (labState.error) return NextResponse.json({ error: labState.error }, { status: 500 });
-        if (!labState.allCollected) {
-          return NextResponse.json(
-            { error: "Patient is not ready for imaging." },
-            { status: 409 },
-          );
-        }
+      if (includesLab && !labReady) {
+        return NextResponse.json(
+          { error: "Patient is not ready for imaging." },
+          { status: 409 },
+        );
       }
     } else {
       return NextResponse.json(

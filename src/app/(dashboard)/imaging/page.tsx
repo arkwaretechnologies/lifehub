@@ -155,8 +155,20 @@ export default function ImagingAppointmentsPage() {
                       <TableCell>
                         {t.includes_lab ? (
                           <Chip
-                            label={t.lab_all_collected ? "Collected" : "Pending"}
-                            color={t.lab_all_collected ? "success" : "default"}
+                            label={
+                              t.lab_all_collected
+                                ? "Collected"
+                                : t.lab_partial_released
+                                  ? "Partial"
+                                  : "Pending"
+                            }
+                            color={
+                              t.lab_all_collected
+                                ? "success"
+                                : t.lab_partial_released
+                                  ? "warning"
+                                  : "default"
+                            }
                             size="small"
                             variant="outlined"
                           />

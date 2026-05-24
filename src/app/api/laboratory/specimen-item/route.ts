@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { applyPartialLabReleaseToNotes } from "@/lib/labPartialCollection";
 import { computeImagingRequestQueueState } from "@/lib/imagingQueueSync";
 import { computeLabRequestQueueCollectionState } from "@/lib/labQueueTicketSync";
 import {
@@ -92,7 +93,10 @@ async function syncQueueAfterSpecimenChange(
       source: "lab_collect",
     });
 
-    const notesWithSpecimen = setTicketSummary(t.notes, allCollected);
+    let notesWithSpecimen = setTicketSummary(t.notes, allCollected);
+    if (allCollected) {
+      notesWithSpecimen = applyPartialLabReleaseToNotes(notesWithSpecimen, false);
+    }
     const nextNotes = applyActiveDeptToNotes(notesWithSpecimen, next.active);
 
     const { error: tUpdErr } = await admin

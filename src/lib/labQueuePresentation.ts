@@ -6,6 +6,7 @@ export type LabQueueDisplayInput = {
   includes_lab?: boolean | null;
   includes_imaging?: boolean | null;
   lab_all_collected?: boolean;
+  lab_partial_released?: boolean;
   specimen_collected?: boolean;
   imaging_all_captured?: boolean;
   active_dept?: QueueActiveDept;
@@ -24,6 +25,7 @@ export function getLabQueueDisplayStatus(row: LabQueueDisplayInput): string {
 
   if (status === "Waiting") {
     if (includesImaging && row.imaging_all_captured) return "Waiting · imaging captured";
+    if (row.lab_partial_released && !row.lab_all_collected) return "Waiting · partial collection";
     if (row.specimen_collected) return "Waiting · specimen collected";
     return "Waiting";
   }

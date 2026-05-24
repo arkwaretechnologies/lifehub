@@ -9,6 +9,7 @@ import { computeImagingRequestQueueState } from "@/lib/imagingQueueSync";
 import { computeLabRequestQueueCollectionState } from "@/lib/labQueueTicketSync";
 import { canLabCallPatient } from "@/lib/labQueueUi";
 import { getLabQueueDisplayStatus, labQueueDisplayChipColor } from "@/lib/labQueuePresentation";
+import { parsePartialLabReleaseFromNotes } from "@/lib/labPartialCollection";
 import { parseActiveDeptFromNotes, type QueueActiveDept } from "@/lib/queueActiveDept";
 import { adminFilterLabQueueTicketsForLabDisplay, queueAdminClient } from "@/lib/receptionQueueServer";
 import type { QueueTicketStatus } from "@/lib/queueReception";
@@ -41,6 +42,7 @@ export type LabQueueRow = {
   request_date?: string | null;
   request_time?: string | null;
   lab_all_collected?: boolean;
+  lab_partial_released?: boolean;
   imaging_all_captured?: boolean;
   active_dept?: QueueActiveDept;
   can_lab_call?: boolean;
@@ -375,6 +377,7 @@ export async function GET(req: Request) {
         labAllCollected = !st.error && st.allCollected;
       }
       const specimenCollected = /^\[Specimen\]\s+collected_at=.+/m.test(r.notes ?? "");
+      const labPartialReleased = parsePartialLabReleaseFromNotes(r.notes);
       const imgId = String(r.imaging_request_id ?? "").trim();
       const includesImaging = r.includes_imaging === true || Boolean(imgId);
       const imagingAllCaptured = !includesImaging || !imgId ? true : (captureByImgId.get(imgId) ?? false);
@@ -384,6 +387,7 @@ export async function GET(req: Request) {
         includes_lab: r.includes_lab,
         includes_imaging: r.includes_imaging,
         lab_all_collected: labAllCollected,
+        lab_partial_released: labPartialReleased,
         specimen_collected: specimenCollected,
         imaging_all_captured: imagingAllCaptured,
         active_dept: activeDept,
@@ -398,6 +402,7 @@ export async function GET(req: Request) {
       return {
         ...r,
         lab_all_collected: labAllCollected,
+        lab_partial_released: labPartialReleased,
         imaging_all_captured: imagingAllCaptured,
         active_dept: activeDept,
         can_lab_call,

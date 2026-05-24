@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { parsePartialLabReleaseFromNotes } from "@/lib/labPartialCollection";
 import type { QueueTicketStatus } from "@/lib/queueReception";
 import { computeLabRequestQueueCollectionState } from "@/lib/labQueueTicketSync";
 import {
@@ -175,6 +176,7 @@ export async function syncImagingQueueTicketsForRequest(
 export type ImagingQueueLabGate = {
   includesLab: boolean;
   labAllCollected: boolean;
+  labPartialReleased: boolean;
 };
 
 /** Whether lab specimen collection is finished for a shared diagnostic ticket. */
@@ -207,12 +209,18 @@ export function labCollectionGateForRow<
   T extends {
     lab_request_id?: string | null;
     includes_lab?: boolean | null;
+    notes?: string | null;
   },
 >(row: T, byLabRequestId: ReadonlyMap<string, boolean>): ImagingQueueLabGate {
   const includesLab = row.includes_lab === true || Boolean(String(row.lab_request_id ?? "").trim());
+  const labPartialReleased = parsePartialLabReleaseFromNotes(row.notes);
   if (!includesLab) {
-    return { includesLab: false, labAllCollected: true };
+    return { includesLab: false, labAllCollected: true, labPartialReleased: false };
   }
   const labId = String(row.lab_request_id ?? "").trim();
-  return { includesLab: true, labAllCollected: labId ? (byLabRequestId.get(labId) ?? false) : false };
+  return {
+    includesLab: true,
+    labAllCollected: labId ? (byLabRequestId.get(labId) ?? false) : false,
+    labPartialReleased,
+  };
 }

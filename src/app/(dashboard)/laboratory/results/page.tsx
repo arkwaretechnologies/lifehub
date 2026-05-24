@@ -131,6 +131,7 @@ export default function LabResultsPage() {
   const [reqHeader, setReqHeader] = useState<LabRequestHeaderView | null>(null);
   const [itemSavingId, setItemSavingId] = useState<string | null>(null);
   const [categoryCollectingId, setCategoryCollectingId] = useState<string | null>(null);
+  const [partialReleaseBusy, setPartialReleaseBusy] = useState(false);
   const [priorResultsLoading, setPriorResultsLoading] = useState(false);
   const [priorResults, setPriorResults] = useState<PatientPriorLabResultEntry[]>([]);
   const [priorMenu, setPriorMenu] = useState<{ anchorEl: HTMLElement; itemId: string } | null>(null);
@@ -286,6 +287,27 @@ export default function LabResultsPage() {
     return sorted.find(match) ?? queueSearchRows.find(match) ?? null;
   }, [selectedRequestId, sorted, queueSearchRows]);
 
+  const requestCollectSummary = useMemo(() => {
+    let collectedCount = 0;
+    for (const it of reqItems) {
+      if ((it.collected_item ?? "").trim().toUpperCase() === "Y") collectedCount += 1;
+    }
+    return {
+      anyCollected: collectedCount > 0,
+      allCollected: reqItems.length > 0 && collectedCount === reqItems.length,
+    };
+  }, [reqItems]);
+
+  const canPartialRelease = useMemo(() => {
+    if (!selectedTicket || !selectedRequestId) return false;
+    const hasImaging =
+      selectedTicket.includes_imaging === true || Boolean(String(selectedTicket.imaging_request_id ?? "").trim());
+    if (!hasImaging) return false;
+    if (selectedTicket.lab_partial_released) return false;
+    if (!requestCollectSummary.anyCollected || requestCollectSummary.allCollected) return false;
+    return selectedTicket.status === "Called" && selectedTicket.active_dept === "LAB";
+  }, [selectedTicket, selectedRequestId, requestCollectSummary]);
+
   const priorResultsByTestId = useMemo(() => {
     const m = new Map<string, PatientPriorLabResultEntry[]>();
     for (const entry of priorResults) {
@@ -398,6 +420,32 @@ export default function LabResultsPage() {
   };
 
   const resultSections = useMemo(() => groupItemsByCategory(reqItems), [reqItems]);
+
+  const releasePartialCollection = async () => {
+    if (!selectedTicket?.id) return;
+    setReqError("");
+    setPartialReleaseBusy(true);
+    try {
+      const res = await authenticatedFetch("/api/laboratory/partial-collection-release", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticketId: selectedTicket.id }),
+      });
+      const json = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        setReqError(json.error ?? `Request failed (${res.status})`);
+        return;
+      }
+      await loadQueue();
+      setToastSeverity("success");
+      setToastMessage("Patient released for imaging. Urine/fecalysis can be collected later.");
+      setToastOpen(true);
+    } catch {
+      setReqError("Failed to release patient for imaging.");
+    } finally {
+      setPartialReleaseBusy(false);
+    }
+  };
 
   const saveCategoryCollected = async (section: LabResultCategorySection, collected: boolean) => {
     const ids = section.items.map((it) => it.id.trim()).filter(Boolean);
@@ -877,12 +925,40 @@ export default function LabResultsPage() {
                 Print Laboratory Results
               </Button>
             </Box>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
               Select a ticket on the left to view requested tests. Mark each category as collected to enable result entry for its tests.
               {reqHeader?.patient_id != null && priorResults.length > 0
                 ? " Use “Previous result” on each line to copy a value from this patient’s earlier lab orders."
                 : null}
             </Typography>
+            {selectedTicket &&
+            (selectedTicket.includes_imaging || selectedTicket.imaging_request_id) ? (
+              <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 2 }}>
+                <Tooltip title="Release patient for imaging while urine/fecalysis (or other pending categories) are still outstanding. Ticket returns to Waiting so imaging can call the patient.">
+                  <span>
+                    <Button
+                      variant="outlined"
+                      color="secondary"
+                      size="small"
+                      disabled={!canPartialRelease || partialReleaseBusy}
+                      onClick={() => void releasePartialCollection()}
+                      sx={{ textTransform: "none", fontWeight: 700 }}
+                    >
+                      {partialReleaseBusy ? (
+                        <CircularProgress size={18} />
+                      ) : (
+                        "Partially collected"
+                      )}
+                    </Button>
+                  </span>
+                </Tooltip>
+              </Box>
+            ) : null}
+            {selectedTicket?.lab_partial_released && !selectedTicket.lab_all_collected ? (
+              <Alert severity="info" sx={{ mb: 2 }}>
+                Partial collection released for imaging. Mark remaining categories as collected when the patient provides urine/fecalysis samples.
+              </Alert>
+            ) : null}
             {priorResultsLoading ? (
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
                 Loading previous results…

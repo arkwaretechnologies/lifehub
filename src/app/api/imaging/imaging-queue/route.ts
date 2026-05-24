@@ -35,6 +35,7 @@ export type ImagingQueueRow = {
   request_date?: string | null;
   request_time?: string | null;
   lab_all_collected?: boolean;
+  lab_partial_released?: boolean;
   imaging_display_status?: string;
   imaging_all_captured?: boolean;
   active_dept?: QueueActiveDept;
@@ -135,6 +136,7 @@ export async function GET(req: Request) {
     return {
       ...r,
       lab_all_collected: gate.labAllCollected,
+      lab_partial_released: gate.labPartialReleased,
       imaging_all_captured: progress.allCaptured,
       active_dept: activeDept,
       imaging_display_status: pres.displayStatus,

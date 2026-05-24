@@ -1,4 +1,5 @@
 import type { QueueTicketStatus } from "@/lib/queueReception";
+import { isLabReadyForImaging } from "@/lib/labPartialCollection";
 import type { ImagingQueueLabGate } from "@/lib/imagingQueueSync";
 import type { QueueActiveDept } from "@/lib/queueActiveDept";
 
@@ -79,13 +80,21 @@ export function getImagingQueuePresentation(
   }
 
   if (ticketStatus === "Waiting") {
-    const labPending = gate.includesLab && !gate.labAllCollected;
+    const labReady = isLabReadyForImaging(gate);
+    const labPending = gate.includesLab && !labReady;
+    const partialReleased = gate.includesLab && gate.labPartialReleased && !gate.labAllCollected;
     return {
-      displayStatus: labPending ? "Waiting · lab pending" : "Waiting",
+      displayStatus: labPending
+        ? "Waiting · lab pending"
+        : partialReleased
+          ? "Waiting · partial collection"
+          : "Waiting",
       chipColor: "warning",
-      canImagingCall: true,
+      canImagingCall: labReady,
       canOpenImagingRequest: false,
-      imagingCallTooltip: "Call patient to imaging",
+      imagingCallTooltip: labReady
+        ? "Call patient to imaging"
+        : "Mark specimens collected or use Partially collected on the lab request",
       openImagingTooltip: "Call the patient first",
     };
   }
@@ -133,12 +142,16 @@ export function getImagingQueuePresentation(
         openImagingTooltip: "Open imaging request",
       };
     }
+    const labReady = isLabReadyForImaging(gate);
     return {
-      displayStatus: gate.includesLab && gate.labAllCollected ? "Ready for imaging" : "Collected",
+      displayStatus:
+        gate.includesLab && labReady ? "Ready for imaging" : "Collected",
       chipColor: "warning",
-      canImagingCall: true,
+      canImagingCall: labReady,
       canOpenImagingRequest: false,
-      imagingCallTooltip: "Call patient to imaging",
+      imagingCallTooltip: labReady
+        ? "Call patient to imaging"
+        : "Complete lab collection or partial release first",
       openImagingTooltip: "Call the patient first",
     };
   }

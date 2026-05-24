@@ -198,6 +198,7 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
   const [productListMsg, setProductListMsg] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ProductAdminRow | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
 
   const categoryNameById = useMemo(() => {
     const m = new Map<number, string>();
@@ -1286,6 +1287,16 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
       <DialogActions sx={{ px: 3, pb: 2 }}>
         <Button onClick={onClose}>Close</Button>
       </DialogActions>
+
+      <PharmacyProductImportDialog
+        open={importDialogOpen}
+        onClose={() => setImportDialogOpen(false)}
+        categories={categories}
+        onImported={() => {
+          void loadProducts();
+          void loadCategories();
+        }}
+      />
 
       <Dialog
         open={deleteTarget != null}

@@ -6,6 +6,7 @@ import {
   labResultsTemplateCodeFromCatalogTestCode,
   sortResultsTemplateCodes,
   splitAllowlistedResultsTemplateCodes,
+  compareLabTestSortOrder,
 } from "@/lib/labTests";
 import { getPrintLayoutForTemplateCode, LAB_PRINT_FALLBACK } from "@/lib/labResultsPrintLayout";
 import type { PDFDocument } from "pdf-lib";
@@ -205,7 +206,10 @@ function drawGroupResultsForTemplate(
   currentTemplateCode: string,
 ): void {
   const sorted = [...groupItems].sort((a, b) =>
-    (a.test_name ?? a.lab_test_id).localeCompare(b.test_name ?? b.lab_test_id, undefined, { sensitivity: "base" }),
+    compareLabTestSortOrder(
+      { sort_order: a.test_sort_order, name: a.test_name, tieId: a.lab_test_id },
+      { sort_order: b.test_sort_order, name: b.test_name, tieId: b.lab_test_id },
+    ),
   );
   const fallback: LabRequestItemView[] = [];
 
@@ -309,7 +313,10 @@ export async function openLabResultsPrintWindow(args: {
     if (noTemplate.length > 0) {
       const title = "Tests without a dedicated results form (summary)";
       const sorted = [...noTemplate].sort((a, b) =>
-        (a.test_name ?? a.lab_test_id).localeCompare(b.test_name ?? b.lab_test_id, undefined, { sensitivity: "base" }),
+        compareLabTestSortOrder(
+          { sort_order: a.test_sort_order, name: a.test_name, tieId: a.lab_test_id },
+          { sort_order: b.test_sort_order, name: b.test_name, tieId: b.lab_test_id },
+        ),
       );
 
       let page = merged.addPage([REF_W, REF_H]);

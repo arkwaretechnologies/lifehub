@@ -50,6 +50,7 @@ import type { PatientPriorLabResultEntry } from "@/app/api/laboratory/patient-la
 import { formatDateMMDDYYYY, formatLabTime, formatQueueTicketWhen } from "@/lib/dateDisplay";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { mergeAutoFlagIntoLabResultRow } from "@/lib/labResultAutoFlag";
+import { compareLabTestSortOrder } from "@/lib/labTests";
 import { openLabResultsPrintWindow } from "@/lib/labResultsPrint";
 import { openLabTestChecklistPrintWindow } from "@/lib/labTestChecklistPrint";
 import {
@@ -88,9 +89,10 @@ function groupItemsByCategory(items: LabRequestItemView[]): LabResultCategorySec
   }
   for (const section of byCat.values()) {
     section.items.sort((a, b) =>
-      (a.test_name ?? a.lab_test_id).localeCompare(b.test_name ?? b.lab_test_id, undefined, {
-        sensitivity: "base",
-      }),
+      compareLabTestSortOrder(
+        { sort_order: a.test_sort_order, name: a.test_name, tieId: a.lab_test_id },
+        { sort_order: b.test_sort_order, name: b.test_name, tieId: b.lab_test_id },
+      ),
     );
   }
   return [...byCat.values()].sort((a, b) => {

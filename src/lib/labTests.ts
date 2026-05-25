@@ -250,10 +250,21 @@ function sortCategories(a: LabCategoryRow, b: LabCategoryRow): number {
 }
 
 function sortTests(a: LabTestCatalogItem, b: LabTestCatalogItem): number {
+  return compareLabTestSortOrder(
+    { sort_order: a.sort_order, name: a.name, tieId: a.id },
+    { sort_order: b.sort_order, name: b.name, tieId: b.id },
+  );
+}
+
+/** Ascending `lab_tests.sort_order` (null/undefined as 0), then name / tieId. */
+export function compareLabTestSortOrder(
+  a: { sort_order?: number | null; name?: string | null; tieId?: string },
+  b: { sort_order?: number | null; name?: string | null; tieId?: string },
+): number {
   const sa = a.sort_order ?? 0;
   const sb = b.sort_order ?? 0;
   if (sa !== sb) return sa - sb;
-  return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  return (a.name ?? a.tieId ?? "").localeCompare(b.name ?? b.tieId ?? "", undefined, { sensitivity: "base" });
 }
 
 /**

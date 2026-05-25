@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Alert,
@@ -17,13 +17,14 @@ import {
   TableRow,
   Chip,
   CircularProgress,
+  Snackbar,
   Tooltip,
 } from "@mui/material";
 import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
 import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
-import type { QueueTicketStatus } from "@/lib/queueReception";
 import type { LabQueueRow } from "@/app/api/laboratory/lab-queue/route";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
+import { useLabQueueNewRequestAlerts } from "@/hooks/useLabQueueNewRequestAlerts";
 import {
   labImagingColumnLabel,
   labQueueDisplayChipColor,
@@ -37,20 +38,6 @@ import {
   labQueueRequestButtonTooltip,
 } from "@/lib/labQueueUi";
 
-const statusColor: Record<
-  QueueTicketStatus,
-  "default" | "warning" | "info" | "success"
-> = {
-  Waiting: "warning",
-  Called: "info",
-  Collected: "success",
-  Serving: "info",
-  Completed: "success",
-  Skipped: "default",
-  Cancelled: "default",
-  "No Show": "default",
-};
-
 export default function LaboratoryPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -58,9 +45,10 @@ export default function LaboratoryPage() {
   const [rows, setRows] = useState<LabQueueRow[]>([]);
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
 
-  const load = async () => {
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = opts?.silent === true;
     setError("");
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const res = await authenticatedFetch("/api/laboratory/lab-queue", { cache: "no-store" });
       const json = (await res.json().catch(() => ({}))) as {
@@ -77,9 +65,17 @@ export default function LaboratoryPage() {
       setError("Failed to load LAB queue.");
       setRows([]);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  };
+  }, []);
+
+  const silentRefresh = useCallback(() => load({ silent: true }), [load]);
+
+  const { newRequestAlert, clearNewRequestAlert } = useLabQueueNewRequestAlerts({
+    rows,
+    refresh: silentRefresh,
+    ready: !loading,
+  });
 
   const goToResults = (ticket: LabQueueRow) => {
     const labRequestId = (ticket.lab_request_id ?? "").trim();
@@ -120,16 +116,38 @@ export default function LaboratoryPage() {
 
   useEffect(() => {
     void load();
-  }, []);
+  }, [load]);
 
   const hasRows = rows.length > 0;
   const sorted = useMemo(() => rows.slice().sort((a, b) => a.issued_at.localeCompare(b.issued_at)), [rows]);
+
+  const newRequestMessage = newRequestAlert
+    ? newRequestAlert.count > 1
+      ? `${newRequestAlert.count} new laboratory requests — latest: ${newRequestAlert.queueDisplay} · ${newRequestAlert.patientName}`
+      : `New laboratory request — ${newRequestAlert.queueDisplay} · ${newRequestAlert.patientName}`
+    : "";
 
   return (
     <>
       <Typography variant="h5" sx={{ mb: 3 }}>
         Laboratory
       </Typography>
+
+      <Snackbar
+        open={newRequestAlert != null}
+        autoHideDuration={8000}
+        onClose={clearNewRequestAlert}
+        anchorOrigin={{ vertical: "top", horizontal: "center" }}
+      >
+        <Alert
+          severity="info"
+          variant="filled"
+          onClose={clearNewRequestAlert}
+          sx={{ width: "100%", maxWidth: 480 }}
+        >
+          {newRequestMessage}
+        </Alert>
+      </Snackbar>
 
       <Card>
         <CardContent sx={{ p: 3 }}>

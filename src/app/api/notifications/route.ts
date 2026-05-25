@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { buildAuthSessionPayload } from "@/lib/authSessionPayload";
+import { userCanReceiveLabQueueNotifications } from "@/lib/labQueueNotificationServer";
 import { userCanApprovePharmacyLineRequests } from "@/lib/pharmacyLineRequestServer";
 import { getBearerSessionUserId } from "@/lib/requireSession";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
@@ -20,7 +21,9 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "User not found." }, { status: 404 });
   }
 
-  if (!userCanApprovePharmacyLineRequests(session.menuAccess)) {
+  const canPharmacy = userCanApprovePharmacyLineRequests(session.menuAccess);
+  const canLab = userCanReceiveLabQueueNotifications(session.menuAccess);
+  if (!canPharmacy && !canLab) {
     return NextResponse.json({ notifications: [], unreadCount: 0 });
   }
 

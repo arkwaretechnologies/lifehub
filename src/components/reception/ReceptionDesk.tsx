@@ -893,7 +893,6 @@ export default function ReceptionDesk() {
               destinationLabel: destLabel,
               queueDisplay: labQueueDisplay,
               transId: prep.transId,
-              qrPayload: prep.labRequestId ?? prep.imagingRequestId ?? prep.transId,
               hideProceedTo: true,
               footerNote: `Pay at cashier before ${destLabel.toLowerCase()} queue display.`,
             });

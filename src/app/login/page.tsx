@@ -17,6 +17,9 @@ import { useAuth } from "@/components/AuthProvider";
 import { firstAllowedHref } from "@/lib/navPermissionCatalog";
 import { LIFEHUB_LOGO_SRC } from "@/lib/lifehubLogo";
 
+/** Brand tagline artwork (`public/YourHealth.png`). */
+const YOUR_HEALTH_TAGLINE_SRC = "/YourHealth.png";
+
 const cardEntrance = keyframes`
   from {
     opacity: 0;
@@ -262,27 +265,25 @@ export default function LoginPage() {
               sx={{
                 mt: { xs: 3, md: 2.5 },
                 mx: "auto",
-                textAlign: "center",
+                width: "100%",
+                maxWidth: { xs: 300, sm: 380, md: 440 },
                 position: "relative",
               }}
             >
-              <Typography
-                variant="h6"
-                component="p"
-                sx={{
-                  color: "#FFFFFF",
-                  fontFamily: "var(--font-montserrat), 'Inter', sans-serif",
-                  fontWeight: 600,
-                  fontSize: { xs: "1.1rem", sm: "1.35rem", md: "1.55rem" },
-                  letterSpacing: { xs: "0.1em", md: "0.12em" },
-                  lineHeight: 1.2,
-                  textTransform: "uppercase",
-                  textShadow: "0 7px 22px rgba(0, 0, 0, 0.32)",
-                  whiteSpace: { xs: "normal", sm: "nowrap" },
+              <Image
+                src={YOUR_HEALTH_TAGLINE_SRC}
+                alt="Your Health Has a Home"
+                width={880}
+                height={280}
+                style={{
+                  width: "100%",
+                  height: "auto",
+                  objectFit: "contain",
+                  display: "block",
+                  filter: "drop-shadow(0 6px 20px rgba(0, 0, 0, 0.18))",
                 }}
-              >
-                Your health has a home
-              </Typography>
+                priority
+              />
             </Box>
           </Box>
         </Box>

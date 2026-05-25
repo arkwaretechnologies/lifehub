@@ -12,11 +12,16 @@ import {
   Grid,
   InputAdornment,
   MenuItem,
-  Stack,
   TextField,
   Typography,
 } from "@mui/material";
 import type { ReceptionPatientSearchRow } from "@/lib/queueReception";
+import {
+  commonFieldProps,
+  emailFieldInputSx,
+  fieldInputSx,
+  menuItemSx,
+} from "@/components/fieldInputStyles";
 
 type PatientForm = {
   name: string;
@@ -43,6 +48,8 @@ const emptyForm: PatientForm = {
   referringPhysician: "",
   philHealthNo: "",
 };
+
+const CIVIL_STATUS_OPTIONS = ["SINGLE", "MARRIED", "WIDOWED", "SEPARATED"] as const;
 
 /** Philippine mobile: 09 + 9 digits (11 total). */
 function normalizeContactNoInput(raw: string): string {
@@ -83,6 +90,18 @@ function parsePhilhealthNo(value: string): number | null {
   const n = Number.parseInt(digits, 10);
   if (!Number.isFinite(n) || n < 0 || n > 2_147_483_647) return null;
   return n;
+}
+
+function normalizeFormFieldValue(field: keyof PatientForm, raw: string): string {
+  if (field === "dob") return raw;
+  if (field === "emailAddress") return raw.toLowerCase();
+  if (field === "contactNo") return normalizeContactNoInput(raw);
+  if (field === "referringPhysician") {
+    const t = raw.trim();
+    if (/^\d+$/.test(t)) return t;
+    return t.toUpperCase();
+  }
+  return raw.toUpperCase();
 }
 
 function getPatientFormValidationError(form: PatientForm): string | null {
@@ -133,7 +152,7 @@ export default function PatientAddDialog({
 }) {
   const [form, setForm] = useState<PatientForm>(() => ({
     ...emptyForm,
-    name: initial?.name ?? "",
+    name: (initial?.name ?? "").toUpperCase(),
     contactNo: normalizeContactNoInput(initial?.contactNo ?? ""),
   }));
   const [saving, setSaving] = useState(false);
@@ -143,12 +162,7 @@ export default function PatientAddDialog({
 
   const setField = (k: keyof PatientForm) => (v: string) => {
     setError(null);
-    setForm((p) => {
-      const next = { ...p, [k]: v } as PatientForm;
-      if (k === "contactNo") next.contactNo = normalizeContactNoInput(v);
-      if (k === "emailAddress") next.emailAddress = v.toLowerCase();
-      return next;
-    });
+    setForm((p) => ({ ...p, [k]: normalizeFormFieldValue(k, v) }));
   };
 
   return (
@@ -160,59 +174,126 @@ export default function PatientAddDialog({
           <Grid container spacing={2}>
             <Grid size={{ xs: 12, md: 6 }}>
               <Typography variant="caption" fontWeight={700}>Name *</Typography>
-              <TextField value={form.name} onChange={(e) => setField("name")(e.target.value)} fullWidth />
+              <TextField
+                {...commonFieldProps}
+                sx={fieldInputSx}
+                value={form.name}
+                onChange={(e) => setField("name")(e.target.value)}
+              />
             </Grid>
             <Grid size={{ xs: 12, md: 3 }}>
               <Typography variant="caption" fontWeight={700}>Sex *</Typography>
-              <TextField select value={form.sex} onChange={(e) => setField("sex")(e.target.value)} fullWidth>
-                <MenuItem value="">—</MenuItem>
-                <MenuItem value="MALE">MALE</MenuItem>
-                <MenuItem value="FEMALE">FEMALE</MenuItem>
-                <MenuItem value="OTHER">OTHER</MenuItem>
+              <TextField
+                {...commonFieldProps}
+                select
+                sx={fieldInputSx}
+                value={form.sex}
+                onChange={(e) => setField("sex")(e.target.value)}
+              >
+                <MenuItem value="" sx={menuItemSx}>—</MenuItem>
+                <MenuItem value="MALE" sx={menuItemSx}>MALE</MenuItem>
+                <MenuItem value="FEMALE" sx={menuItemSx}>FEMALE</MenuItem>
+                <MenuItem value="OTHER" sx={menuItemSx}>OTHER</MenuItem>
               </TextField>
             </Grid>
             <Grid size={{ xs: 12, md: 3 }}>
               <Typography variant="caption" fontWeight={700}>Date of birth *</Typography>
-              <TextField type="date" value={form.dob} onChange={(e) => setField("dob")(e.target.value)} fullWidth InputLabelProps={{ shrink: true }} />
+              <TextField
+                {...commonFieldProps}
+                type="date"
+                value={form.dob}
+                onChange={(e) => setField("dob")(e.target.value)}
+                InputLabelProps={{ shrink: true }}
+                sx={{ "& .MuiInputBase-root": { height: 40 } }}
+              />
             </Grid>
 
             <Grid size={{ xs: 12, md: 3 }}>
               <Typography variant="caption" fontWeight={700}>Civil status *</Typography>
-              <TextField value={form.civilStatus} onChange={(e) => setField("civilStatus")(e.target.value)} fullWidth placeholder="SINGLE / MARRIED / …" />
+              <TextField
+                {...commonFieldProps}
+                select
+                sx={fieldInputSx}
+                value={form.civilStatus}
+                onChange={(e) => setField("civilStatus")(e.target.value)}
+              >
+                <MenuItem value="" sx={menuItemSx}>—</MenuItem>
+                {CIVIL_STATUS_OPTIONS.map((opt) => (
+                  <MenuItem key={opt} value={opt} sx={menuItemSx}>
+                    {opt}
+                  </MenuItem>
+                ))}
+              </TextField>
             </Grid>
             <Grid size={{ xs: 12, md: 6 }}>
               <Typography variant="caption" fontWeight={700}>Address *</Typography>
-              <TextField value={form.address} onChange={(e) => setField("address")(e.target.value)} fullWidth />
+              <TextField
+                {...commonFieldProps}
+                sx={fieldInputSx}
+                value={form.address}
+                onChange={(e) => setField("address")(e.target.value)}
+              />
             </Grid>
             <Grid size={{ xs: 12, md: 3 }}>
               <Typography variant="caption" fontWeight={700}>Contact no *</Typography>
               <TextField
+                {...commonFieldProps}
                 value={contactSuffix}
                 onChange={(e) => setField("contactNo")(`09${e.target.value}`)}
-                fullWidth
                 placeholder="xxxxxxxxx"
                 helperText="Enter 9 digits (11 total with 09)."
-                InputProps={{
-                  startAdornment: <InputAdornment position="start">09</InputAdornment>,
+                sx={{
+                  "& .MuiInputBase-root": { height: 40 },
+                  "& .MuiInputBase-input": { textTransform: "none" },
+                }}
+                slotProps={{
+                  input: {
+                    startAdornment: <InputAdornment position="start">09</InputAdornment>,
+                  },
                 }}
               />
             </Grid>
 
             <Grid size={{ xs: 12, md: 3 }}>
               <Typography variant="caption" fontWeight={700}>Email address</Typography>
-              <TextField value={form.emailAddress} onChange={(e) => setField("emailAddress")(e.target.value)} fullWidth />
+              <TextField
+                {...commonFieldProps}
+                sx={emailFieldInputSx}
+                value={form.emailAddress}
+                onChange={(e) => setField("emailAddress")(e.target.value)}
+              />
             </Grid>
             <Grid size={{ xs: 12, md: 3 }}>
               <Typography variant="caption" fontWeight={700}>Occupation *</Typography>
-              <TextField value={form.occupation} onChange={(e) => setField("occupation")(e.target.value)} fullWidth />
+              <TextField
+                {...commonFieldProps}
+                sx={fieldInputSx}
+                value={form.occupation}
+                onChange={(e) => setField("occupation")(e.target.value)}
+              />
             </Grid>
             <Grid size={{ xs: 12, md: 6 }}>
               <Typography variant="caption" fontWeight={700}>Referring Physician</Typography>
-              <TextField value={form.referringPhysician} onChange={(e) => setField("referringPhysician")(e.target.value)} fullWidth placeholder="(optional)" />
+              <TextField
+                {...commonFieldProps}
+                sx={fieldInputSx}
+                value={form.referringPhysician}
+                onChange={(e) => setField("referringPhysician")(e.target.value)}
+                placeholder="(optional)"
+              />
             </Grid>
             <Grid size={{ xs: 12, md: 6 }}>
               <Typography variant="caption" fontWeight={700}>PhilHealth No</Typography>
-              <TextField value={form.philHealthNo} onChange={(e) => setField("philHealthNo")(e.target.value)} fullWidth placeholder="(optional)" />
+              <TextField
+                {...commonFieldProps}
+                value={form.philHealthNo}
+                onChange={(e) => setField("philHealthNo")(e.target.value)}
+                placeholder="(optional)"
+                sx={{
+                  "& .MuiInputBase-root": { height: 40 },
+                  "& .MuiInputBase-input": { textTransform: "none" },
+                }}
+              />
             </Grid>
           </Grid>
         </Box>
@@ -254,4 +335,3 @@ export default function PatientAddDialog({
     </Dialog>
   );
 }
-

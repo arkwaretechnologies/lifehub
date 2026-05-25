@@ -7,6 +7,7 @@ import {
   resolveThermalReceiptLogoSrc,
 } from "@/lib/thermalReceiptFontCss";
 import { openThermalPrintHtml } from "@/lib/thermalPrintIframe";
+import { isThermalCashDrawerEnabled, thermalCashDrawerKickPrintHtml } from "@/lib/thermalCashDrawer";
 
 export type CashierAcknowledgementPaymentLine = {
   label: string;
@@ -33,6 +34,8 @@ export type CashierAcknowledgementReceiptArgs = {
   totalDue?: number;
   amountTendered?: number | null;
   changeAmount?: number | null;
+  /** Pulse cash drawer when printing (cash payments). */
+  openCashDrawer?: boolean;
 };
 
 /**
@@ -68,6 +71,8 @@ export async function openCashierAcknowledgementReceiptPrint(args: CashierAcknow
     args.changeAmount == null || !Number.isFinite(Number(args.changeAmount)) ? null : Number(args.changeAmount);
 
   const logoSrc = resolveThermalReceiptLogoSrc();
+  const drawerKick =
+    args.openCashDrawer === true && isThermalCashDrawerEnabled() ? thermalCashDrawerKickPrintHtml() : "";
 
   const paymentLines = (args.paymentLines ?? []).filter((l) => String(l.label ?? "").trim() !== "");
   const paymentLinesHtml =
@@ -122,6 +127,7 @@ export async function openCashierAcknowledgementReceiptPrint(args: CashierAcknow
   </style>
 </head>
 <body>
+  ${drawerKick}
   <div class="paper">
     <div class="receipt-logo-wrap">
       <img class="receipt-logo" src="${escapeHtml(logoSrc)}" alt="" />

@@ -70,6 +70,7 @@ import {
 } from "@/components/consultation/consultListTableStyles";
 import { fetchQueuePriorities, type QueuePriorityRow } from "@/lib/queueReception";
 import { openCashierAcknowledgementReceiptPrint } from "@/lib/cashierAcknowledgementReceiptPrint";
+import { isCashPaymentMethod } from "@/lib/paymentMethods";
 import { scheduleCashierHomeNavigation } from "@/lib/thermalPrintIframe";
 import {
   openReceptionQueueReceiptPrint,
@@ -1090,6 +1091,7 @@ export default function CashierEncounterDetail() {
           : Math.max(0, grandSubtotal - totalDiscount + freshLabPortion + freshImgPortion - labTotalDue - imagingTotalDue),
         amountTendered: args.amountTendered,
         changeAmount: args.changeAmount,
+        openCashDrawer: isCashPaymentMethod(args.paymentMethod),
       });
       if (labQueueSlip != null) {
         await openReceptionQueueReceiptPrint({

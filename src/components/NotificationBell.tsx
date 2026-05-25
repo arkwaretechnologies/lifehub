@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Badge,
   Box,
@@ -17,6 +18,10 @@ import {
 import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
 import { useAuth } from "@/components/AuthProvider";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
+import {
+  NOTIFICATION_TYPE_LAB_QUEUE_NEW,
+  userCanReceiveLabQueueNotifications,
+} from "@/lib/labQueueNotificationServer";
 import { canApprovePharmacyLineRequests } from "@/lib/navPermissionCatalog";
 import {
   playNotificationChime,
@@ -33,12 +38,15 @@ import { NOTIFICATION_TYPE_PHARMACY_CART_LINE, type NotificationRow } from "@/li
 const POLL_MS = 5000;
 
 export default function NotificationBell() {
+  const router = useRouter();
   const { profile, menuAccess } = useAuth();
   const userId =
     profile != null && typeof profile.user_id === "number" ? profile.user_id : null;
 
-  const canApprove =
+  const canPharmacy =
     menuAccess.rbac && canApprovePharmacyLineRequests(menuAccess.pageKeys);
+  const canLab = menuAccess.rbac && userCanReceiveLabQueueNotifications(menuAccess);
+  const canView = canPharmacy || canLab;
 
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
@@ -49,7 +57,7 @@ export default function NotificationBell() {
   const seenUnreadIdsRef = useRef<Set<string> | null>(null);
 
   const load = useCallback(async () => {
-    if (!canApprove || userId == null) return;
+    if (!canView || userId == null) return;
     setLoading(true);
     try {
       const res = await authenticatedFetch("/api/notifications?limit=30", { cache: "no-store" });
@@ -82,15 +90,15 @@ export default function NotificationBell() {
     } finally {
       setLoading(false);
     }
-  }, [canApprove, userId]);
+  }, [canView, userId]);
 
   useEffect(() => {
-    if (!canApprove) return;
+    if (!canView) return;
     primeNotificationSound();
-  }, [canApprove]);
+  }, [canView]);
 
   useEffect(() => {
-    if (!canApprove || userId == null) return;
+    if (!canView || userId == null) return;
     seenUnreadIdsRef.current = null;
     void load();
     const poll = setInterval(() => void load(), POLL_MS);
@@ -99,9 +107,9 @@ export default function NotificationBell() {
       clearInterval(poll);
       unsub();
     };
-  }, [canApprove, userId, load]);
+  }, [canView, userId, load]);
 
-  if (!canApprove) {
+  if (!canView) {
     return (
       <IconButton sx={{ color: "text.secondary" }} disabled aria-label="Notifications unavailable">
         <NotificationsNoneIcon />
@@ -131,6 +139,17 @@ export default function NotificationBell() {
       });
       void load();
     }
+  };
+
+  const handleOpenLabQueue = async (notifId: string, href: string) => {
+    setActionBusyId(notifId);
+    await authenticatedFetch(`/api/notifications/${encodeURIComponent(notifId)}`, {
+      method: "PATCH",
+    });
+    setActionBusyId(null);
+    setAnchorEl(null);
+    void load();
+    router.push(href);
   };
 
   return (
@@ -186,10 +205,15 @@ export default function NotificationBell() {
         ) : (
           <List dense disablePadding sx={{ overflow: "auto", maxHeight: 400 }}>
             {notifications.map((n) => {
-              const requestId =
+              const pharmacyRequestId =
                 n.type === NOTIFICATION_TYPE_PHARMACY_CART_LINE
                   ? (n.payload?.requestId as string | undefined)
                   : undefined;
+              const labHref =
+                n.type === NOTIFICATION_TYPE_LAB_QUEUE_NEW
+                  ? String((n.payload as { href?: string } | undefined)?.href ?? "/laboratory").trim() ||
+                    "/laboratory"
+                  : null;
               const busy = actionBusyId === n.id;
               return (
                 <ListItem
@@ -208,14 +232,17 @@ export default function NotificationBell() {
                     primaryTypographyProps={{ variant: "body2", fontWeight: 600 }}
                     secondaryTypographyProps={{ variant: "caption" }}
                   />
-                  {requestId && n.type === NOTIFICATION_TYPE_PHARMACY_CART_LINE && !n.read_at && (
+                  {pharmacyRequestId &&
+                    n.type === NOTIFICATION_TYPE_PHARMACY_CART_LINE &&
+                    !n.read_at &&
+                    canPharmacy && (
                     <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
                       <Button
                         size="small"
                         variant="contained"
                         color="success"
                         disabled={busy}
-                        onClick={() => void handleApprove(requestId, n.id)}
+                        onClick={() => void handleApprove(pharmacyRequestId, n.id)}
                       >
                         Approve
                       </Button>
@@ -224,9 +251,22 @@ export default function NotificationBell() {
                         variant="outlined"
                         color="error"
                         disabled={busy}
-                        onClick={() => void handleReject(requestId, n.id)}
+                        onClick={() => void handleReject(pharmacyRequestId, n.id)}
                       >
                         Reject
+                      </Button>
+                    </Stack>
+                  )}
+                  {labHref && n.type === NOTIFICATION_TYPE_LAB_QUEUE_NEW && !n.read_at && canLab && (
+                    <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+                      <Button
+                        size="small"
+                        variant="contained"
+                        color="primary"
+                        disabled={busy}
+                        onClick={() => void handleOpenLabQueue(n.id, labHref)}
+                      >
+                        Open lab queue
                       </Button>
                     </Stack>
                   )}

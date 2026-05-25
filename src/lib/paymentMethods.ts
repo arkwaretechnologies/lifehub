@@ -10,6 +10,13 @@ export type PaymentMethodRow = {
   sort_order: number | null;
 };
 
+export function isCashPaymentMethod(m: Pick<PaymentMethodRow, "code" | "name"> | null): boolean {
+  if (!m) return false;
+  const c = (m.code ?? "").trim().toUpperCase();
+  const n = (m.name ?? "").trim().toUpperCase();
+  return c === "CASH" || n === "CASH";
+}
+
 export async function fetchActivePaymentMethods(): Promise<{
   methods: PaymentMethodRow[];
   error: string | null;

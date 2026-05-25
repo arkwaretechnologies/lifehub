@@ -60,6 +60,7 @@ import {
 import { fetchActiveDiscountTypes, type DiscountTypeRow } from "@/lib/discountTypes";
 import { fetchQueuePriorities, type QueuePriorityRow } from "@/lib/queueReception";
 import { openCashierAcknowledgementReceiptPrint } from "@/lib/cashierAcknowledgementReceiptPrint";
+import { isCashPaymentMethod } from "@/lib/paymentMethods";
 import { scheduleCashierHomeNavigation } from "@/lib/thermalPrintIframe";
 import {
   openReceptionQueueReceiptPrint,
@@ -519,6 +520,7 @@ export default function CashierLabRequestDetail() {
         totalDue: Math.max(0, subtotal - totalDiscount),
         amountTendered: args.amountTendered,
         changeAmount: args.changeAmount,
+        openCashDrawer: isCashPaymentMethod(args.paymentMethod),
       });
       if (labQueueSlip != null) {
         await openReceptionQueueReceiptPrint({

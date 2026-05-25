@@ -9,6 +9,7 @@ import {
 import type { LabResultPrintPosition } from "@/lib/labResultsPrintLayout";
 import { parseResultsPrintLayouts } from "@/lib/labResultsPrintLayout";
 import {
+  compareLabTestSortOrder,
   filterLabRequestItemsForResultEntry,
   isAllowedLabResultsTemplateCode,
   labResultsTemplateCodeFromCatalogTestCode,
@@ -141,6 +142,8 @@ export type LabRequestItemView = {
   category_id: string | null;
   category_name: string | null;
   category_sort_order: number | null;
+  /** `lab_tests.sort_order` for display / print ordering within a category. */
+  test_sort_order: number | null;
   specimen_type: string | null;
   priority: string | null;
   notes: string | null;
@@ -323,13 +326,14 @@ export async function GET(req: Request) {
       specimen_type: string | null;
       unit: string | null;
       reference_range: string | null;
+      sort_order: number | null;
     }
   >();
   const categoriesById = new Map<string, { name: string; sort_order: number | null }>();
   if (testIds.length > 0) {
     const { data: tests, error: tErr } = await admin
       .from("lab_tests")
-      .select("id, code, category_id, results_template_code, results_print_layout, name, specimen_type, unit, reference_range")
+      .select("id, code, category_id, results_template_code, results_print_layout, name, specimen_type, unit, reference_range, sort_order")
       .in("id", testIds);
     if (tErr) return NextResponse.json({ error: tErr.message }, { status: 500 });
     const catIds = new Set<string>();
@@ -343,6 +347,7 @@ export async function GET(req: Request) {
       specimen_type: string | null;
       unit: string | null;
       reference_range: string | null;
+      sort_order: number | null;
     }>) {
       const category_id = t.category_id == null ? null : String(t.category_id);
       if (category_id) catIds.add(category_id);
@@ -355,6 +360,7 @@ export async function GET(req: Request) {
         specimen_type: t.specimen_type,
         unit: t.unit,
         reference_range: t.reference_range,
+        sort_order: t.sort_order == null ? null : Number(t.sort_order),
       });
     }
     if (catIds.size > 0) {
@@ -398,6 +404,7 @@ export async function GET(req: Request) {
         if (!cid) return null;
         return categoriesById.get(cid)?.sort_order ?? null;
       })(),
+      test_sort_order: t?.sort_order ?? null,
       specimen_type: t?.specimen_type ?? null,
       priority: r.priority,
       notes: r.notes,
@@ -417,9 +424,10 @@ export async function GET(req: Request) {
     if (sa !== sb) return sa - sb;
     const ca = (a.category_name ?? "").localeCompare(b.category_name ?? "", undefined, { sensitivity: "base" });
     if (ca !== 0) return ca;
-    return (a.test_name ?? a.lab_test_id).localeCompare(b.test_name ?? b.lab_test_id, undefined, {
-      sensitivity: "base",
-    });
+    return compareLabTestSortOrder(
+      { sort_order: a.test_sort_order, name: a.test_name, tieId: a.lab_test_id },
+      { sort_order: b.test_sort_order, name: b.test_name, tieId: b.lab_test_id },
+    );
   });
 
   const headerOut: LabRequestHeaderView = {

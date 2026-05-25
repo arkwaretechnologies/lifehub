@@ -24,7 +24,7 @@ export type ReceptionQueueReceiptArgs = {
   transId: string;
   /** When set, QR encodes the queue ticket id for cashier reprint via `/api/cashier/lab-queue-ticket/reprint`. */
   queueTicketId?: string | null;
-  /** Overrides QR payload (e.g. `lab_request_id` for cashier payment scan). */
+  /** Overrides QR payload (defaults to `transId`, same as consultation). */
   qrPayload?: string | null;
   /** Omit “Proceed to: …” (e.g. reception lab — patient pays at cashier first). */
   hideProceedTo?: boolean;
@@ -127,11 +127,11 @@ export type ReceptionLabOrderSlipArgs = {
 };
 
 /**
- * Reception walk-in lab: order list + entrance reference + visit id + QR (lab request id for cashier scan).
+ * Reception walk-in lab: order list + entrance reference + visit id + QR (transaction id for cashier scan).
  */
 export async function openReceptionLabOrderSlipPrint(args: ReceptionLabOrderSlipArgs): Promise<void> {
   const QRCode = (await import("qrcode")).default;
-  const qrPayload = args.labRequestId.trim();
+  const qrPayload = args.transId.trim();
   const qrDataUrl = await QRCode.toDataURL(qrPayload, {
     width: 140,
     margin: 1,

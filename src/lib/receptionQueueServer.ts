@@ -15,6 +15,7 @@ import { numericIdFromUnknown } from "@/lib/sessionUserId";
 import { parseBp } from "@/lib/bpInput";
 import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
 import { applyPartialLabReleaseToNotes } from "@/lib/labPartialCollection";
+import { insertLabQueueNewRequestNotifications } from "@/lib/labQueueNotificationServer";
 import { computeLabRequestQueueCollectionState } from "@/lib/labQueueTicketSync";
 import { applyActiveDeptToNotes } from "@/lib/queueActiveDept";
 import {
@@ -1157,6 +1158,15 @@ export async function adminIssueDiagnosticQueueTicket(
     consultationQueueDisplay ?? issued.result.queueDisplay,
   );
   if (qnErr.error) return { error: qnErr.error };
+
+  if (input.includesLab) {
+    void insertLabQueueNewRequestNotifications(admin, {
+      queueDisplay: issued.result.queueDisplay,
+      patientName: input.patient.name,
+      queueTicketId: issued.result.queueTicketId,
+      labRequestId,
+    });
+  }
 
   return { error: null, result: { ...issued.result, reused: false } };
 }

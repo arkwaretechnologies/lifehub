@@ -38,7 +38,7 @@ export type NotificationRow = {
   type: string;
   title: string;
   body: string;
-  payload: { requestId?: string };
+  payload: { requestId?: string; queueTicketId?: string; labRequestId?: string; href?: string };
   read_at: string | null;
   created_at: string;
 };

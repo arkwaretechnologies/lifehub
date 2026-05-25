@@ -17,7 +17,7 @@ import {
   Typography,
 } from "@mui/material";
 
-import type { PaymentMethodRow } from "@/lib/paymentMethods";
+import { isCashPaymentMethod, type PaymentMethodRow } from "@/lib/paymentMethods";
 import type { DiscountTypeRow } from "@/lib/discountTypes";
 import type { QueuePriorityRow } from "@/lib/queueReception";
 
@@ -33,13 +33,6 @@ function formatMoney(v: number | string | null | undefined): string {
 
 function roundMoney2(n: number): number {
   return Math.round(n * 100) / 100;
-}
-
-function isCashMethod(m: Pick<PaymentMethodRow, "code" | "name"> | null): boolean {
-  if (!m) return false;
-  const c = (m.code ?? "").trim().toUpperCase();
-  const n = (m.name ?? "").trim().toUpperCase();
-  return c === "CASH" || n === "CASH";
 }
 
 function pctNum(v: number | string | null | undefined): number {
@@ -140,7 +133,7 @@ export function PaymentModal(props: {
     return paymentMethods.find((m) => m.id === paymentMethodId) ?? null;
   }, [paymentMethodId, paymentMethods]);
 
-  const cashMode = useMemo(() => isCashMethod(selectedMethod), [selectedMethod]);
+  const cashMode = useMemo(() => isCashPaymentMethod(selectedMethod), [selectedMethod]);
 
   const selectedDiscount = useMemo(() => {
     if (discountTypeId === "" || (typeof discountTypeId === "string" && discountTypeId === "other")) return null;

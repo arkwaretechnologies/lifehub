@@ -14,6 +14,9 @@ import {
 import { numericIdFromUnknown } from "@/lib/sessionUserId";
 import { parseBp } from "@/lib/bpInput";
 import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
+import { applyPartialLabReleaseToNotes } from "@/lib/labPartialCollection";
+import { computeLabRequestQueueCollectionState } from "@/lib/labQueueTicketSync";
+import { applyActiveDeptToNotes } from "@/lib/queueActiveDept";
 import {
   LAB_REQUEST_ITEMS_TABLE,
   LAB_REQUEST_PACKAGES_TABLE,
@@ -30,6 +33,7 @@ import {
 import { LAB_SALES_TABLE } from "@/lib/cashierPayments";
 import {
   adminLabRequestIdsWithLabSales,
+  adminLoadDiagnosticCounterIds,
   imagingQueueCode,
   labQueueCode,
 } from "@/lib/diagnosticQueueServer";
@@ -962,28 +966,49 @@ async function adminFindExistingActiveDiagnosticTicket(
     imagingRequestId?: string | null;
   },
 ): Promise<{ queueTicketId: string; queueDisplay: string; counterCode: string } | null> {
-  let q = admin
+  const encounterTransId = args.encounterTransId.trim();
+  if (!encounterTransId) return null;
+
+  const { ids: diagnosticCounterIds, error: cntErr } = await adminLoadDiagnosticCounterIds(admin);
+  if (cntErr || diagnosticCounterIds.size === 0) return null;
+
+  const { data: rows, error } = await admin
     .from("queue_tickets")
-    .select("id, queue_display, counter_id")
-    .eq("encounter_id", args.encounterTransId)
+    .select("id, queue_display, counter_id, lab_request_id, imaging_request_id")
+    .eq("encounter_id", encounterTransId)
     .eq("ticket_date", args.ticketDate)
     .in("status", ACTIVE_STATUSES)
-    .order("issued_at", { ascending: false })
-    .limit(1);
+    .order("issued_at", { ascending: false });
+
+  if (error || !rows?.length) return null;
 
   const labId = String(args.labRequestId ?? "").trim();
   const imgId = String(args.imagingRequestId ?? "").trim();
-  if (labId) q = q.eq("lab_request_id", labId);
-  else if (imgId) q = q.eq("imaging_request_id", imgId);
-  else return null;
 
-  const { data, error } = await q.maybeSingle();
-  if (error || !data) return null;
-  const id = (data as { id?: string; queue_display?: string }).id;
-  const qd = (data as { queue_display?: string }).queue_display;
+  type PickRow = {
+    id?: string;
+    queue_display?: string | null;
+    counter_id?: string | number | null;
+    lab_request_id?: string | null;
+    imaging_request_id?: string | null;
+  };
+
+  const diagnosticRows = (rows as PickRow[]).filter((r) => {
+    const n = Number(r.counter_id);
+    return Number.isFinite(n) && diagnosticCounterIds.has(n);
+  });
+  if (diagnosticRows.length === 0) return null;
+
+  let pick =
+    (labId ? diagnosticRows.find((r) => String(r.lab_request_id ?? "").trim() === labId) : null) ??
+    (imgId ? diagnosticRows.find((r) => String(r.imaging_request_id ?? "").trim() === imgId) : null) ??
+    diagnosticRows[0];
+
+  const id = String(pick?.id ?? "").trim();
+  const qd = String(pick?.queue_display ?? "").trim();
   if (!id || !qd) return null;
 
-  const counterId = (data as { counter_id?: string | number }).counter_id;
+  const counterId = pick?.counter_id;
   const { data: cnt } = await admin.from("queue_counters").select("code").eq("id", counterId).maybeSingle();
   const code = String((cnt as { code?: string } | null)?.code ?? labQueueCode()).trim().toUpperCase();
   return { queueTicketId: id, queueDisplay: qd, counterCode: code };
@@ -1239,6 +1264,132 @@ export async function adminIssueCashierLaboratoryQueueTicket(input: {
       reused: issued.result.reused,
     },
   };
+}
+
+/** After cashier settles a paid-order amendment, put the ticket back in the lab/imaging queue. */
+const REACTIVATE_QUEUE_STATUSES: QueueTicketStatus[] = [
+  "Waiting",
+  "Called",
+  "Collected",
+  "Serving",
+  "Completed",
+];
+
+function clearSpecimenCollectedTagFromNotes(notes: string | null | undefined): string {
+  const lines = String(notes ?? "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .filter((l) => !/^\[Specimen\]/i.test(l.trim()));
+  return lines.join("\n").trim();
+}
+
+/**
+ * After a paid order amendment is settled, put the patient back on the lab/imaging queue
+ * with the same queue number when possible.
+ */
+export async function adminReactivateDiagnosticQueueAfterAmendment(input: {
+  encounterTransId: string;
+  patient: { id: number; name: string; contact_no: string | null };
+  labRequestId?: string | null;
+  imagingRequestId?: string | null;
+  includesLab: boolean;
+  includesImaging: boolean;
+  cashierPriorityId?: number | null;
+}): Promise<{ error: string | null; queueDisplay?: string }> {
+  const admin = queueAdminClient();
+  if (!admin) return { error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." };
+
+  const encounterTransId = input.encounterTransId.trim();
+  const labRequestId = String(input.labRequestId ?? "").trim() || null;
+  const imagingRequestId = String(input.imagingRequestId ?? "").trim() || null;
+  if (!encounterTransId) return { error: "encounterTransId is required." };
+
+  const ticketDate = queueTicketTodayIsoDate();
+
+  const { data: ticket, error: tErr } = await admin
+    .from("queue_tickets")
+    .select("id, status, notes, queue_display, includes_lab, includes_imaging, lab_request_id, imaging_request_id")
+    .eq("encounter_id", encounterTransId)
+    .eq("ticket_date", ticketDate)
+    .order("issued_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (tErr) return { error: tErr.message };
+
+  if (ticket) {
+    const row = ticket as {
+      id: string;
+      status: QueueTicketStatus;
+      notes: string | null;
+      queue_display: string;
+      includes_lab?: boolean | null;
+      includes_imaging?: boolean | null;
+      lab_request_id?: string | null;
+      imaging_request_id?: string | null;
+    };
+    if (REACTIVATE_QUEUE_STATUSES.includes(row.status)) {
+      const consultationDisplay = await adminGetEncounterConsultationQueueDisplay(admin, encounterTransId);
+      const displayForVisit = consultationDisplay ?? row.queue_display;
+      const cleared = clearSpecimenCollectedTagFromNotes(row.notes);
+      let notes = applyActiveDeptToNotes(cleared, null);
+      if (input.includesLab) {
+        notes = applyPartialLabReleaseToNotes(notes, false);
+      }
+      const patchLabReqId = labRequestId || String(row.lab_request_id ?? "").trim() || null;
+      const patchImgReqId = imagingRequestId || String(row.imaging_request_id ?? "").trim() || null;
+
+      let nextStatus: QueueTicketStatus = "Waiting";
+      if (patchLabReqId) {
+        const labState = await computeLabRequestQueueCollectionState(admin, patchLabReqId);
+        if (!labState.error) {
+          if (labState.anyCollected && !labState.allCollected) {
+            nextStatus = "Called";
+            notes = applyActiveDeptToNotes(notes, "LAB");
+          } else if (labState.allCollected) {
+            nextStatus = labState.allHasResults ? "Completed" : "Collected";
+          } else if (
+            row.status === "Called" ||
+            row.status === "Collected" ||
+            row.status === "Serving"
+          ) {
+            nextStatus = row.status;
+            notes = applyActiveDeptToNotes(notes, input.includesLab ? "LAB" : null);
+          }
+        }
+      }
+
+      const { error: upErr } = await admin
+        .from("queue_tickets")
+        .update({
+          status: nextStatus,
+          queue_display: displayForVisit,
+          notes,
+          // Keep both flags when visit has lab + imaging; each amendment settle only touches one modality.
+          includes_lab: input.includesLab || row.includes_lab === true,
+          includes_imaging: input.includesImaging || row.includes_imaging === true,
+          ...(patchLabReqId ? { lab_request_id: patchLabReqId } : {}),
+          ...(patchImgReqId ? { imaging_request_id: patchImgReqId } : {}),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", row.id);
+      if (upErr) return { error: upErr.message };
+      if (consultationDisplay) {
+        const qnErr = await adminPatchEncounterQueueNoIfEmpty(admin, encounterTransId, consultationDisplay);
+        if (qnErr.error) return { error: qnErr.error };
+      }
+      return { error: null, queueDisplay: displayForVisit };
+    }
+  }
+
+  const issued = await adminIssueCashierLaboratoryQueueTicket({
+    encounterTransId,
+    patient: input.patient,
+    labRequestIds: labRequestId ? [labRequestId] : [],
+    imagingRequestIds: imagingRequestId ? [imagingRequestId] : [],
+    cashierPriorityId: input.cashierPriorityId ?? null,
+  });
+  if (issued.error) return { error: issued.error };
+  return { error: null, queueDisplay: issued.result?.queueDisplay };
 }
 
 export async function adminGetQueueTicketReceiptPayload(ticketId: string): Promise<{

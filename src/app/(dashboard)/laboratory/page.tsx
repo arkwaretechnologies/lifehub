@@ -24,7 +24,11 @@ import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
 import type { QueueTicketStatus } from "@/lib/queueReception";
 import type { LabQueueRow } from "@/app/api/laboratory/lab-queue/route";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
-import { labQueueDisplayChipColor } from "@/lib/labQueuePresentation";
+import {
+  labImagingColumnLabel,
+  labQueueDisplayChipColor,
+  labSpecimenColumnLabel,
+} from "@/lib/labQueuePresentation";
 import {
   canLabCallPatient,
   canOpenLabQueueRequest,
@@ -83,7 +87,7 @@ export default function LaboratoryPage() {
       setError("No lab request is linked to this queue ticket.");
       return;
     }
-    if (!canOpenLabQueueRequest(ticket.status, labRequestId)) {
+    if (!canOpenLabQueueRequest(ticket.status, labRequestId, { labAnyCollected: ticket.lab_any_collected })) {
       setError("Call the patient before opening the lab request.");
       return;
     }
@@ -168,7 +172,22 @@ export default function LaboratoryPage() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {sorted.map((t) => (
+                {sorted.map((t) => {
+                  const imagingChip =
+                    t.includes_imaging || t.imaging_request_id
+                      ? labImagingColumnLabel({
+                          imaging_all_captured: t.imaging_all_captured,
+                          lab_partial_released: t.lab_partial_released,
+                          active_dept: t.active_dept,
+                          status: t.status,
+                        })
+                      : null;
+                  const specimenChip = labSpecimenColumnLabel({
+                    lab_any_collected: t.lab_any_collected,
+                    lab_all_collected: t.lab_all_collected,
+                    specimen_collected: isSpecimenCollectedOnTicket(t.notes),
+                  });
+                  return (
                   <TableRow key={t.id} hover>
                     <TableCell sx={{ fontFamily: "monospace" }}>{t.queue_display}</TableCell>
                     <TableCell>{t.patient_name ?? "—"}</TableCell>
@@ -180,10 +199,10 @@ export default function LaboratoryPage() {
                       />
                     </TableCell>
                     <TableCell>
-                      {t.includes_imaging || t.imaging_request_id ? (
+                      {imagingChip ? (
                         <Chip
-                          label={t.imaging_all_captured ? "Captured" : "Pending"}
-                          color={t.imaging_all_captured ? "success" : "default"}
+                          label={imagingChip.label}
+                          color={imagingChip.color}
                           size="small"
                           variant="outlined"
                         />
@@ -193,8 +212,8 @@ export default function LaboratoryPage() {
                     </TableCell>
                     <TableCell>
                       <Chip
-                        label={isSpecimenCollectedOnTicket(t.notes) ? "Collected" : "Pending"}
-                        color={isSpecimenCollectedOnTicket(t.notes) ? "success" : "default"}
+                        label={specimenChip.label}
+                        color={specimenChip.color}
                         size="small"
                         variant="outlined"
                       />
@@ -229,6 +248,7 @@ export default function LaboratoryPage() {
                                 canLabCallPatient(t.status, {
                                   includesImaging: t.includes_imaging,
                                   specimenCollected: isSpecimenCollectedOnTicket(t.notes),
+                                  labAnyCollected: t.lab_any_collected,
                                   labAllCollected: t.lab_all_collected,
                                   imagingAllCaptured: t.imaging_all_captured,
                                   activeDept: t.active_dept,
@@ -249,14 +269,22 @@ export default function LaboratoryPage() {
                           </Button>
                         </Box>
                       </Tooltip>
-                      <Tooltip title={labQueueRequestButtonTooltip(t.status, t.lab_request_id)}>
+                      <Tooltip
+                        title={labQueueRequestButtonTooltip(t.status, t.lab_request_id, {
+                          labAnyCollected: t.lab_any_collected,
+                        })}
+                      >
                         <Box component="span" sx={{ display: "inline-flex", ml: 1 }}>
                           <Button
                             variant="outlined"
                             size="small"
                             startIcon={<ScienceOutlinedIcon fontSize="small" />}
                             onClick={() => goToResults(t)}
-                            disabled={!canOpenLabQueueRequest(t.status, t.lab_request_id)}
+                            disabled={
+                              !canOpenLabQueueRequest(t.status, t.lab_request_id, {
+                                labAnyCollected: t.lab_any_collected,
+                              })
+                            }
                             sx={{
                               minWidth: 120,
                               borderRadius: 999,
@@ -272,7 +300,8 @@ export default function LaboratoryPage() {
                       </Tooltip>
                     </TableCell>
                   </TableRow>
-                ))}
+                  );
+                })}
               </TableBody>
             </Table>
           </TableContainer>

@@ -84,15 +84,16 @@ function drawAtTopRef(
   refFromTop: number,
   refSize: number,
   font: import("pdf-lib").PDFFont,
-  opts?: { maxWidth?: number; colorFromFlag?: string | null },
+  opts?: { maxWidth?: number; colorFromFlag?: string | null; lineHeight?: number },
 ): void {
   const t = text.trim();
   if (!t) return;
   const { height } = page.getSize();
   const { sx, sy } = scaleRefToPage(page);
+  const scale = Math.min(sx, sy);
   const x = refX * sx;
   const fromTop = refFromTop * sy;
-  const size = refSize * Math.min(sx, sy);
+  const size = refSize * scale;
   const y = height - fromTop;
   const color =
     opts != null && "colorFromFlag" in opts ? printTextColorForFlag(opts.colorFromFlag) : rgb(0, 0, 0);
@@ -102,6 +103,7 @@ function drawAtTopRef(
     size,
     font,
     maxWidth: opts?.maxWidth != null ? opts.maxWidth * sx : undefined,
+    lineHeight: opts?.lineHeight != null ? opts.lineHeight * scale : undefined,
     color,
   });
 }
@@ -183,10 +185,10 @@ function drawSharedHeader(
   drawAtTopRef(page, pid, 376, 254, 9, font);
   drawAtTopRef(page, ageSex, 118, 213, 8, font);
   drawAtTopRef(page, dob, 225, 213, 8, font);
-  drawAtTopRef(page, addr, 118, 233, 8, font, { maxWidth: 470 });
-  drawAtTopRef(page, contact, 245, 233, 8, font, { maxWidth: 260 });
-  drawAtTopRef(page, phil, 500, 233, 8, font, { maxWidth: 250 });
-  drawAtTopRef(page, physician, 172, 255, 8, font, { maxWidth: 470 });
+  drawAtTopRef(page, addr, 118, 233, 8, font, { maxWidth: 100, lineHeight: 8 });
+  drawAtTopRef(page, contact, 245, 233, 8, font, { maxWidth: 260, lineHeight: 7 });
+  drawAtTopRef(page, phil, 500, 233, 8, font, { maxWidth: 250, lineHeight: 7 });
+  drawAtTopRef(page, physician, 172, 253, 8, font, { maxWidth: 470 });
   drawAtTopRef(page, released, 395, 212, 8, font);
 }
 

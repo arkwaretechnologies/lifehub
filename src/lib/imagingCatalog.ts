@@ -65,6 +65,52 @@ export function emptyImagingSelection(catalog: ImagingCatalogRow[]): Record<stri
   return out;
 }
 
+/** Map saved imaging_request_items (or similar rows) to catalog checkbox state. */
+export function imagingSelectionFromRequestItems(
+  catalog: ImagingCatalogRow[],
+  items: Array<{
+    imaging_catalog_id?: string | null;
+    study_code?: string | null;
+    study_name?: string | null;
+    view_text?: string | null;
+  }>,
+): Record<string, ImagingLineSelection> {
+  const next = emptyImagingSelection(catalog);
+  const byCatalogId = new Map(catalog.map((c) => [String(c.id).trim(), c.code]));
+  const byCode = new Map(catalog.map((c) => [c.code.trim().toLowerCase(), c.code]));
+
+  for (const row of items) {
+    const catalogId = String(row.imaging_catalog_id ?? "").trim();
+    let code = catalogId ? byCatalogId.get(catalogId) : undefined;
+    if (!code) {
+      const studyCode = String(row.study_code ?? "").trim().toLowerCase();
+      if (studyCode) code = byCode.get(studyCode);
+    }
+    if (!code) {
+      const studyName = String(row.study_name ?? "").trim().toLowerCase();
+      if (studyName) {
+        const hit = catalog.find((c) => c.name.trim().toLowerCase() === studyName);
+        code = hit?.code;
+      }
+    }
+    if (!code) continue;
+    next[code] = { checked: true, view: String(row.view_text ?? "").trim() };
+  }
+  return next;
+}
+
+/** Notes shown to clinicians — hides the machine-readable imaging block. */
+export function planNotesWithoutImagingBlock(notes: string): string {
+  const text = notes ?? "";
+  const start = text.indexOf(IMAGING_NOTES_START);
+  const end = text.indexOf(IMAGING_NOTES_END);
+  if (start === -1 || end === -1 || end < start) return text;
+  const before = text.slice(0, start).trimEnd();
+  const after = text.slice(end + IMAGING_NOTES_END.length).trimStart();
+  const merged = [before, after].filter(Boolean).join("\n\n");
+  return merged ? `${merged}\n` : "";
+}
+
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

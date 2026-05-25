@@ -175,6 +175,120 @@ export async function fetchPhysicianFeeSaleItemsWithServiceNames(saleIds: string
   return { itemsBySaleId, error: null };
 }
 
+function moneyNum(v: unknown): number {
+  if (v == null) return 0;
+  const n = typeof v === "number" ? v : Number(String(v));
+  return Number.isFinite(n) ? n : 0;
+}
+
+export function physicianChargeLineKey(serviceId: string | number, unitFee: string | number): string {
+  const sid = Number(String(serviceId).trim());
+  const fee = moneyNum(unitFee);
+  if (!Number.isFinite(sid) || sid <= 0) return "";
+  return `${sid}|${fee}`;
+}
+
+export type PaidPhysicianLineStatus = {
+  exactKeys: Set<string>;
+  /** Paid unit fees per physician service id (string). */
+  feesByServiceId: Map<string, Set<number>>;
+};
+
+export function isPhysicianChargeLinePaid(
+  line: { serviceId: string; price: string },
+  paid: PaidPhysicianLineStatus,
+): boolean {
+  const sid = line.serviceId.trim();
+  if (!sid) return false;
+  const fee = moneyNum(line.price);
+  const key = physicianChargeLineKey(sid, fee);
+  if (paid.exactKeys.has(key)) return true;
+  const paidFees = paid.feesByServiceId.get(sid);
+  if (!paidFees) return false;
+  for (const pf of paidFees) {
+    if (Math.abs(pf - fee) < 0.02) return true;
+  }
+  return false;
+}
+
+function isPaidPhysicianSaleStatus(status: string | null | undefined): boolean {
+  return String(status ?? "").trim().toLowerCase() === PHYSICIAN_FEE_STATUS_PAID.toLowerCase();
+}
+
+function addPaidLineFromServiceAndFee(
+  status: PaidPhysicianLineStatus,
+  serviceId: string | number,
+  unitFee: string | number,
+): void {
+  const sid = String(serviceId).trim();
+  const fee = moneyNum(unitFee);
+  if (!sid || !Number.isFinite(fee)) return;
+  const key = physicianChargeLineKey(sid, fee);
+  if (key) status.exactKeys.add(key);
+  const set = status.feesByServiceId.get(sid) ?? new Set<number>();
+  set.add(fee);
+  status.feesByServiceId.set(sid, set);
+}
+
+/** Service lines already marked Paid at cashier for this visit (from all paid physician fee sales). */
+export async function fetchPaidPhysicianLineStatusForEncounter(encounterId: string): Promise<{
+  status: PaidPhysicianLineStatus;
+  error: string | null;
+}> {
+  const empty: PaidPhysicianLineStatus = { exactKeys: new Set(), feesByServiceId: new Map() };
+  const id = encounterId.trim();
+  if (!id) return { status: empty, error: null };
+
+  const res = await supabase
+    .from(PHYSICIAN_FEE_SALES_TABLE)
+    .select("id, status, notes")
+    .eq("encounter_id", id);
+
+  if (res.error) return { status: empty, error: res.error.message };
+
+  const paidSales = ((res.data ?? []) as Array<{ id: string; status?: string | null; notes?: string | null }>).filter(
+    (r) => isPaidPhysicianSaleStatus(r.status),
+  );
+  if (paidSales.length === 0) return { status: empty, error: null };
+
+  const saleIds = paidSales.map((r) => r.id).filter(Boolean);
+  const status: PaidPhysicianLineStatus = { exactKeys: new Set(), feesByServiceId: new Map() };
+
+  for (const sale of paidSales) {
+    if (!sale.notes) continue;
+    try {
+      const parsed = JSON.parse(sale.notes) as {
+        charges_services_lines?: Array<{ serviceId?: string; price?: string }>;
+      };
+      for (const row of parsed.charges_services_lines ?? []) {
+        addPaidLineFromServiceAndFee(status, row.serviceId ?? "", row.price ?? "");
+      }
+    } catch {
+      // ignore invalid notes JSON
+    }
+  }
+
+  const itemsRes = await fetchPhysicianFeeSaleItemsWithServiceNames(saleIds);
+  if (itemsRes.error) return { status, error: itemsRes.error };
+
+  for (const lines of itemsRes.itemsBySaleId.values()) {
+    for (const line of lines) {
+      addPaidLineFromServiceAndFee(status, line.physician_service_id, line.unit_fee);
+    }
+  }
+
+  return { status, error: null };
+}
+
+/** @deprecated Use {@link fetchPaidPhysicianLineStatusForEncounter}. */
+export async function fetchPaidPhysicianChargeLineKeysForEncounter(encounterId: string): Promise<{
+  keys: Set<string>;
+  error: string | null;
+}> {
+  const { status, error } = await fetchPaidPhysicianLineStatusForEncounter(encounterId);
+  return { keys: status.exactKeys, error };
+}
+
 export async function fetchLatestPhysicianFeeSaleForEncounter(encounterId: string): Promise<{
   sale: PhysicianFeeSaleRow | null;
   error: string | null;
@@ -182,7 +296,7 @@ export async function fetchLatestPhysicianFeeSaleForEncounter(encounterId: strin
   const res = await supabase
     .from(PHYSICIAN_FEE_SALES_TABLE)
     .select(
-      "id, patient_id, encounter_id, physician_id, subtotal, discount_type_id, discount_amount, total_amount, notes, created_at",
+      "id, patient_id, encounter_id, physician_id, subtotal, discount_type_id, discount_amount, total_amount, notes, created_at, status",
     )
     .eq("encounter_id", encounterId)
     .order("created_at", { ascending: false })
@@ -204,7 +318,23 @@ export async function upsertPhysicianFeeSaleForEncounter(args: {
   discountTypeId: number | null;
   notes: string | null;
   servedBy?: string | null;
+  /** When updating a sale already marked Paid at cashier, keep it Paid. */
+  preservePaidStatus?: boolean;
 }): Promise<{ id: string | null; error: string | null }> {
+  let status: string = "Completed";
+  if (args.existingId && args.preservePaidStatus) {
+    const cur = await supabase
+      .from(PHYSICIAN_FEE_SALES_TABLE)
+      .select("status")
+      .eq("id", args.existingId)
+      .limit(1)
+      .maybeSingle();
+    if (!cur.error) {
+      const s = String((cur.data as { status?: string | null } | null)?.status ?? "").trim();
+      if (s === PHYSICIAN_FEE_STATUS_PAID) status = PHYSICIAN_FEE_STATUS_PAID;
+    }
+  }
+
   const payload = {
     patient_id: args.patientId,
     encounter_id: args.encounterId,
@@ -214,7 +344,7 @@ export async function upsertPhysicianFeeSaleForEncounter(args: {
     discount_amount: args.discountAmount,
     vat_amount: 0,
     total_amount: args.totalAmount,
-    status: "Completed",
+    status,
     served_by: args.servedBy ?? null,
     notes: args.notes,
   } as const;

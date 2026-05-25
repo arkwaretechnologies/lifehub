@@ -1,11 +1,15 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import SearchIcon from "@mui/icons-material/Search";
 import {
+  alpha,
   Box,
   Checkbox,
   FormControlLabel,
+  InputBase,
   Typography,
+  useTheme,
 } from "@mui/material";
 import { consultFormControlLabelSx } from "@/components/consultation/ConsultationSectionTitle";
 import {
@@ -13,6 +17,7 @@ import {
   groupLabTestsByBloodChemTemplate,
   groupLabTestsByDescription,
   isPanelLabTestSelectedInUI,
+  labCatalogTestMatchesSearch,
   labCategoryUsesBloodChemTemplateSubgroups,
   labCategoryUsesUaFecalSubgroups,
   testsForLabOrderSection,
@@ -60,6 +65,8 @@ export type LabOrderCatalogSectionsProps = {
   requestedTestIds?: ReadonlySet<string>;
   /** Multi-column cards (consultation modal) vs single-column stack (reception triage). */
   layout?: "columns" | "stack";
+  /** `amend` = full catalog editable (post-payment order change). */
+  catalogMode?: "order" | "amend";
 };
 
 function sectionSubgroups(
@@ -85,8 +92,13 @@ export function LabOrderCatalogSections({
   testsCoveredByPackages,
   requestedTestIds,
   layout = "columns",
+  catalogMode = "order",
 }: LabOrderCatalogSectionsProps) {
-  const visibleSections = useMemo(
+  const lockRequested = catalogMode === "order" ? requestedTestIds : undefined;
+  const theme = useTheme();
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const catalogSections = useMemo(
     () =>
       sections
         .map((s) => ({
@@ -97,11 +109,71 @@ export function LabOrderCatalogSections({
     [sections],
   );
 
-  if (visibleSections.length === 0) {
+  const visibleSections = useMemo(() => {
+    const q = searchQuery.trim();
+    if (!q) return catalogSections;
+    return catalogSections
+      .map((s) => ({
+        ...s,
+        tests: s.tests.filter((t) => labCatalogTestMatchesSearch(q, t, s.category.name)),
+      }))
+      .filter((s) => s.tests.length > 0);
+  }, [catalogSections, searchQuery]);
+
+  const searchField = (
+    <Box
+      sx={{
+        display: "flex",
+        alignItems: "center",
+        gap: 1.25,
+        px: 2,
+        py: 1.15,
+        mb: layout === "stack" ? 1.5 : 2,
+        borderRadius: 999,
+        border: "1px solid",
+        borderColor: alpha(theme.palette.info.main, 0.4),
+        bgcolor: "background.paper",
+        transition: "box-shadow 0.2s ease, border-color 0.2s ease",
+        "&:focus-within": {
+          borderColor: "info.main",
+          boxShadow: `0 0 0 3px ${alpha(theme.palette.info.main, 0.18)}`,
+        },
+      }}
+    >
+      <SearchIcon sx={{ color: "text.secondary", fontSize: 22, flexShrink: 0 }} />
+      <InputBase
+        fullWidth
+        value={searchQuery}
+        onChange={(e) => setSearchQuery(e.target.value)}
+        placeholder="Search tests…"
+        inputProps={{
+          "aria-label": "Search laboratory tests by name, code, or category",
+        }}
+        sx={{
+          fontSize: "0.875rem",
+          "& .MuiInputBase-input": { py: 0.5 },
+          "& .MuiInputBase-input::placeholder": { opacity: 0.55 },
+        }}
+      />
+    </Box>
+  );
+
+  if (catalogSections.length === 0) {
     return (
       <Typography variant="body2" color="text.secondary">
         No lab tests found in the catalog.
       </Typography>
+    );
+  }
+
+  if (visibleSections.length === 0) {
+    return (
+      <Box>
+        {searchField}
+        <Typography variant="body2" color="text.secondary">
+          No tests match your search.
+        </Typography>
+      </Box>
     );
   }
 
@@ -134,7 +206,9 @@ export function LabOrderCatalogSections({
         {section.category.name}
       </Typography>
       <Box sx={{ display: "flex", flexDirection: "column", gap: 1.25 }}>
-        {sectionSubgroups(section.category, section.tests).map(({ heading, tests: subTests }) => (
+        {sectionSubgroups(section.category, section.tests)
+          .filter(({ tests: subTests }) => subTests.length > 0)
+          .map(({ heading, tests: subTests }) => (
           <Box key={`${String(section.category.id)}-${heading || "default"}`}>
             {heading ? (
               <Typography
@@ -151,11 +225,11 @@ export function LabOrderCatalogSections({
                 const panelComponentIds = getComponentTestIds(catalogTests, test.id);
                 const isPanel = panelComponentIds.length > 0;
                 const alreadyRequested =
-                  requestedTestIds != null &&
-                  (requestedTestIds.has(test.id) ||
+                  lockRequested != null &&
+                  (lockRequested.has(test.id) ||
                     (isPanel &&
                       panelComponentIds.length > 0 &&
-                      panelComponentIds.every((cid) => requestedTestIds.has(cid))));
+                      panelComponentIds.every((cid) => lockRequested.has(cid))));
                 const checked =
                   alreadyRequested ||
                   (isPanel
@@ -163,7 +237,7 @@ export function LabOrderCatalogSections({
                         test.id,
                         catalogTests,
                         selectedTestIds,
-                        requestedTestIds,
+                        lockRequested,
                       )
                     : selectedTestIds.has(test.id));
                 const coveredByPkg = testsCoveredByPackages?.has(test.id) ?? false;
@@ -247,17 +321,25 @@ export function LabOrderCatalogSections({
   ));
 
   if (layout === "stack") {
-    return <Box>{sectionNodes}</Box>;
+    return (
+      <Box>
+        {searchField}
+        {sectionNodes}
+      </Box>
+    );
   }
 
   return (
-    <Box
-      sx={{
-        columnCount: { xs: 1, sm: 2, md: 3 },
-        columnGap: 2.5,
-      }}
-    >
-      {sectionNodes}
+    <Box>
+      {searchField}
+      <Box
+        sx={{
+          columnCount: { xs: 1, sm: 2, md: 3 },
+          columnGap: 2.5,
+        }}
+      >
+        {sectionNodes}
+      </Box>
     </Box>
   );
 }

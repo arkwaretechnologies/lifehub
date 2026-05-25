@@ -84,10 +84,16 @@ export async function PATCH(req: Request) {
   const ticketActive = parseActiveDeptFromNotes(ticketInfo?.notes);
 
   if (setCaptured === true) {
+    const atLabCounter =
+      ticketActive === "LAB" &&
+      (ticketStatus === "Called" || ticketStatus === "Serving");
     const captureAllowed =
-      ticketActive === "IMAG" ||
-      ticketStatus === "Collected" ||
-      ticketStatus === "Completed";
+      !atLabCounter &&
+      (ticketActive === "IMAG" ||
+        ticketStatus === "Called" ||
+        ticketStatus === "Serving" ||
+        ticketStatus === "Collected" ||
+        ticketStatus === "Completed");
     if (!captureAllowed) {
       return NextResponse.json(
         { error: "Call the patient to imaging before marking Captured." },

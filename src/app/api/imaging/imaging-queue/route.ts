@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
 import {
   adminImagingRequestIdsWithSales,
+  adminRepairQueueTicketModalityFlags,
   adminUnpaidImagingRequestIdsOnTickets,
   imagingQueueCode,
 } from "@/lib/diagnosticQueueServer";
@@ -41,6 +42,8 @@ export type ImagingQueueRow = {
   active_dept?: QueueActiveDept;
   can_imaging_call?: boolean;
   can_open_imaging?: boolean;
+  imaging_call_tooltip?: string;
+  open_imaging_tooltip?: string;
 };
 
 async function attachImagingRequestDates(
@@ -76,6 +79,11 @@ export async function GET(req: Request) {
   }
 
   const todayIso = queueTicketTodayIsoDate();
+
+  const repair = await adminRepairQueueTicketModalityFlags(admin, todayIso);
+  if (repair.error) {
+    return NextResponse.json({ error: repair.error }, { status: 500 });
+  }
 
   let base = admin
     .from("queue_tickets")
@@ -142,6 +150,8 @@ export async function GET(req: Request) {
       imaging_display_status: pres.displayStatus,
       can_imaging_call: pres.canImagingCall,
       can_open_imaging: pres.canOpenImagingRequest,
+      imaging_call_tooltip: pres.imagingCallTooltip,
+      open_imaging_tooltip: pres.openImagingTooltip,
     };
   });
 

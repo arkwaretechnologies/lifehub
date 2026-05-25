@@ -31,6 +31,7 @@ export default function ImagingAppointmentsPage() {
   const [error, setError] = useState("");
   const [rows, setRows] = useState<ImagingQueueRow[]>([]);
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState("");
 
   const load = async () => {
     setError("");
@@ -69,6 +70,7 @@ export default function ImagingAppointmentsPage() {
     const id = ticketId.trim();
     if (!id) return;
     setError("");
+    setSuccessMessage("");
     setActionBusyId(id);
     try {
       const res = await authenticatedFetch("/api/imaging/call-patient", {
@@ -81,6 +83,7 @@ export default function ImagingAppointmentsPage() {
         setError(json.error ?? `Request failed (${res.status})`);
         return;
       }
+      setSuccessMessage("Patient called to imaging.");
       await load();
     } catch {
       setError("Failed to call patient.");
@@ -115,6 +118,11 @@ export default function ImagingAppointmentsPage() {
           {error ? (
             <Alert severity="error" sx={{ mb: 2 }}>
               {error}
+            </Alert>
+          ) : null}
+          {successMessage ? (
+            <Alert severity="success" sx={{ mb: 2 }} onClose={() => setSuccessMessage("")}>
+              {successMessage}
             </Alert>
           ) : null}
 
@@ -179,7 +187,12 @@ export default function ImagingAppointmentsPage() {
                       <TableCell>{new Date(t.issued_at).toLocaleTimeString()}</TableCell>
                       <TableCell sx={{ fontFamily: "monospace" }}>{t.encounter_id ?? "—"}</TableCell>
                       <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
-                        <Tooltip title={t.can_imaging_call ? "Call patient to imaging" : "Patient already called or not available"}>
+                        <Tooltip
+                          title={
+                            t.imaging_call_tooltip ??
+                            (t.can_imaging_call ? "Call patient to imaging" : "Cannot call right now")
+                          }
+                        >
                           <Box component="span" sx={{ display: "inline-flex" }}>
                             <Button
                               variant="contained"

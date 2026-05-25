@@ -11,8 +11,8 @@ type ConsultationSaveContextValue = {
   setPanelDirty: (panelKey: string, dirty: boolean) => void;
   /** Panels register a persist function called on "Save consultation". */
   registerSaveHandler: (panelKey: string, handler: SaveHandler) => () => void;
-  /** Runs all registered persist functions; clears dirty flags on success. */
-  runSaveAll: () => Promise<{ ok: boolean; error: string | null }>;
+  /** Runs dirty panels' persist functions; clears dirty flags on success. */
+  runSaveAll: () => Promise<{ ok: boolean; error: string | null; savedPanelKeys: string[] }>;
   saving: boolean;
 };
 
@@ -45,19 +45,22 @@ export function ConsultationSaveProvider({ children }: { children: React.ReactNo
   const runSaveAll = useCallback(async () => {
     setSaving(true);
     try {
+      const savedPanelKeys: string[] = [];
       const entries = Object.entries(handlersRef.current);
-      for (const [, handler] of entries) {
+      for (const [panelKey, handler] of entries) {
+        if (!dirtyByPanelRef.current[panelKey]) continue;
         await handler();
+        savedPanelKeys.push(panelKey);
       }
       // If all saves completed, clear dirty flags.
       for (const k of Object.keys(dirtyByPanelRef.current)) {
         dirtyByPanelRef.current[k] = false;
       }
       setDirtyTick((n) => n + 1);
-      return { ok: true, error: null };
+      return { ok: true, error: null, savedPanelKeys };
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to save consultation.";
-      return { ok: false, error: msg };
+      return { ok: false, error: msg, savedPanelKeys: [] };
     } finally {
       setSaving(false);
     }

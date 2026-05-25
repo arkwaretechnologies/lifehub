@@ -57,6 +57,8 @@ import {
 import type { EncounterLabRequestSummary } from "@/lib/labRequests";
 import {
   fetchCashierUnpaidPhysicianFeeEncounterCounts,
+  fetchEncounterTransIdsWithPendingDiagnosticAmendments,
+  fetchEncounterTransIdsWithUnpaidImagingRequests,
   fetchEncounterTransIdsWithUnpaidLabRequests,
   fetchLabRequestsWithoutLabSaleForEncounters,
   fetchStandaloneLabRequestsWithoutLabSaleForPatient,
@@ -129,6 +131,7 @@ export default function CashierHome() {
   const [openLabRequestsByEncounter, setOpenLabRequestsByEncounter] = useState<
     Map<string, EncounterLabRequestSummary[]>
   >(() => new Map());
+  const [amendmentDueByEncounterId, setAmendmentDueByEncounterId] = useState<Map<string, number>>(() => new Map());
   const [queueLoading, setQueueLoading] = useState(true);
   const [queueError, setQueueError] = useState("");
 
@@ -164,22 +167,46 @@ export default function CashierHome() {
       setQueueError(res.error);
       setPendingByEncounterId(new Map());
       setOpenLabRequestsByEncounter(new Map());
+      setAmendmentDueByEncounterId(new Map());
       return;
     }
     setPendingByEncounterId(res.pendingByEncounterId);
 
-    const labEncRes = await fetchEncounterTransIdsWithUnpaidLabRequests();
+    const [labEncRes, amendEncRes, imagingEncRes] = await Promise.all([
+      fetchEncounterTransIdsWithUnpaidLabRequests(),
+      fetchEncounterTransIdsWithPendingDiagnosticAmendments(),
+      fetchEncounterTransIdsWithUnpaidImagingRequests(),
+    ]);
     if (labEncRes.error) {
       setQueueLoading(false);
       setQueueError(labEncRes.error);
       setOpenLabRequestsByEncounter(new Map());
+      setAmendmentDueByEncounterId(new Map());
       return;
     }
+    if (amendEncRes.error) {
+      setQueueLoading(false);
+      setQueueError(amendEncRes.error);
+      setOpenLabRequestsByEncounter(new Map());
+      setAmendmentDueByEncounterId(new Map());
+      return;
+    }
+    if (imagingEncRes.error) {
+      setQueueLoading(false);
+      setQueueError(imagingEncRes.error);
+      setOpenLabRequestsByEncounter(new Map());
+      setAmendmentDueByEncounterId(new Map());
+      return;
+    }
+
+    setAmendmentDueByEncounterId(amendEncRes.amountDueByEncounterId);
 
     const encKeys = [
       ...new Set<string>([
         ...res.pendingByEncounterId.keys(),
         ...[...labEncRes.ids].map((k) => String(k).trim()).filter(Boolean),
+        ...[...amendEncRes.ids].map((k) => String(k).trim()).filter(Boolean),
+        ...[...imagingEncRes.ids].map((k) => String(k).trim()).filter(Boolean),
       ]),
     ];
     const labRes = await fetchLabRequestsWithoutLabSaleForEncounters(encKeys);
@@ -187,10 +214,15 @@ export default function CashierHome() {
     if (labRes.error) {
       setQueueError(labRes.error);
       setOpenLabRequestsByEncounter(new Map());
+      setAmendmentDueByEncounterId(new Map());
       return;
     }
     setOpenLabRequestsByEncounter(labRes.byEncounter);
   }, []);
+
+  function formatMoneyShort(v: number): string {
+    return v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
 
   useEffect(() => {
     void loadQueue();
@@ -324,6 +356,18 @@ export default function CashierHome() {
         /* still navigate */
       }
       router.push(`/cashier/${hit.encounter.id}`);
+      return;
+    }
+    // Full encounter UUID: open visit checkout even when search index omits this visit.
+    try {
+      const suppress = sessionStorage.getItem(CASHIER_AUTONAV_SUPPRESS_KEY);
+      if (suppress !== ql) {
+        sessionStorage.setItem(CASHIER_AUTONAV_SUPPRESS_KEY, ql);
+        router.push(`/cashier/${ql}`);
+        return;
+      }
+    } catch {
+      router.push(`/cashier/${ql}`);
       return;
     }
     void tryNavigateFromScannedUuid(q, router);
@@ -957,6 +1001,9 @@ export default function CashierHome() {
                       Lab orders due
                     </TableCell>
                     <TableCell align="right" sx={consultTableHeadCellSx}>
+                      Amendment due
+                    </TableCell>
+                    <TableCell align="right" sx={consultTableHeadCellSx}>
                       Action
                     </TableCell>
                   </TableRow>
@@ -981,6 +1028,16 @@ export default function CashierHome() {
                       </TableCell>
                       <TableCell align="right" sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
                         {openLabRequestsByEncounter.get(e.id)?.length ?? 0}
+                      </TableCell>
+                      <TableCell
+                        align="right"
+                        sx={{
+                          ...consultTableBodyCellSx,
+                          fontWeight: (amendmentDueByEncounterId.get(e.id.toLowerCase()) ?? 0) > 0 ? 700 : 400,
+                          color: (amendmentDueByEncounterId.get(e.id.toLowerCase()) ?? 0) > 0 ? "warning.dark" : "text.primary",
+                        }}
+                      >
+                        {formatMoneyShort(amendmentDueByEncounterId.get(e.id.toLowerCase()) ?? 0)}
                       </TableCell>
                       <TableCell align="right" sx={{ ...consultTableBodyCellSx, whiteSpace: "nowrap" }}>
                         <Button

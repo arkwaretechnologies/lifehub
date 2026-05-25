@@ -367,6 +367,33 @@ export function filterOrderableLabTests(tests: LabTestCatalogItem[]): LabTestCat
   return tests.filter((t) => t.is_orderable !== false);
 }
 
+/** Client-side catalog search (reception triage, consultation lab request). Empty query matches all. */
+export function labCatalogTestMatchesSearch(
+  query: string,
+  test: LabTestCatalogItem,
+  categoryName: string,
+): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const hay = [
+    test.code,
+    test.name,
+    test.description,
+    test.specimen_type,
+    test.unit,
+    test.reference_range,
+    test.results_template_code,
+    String(test.id),
+    String(test.price ?? ""),
+    test.sort_order != null ? String(test.sort_order) : "",
+    categoryName,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return hay.includes(q);
+}
+
 export function componentHasPanelLink(
   test: Pick<LabTestCatalogItem, "panel_lab_test_ids">,
   panelId: string,

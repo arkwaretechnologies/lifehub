@@ -7,6 +7,7 @@ import HistoryOutlinedIcon from "@mui/icons-material/HistoryOutlined";
 import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
 import PrintOutlinedIcon from "@mui/icons-material/PrintOutlined";
 import SaveOutlinedIcon from "@mui/icons-material/SaveOutlined";
+import ClearOutlinedIcon from "@mui/icons-material/ClearOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import {
   Alert,
@@ -20,11 +21,13 @@ import {
   Divider,
   FormControl,
   FormControlLabel,
+  IconButton,
   InputAdornment,
   Menu,
   MenuItem,
   Select,
   Snackbar,
+  Stack,
   TextField,
   TablePagination,
   Tooltip,
@@ -48,6 +51,12 @@ import { formatDateMMDDYYYY, formatLabTime, formatQueueTicketWhen } from "@/lib/
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { mergeAutoFlagIntoLabResultRow } from "@/lib/labResultAutoFlag";
 import { openLabResultsPrintWindow } from "@/lib/labResultsPrint";
+import { openLabTestChecklistPrintWindow } from "@/lib/labTestChecklistPrint";
+import {
+  categoryCollectState,
+  isLabItemCollectedFlag,
+} from "@/lib/labCategoryCollectUi";
+import { labQueueDisplayChipColor } from "@/lib/labQueuePresentation";
 import {
   canLabCallPatient,
   canOpenLabQueueRequest,
@@ -90,19 +99,97 @@ function groupItemsByCategory(items: LabRequestItemView[]): LabResultCategorySec
   });
 }
 
-function categoryCollectState(items: LabRequestItemView[]): {
-  allCollected: boolean;
-  indeterminate: boolean;
-} {
-  if (items.length === 0) return { allCollected: false, indeterminate: false };
-  let collectedCount = 0;
-  for (const it of items) {
-    if ((it.collected_item ?? "").trim().toUpperCase() === "Y") collectedCount += 1;
+function labResultItemMatchesQuery(
+  it: LabRequestItemView,
+  categoryName: string,
+  query: string,
+): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const hay = [it.test_name, it.test_code, it.lab_test_id, it.specimen_type, categoryName]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return hay.includes(q);
+}
+
+function filterResultSections(
+  sections: LabResultCategorySection[],
+  query: string,
+): LabResultCategorySection[] {
+  const q = query.trim();
+  if (!q) return sections;
+  return sections
+    .map((section) => {
+      const items = section.items.filter((it) => labResultItemMatchesQuery(it, section.categoryName, q));
+      return items.length > 0 ? { ...section, items } : null;
+    })
+    .filter((s): s is LabResultCategorySection => s != null);
+}
+
+type LabResultPersistRow = {
+  lab_request_item_id?: string;
+  result_value?: string | null;
+  result_unit?: string | null;
+  reference_range?: string | null;
+  flag?: string | null;
+  remarks?: string | null;
+  status?: string | null;
+};
+
+async function persistLabResultItem(
+  it: LabRequestItemView,
+): Promise<{ ok: true; row: LabResultPersistRow } | { ok: false; error: string }> {
+  const id = it.id.trim();
+  if (!id) return { ok: false, error: "Missing lab request item id." };
+  try {
+    const res = await authenticatedFetch("/api/laboratory/lab-results", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        labRequestItemId: id,
+        result_value: it.result_value ?? null,
+        result_unit: it.result_unit ?? null,
+        reference_range: it.reference_range ?? null,
+        flag: it.flag ?? null,
+        remarks: it.remarks ?? null,
+        status: it.result_status ?? "Pending",
+      }),
+    });
+    const json = (await res.json().catch(() => ({}))) as { error?: string; row?: LabResultPersistRow };
+    if (!res.ok) {
+      return { ok: false, error: json.error ?? `Request failed (${res.status})` };
+    }
+    if (!json.row?.lab_request_item_id?.trim()) {
+      return { ok: false, error: "Save succeeded but no result row was returned." };
+    }
+    return { ok: true, row: json.row };
+  } catch {
+    return { ok: false, error: "Failed to save result." };
   }
-  return {
-    allCollected: collectedCount === items.length,
-    indeterminate: collectedCount > 0 && collectedCount < items.length,
+}
+
+function mergePersistedLabResultRow(
+  item: LabRequestItemView,
+  row: LabResultPersistRow,
+  patientSex: string | null,
+): LabRequestItemView {
+  const rid = row.lab_request_item_id?.trim();
+  if (!rid || item.id !== rid) return item;
+  const next: LabRequestItemView = {
+    ...item,
+    result_value: row.result_value ?? null,
+    result_unit: row.result_unit ?? null,
+    reference_range: row.reference_range ?? null,
+    flag: row.flag ?? null,
+    remarks: row.remarks ?? null,
+    result_status: row.status ?? item.result_status,
   };
+  return mergeAutoFlagIntoLabResultRow(next, patientSex);
+}
+
+function isLabItemCollected(it: LabRequestItemView): boolean {
+  return isLabItemCollectedFlag(it.collected_item);
 }
 
 export default function LabResultsPage() {
@@ -128,9 +215,11 @@ export default function LabResultsPage() {
   const [reqLoading, setReqLoading] = useState(false);
   const [reqError, setReqError] = useState("");
   const [reqItems, setReqItems] = useState<LabRequestItemView[]>([]);
+  const [testSearchQuery, setTestSearchQuery] = useState("");
   const [reqHeader, setReqHeader] = useState<LabRequestHeaderView | null>(null);
   const [itemSavingId, setItemSavingId] = useState<string | null>(null);
   const [categoryCollectingId, setCategoryCollectingId] = useState<string | null>(null);
+  const [categoryResultsSavingId, setCategoryResultsSavingId] = useState<string | null>(null);
   const [partialReleaseBusy, setPartialReleaseBusy] = useState(false);
   const [priorResultsLoading, setPriorResultsLoading] = useState(false);
   const [priorResults, setPriorResults] = useState<PatientPriorLabResultEntry[]>([]);
@@ -139,15 +228,9 @@ export default function LabResultsPage() {
   const [toastMessage, setToastMessage] = useState("");
   const [toastSeverity, setToastSeverity] = useState<"success" | "error">("success");
 
-  const statusColor: Record<QueueTicketStatus, "default" | "warning" | "info" | "success"> = {
-    Waiting: "warning",
-    Called: "info",
-    Collected: "success",
-    Serving: "info",
-    Completed: "success",
-    Skipped: "default",
-    Cancelled: "default",
-    "No Show": "default",
+  const queueTicketStatusChip = (t: LabQueueRow) => {
+    const label = t.lab_display_status ?? t.status;
+    return { label, color: labQueueDisplayChipColor(label, t.status) };
   };
 
   const loadQueue = async () => {
@@ -175,6 +258,7 @@ export default function LabResultsPage() {
     setReqItems([]);
     setReqHeader(null);
     setReqError("");
+    setTestSearchQuery("");
     setSelectedRequestId(labRequestId);
     if (!labRequestId) return;
     setReqLoading(true);
@@ -421,6 +505,35 @@ export default function LabResultsPage() {
 
   const resultSections = useMemo(() => groupItemsByCategory(reqItems), [reqItems]);
 
+  const filteredResultSections = useMemo(
+    () => filterResultSections(resultSections, testSearchQuery),
+    [resultSections, testSearchQuery],
+  );
+
+  const resultSectionByCategoryId = useMemo(
+    () => new Map(resultSections.map((s) => [s.categoryId, s])),
+    [resultSections],
+  );
+
+  const testSearchMatchCount = useMemo(
+    () => filteredResultSections.reduce((n, s) => n + s.items.length, 0),
+    [filteredResultSections],
+  );
+
+  const testSearchActive = testSearchQuery.trim().length > 0;
+
+  useEffect(() => {
+    const q = testSearchQuery.trim();
+    if (!q) return;
+    const sections = filterResultSections(resultSections, q);
+    const firstId = sections[0]?.items[0]?.id;
+    if (!firstId) return;
+    const t = window.setTimeout(() => {
+      document.getElementById(`lab-res-card-${firstId}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [testSearchQuery, resultSections]);
+
   const releasePartialCollection = async () => {
     if (!selectedTicket?.id) return;
     setReqError("");
@@ -466,6 +579,8 @@ export default function LabResultsPage() {
       setReqItems((prev) =>
         prev.map((it) => (ids.includes(it.id) ? { ...it, collected_item: collected ? "Y" : null } : it)),
       );
+      const lr = selectedRequestId.trim();
+      if (lr) await loadRequest(lr);
       await loadQueue();
     } catch {
       setReqError("Failed to save specimen status.");
@@ -477,61 +592,22 @@ export default function LabResultsPage() {
   const saveResult = async (it: LabRequestItemView) => {
     const id = it.id.trim();
     if (!id) return;
-    if ((it.collected_item ?? "").trim().toUpperCase() !== "Y") return;
+    if (!isLabItemCollected(it)) return;
     setReqError("");
     setItemSavingId(id);
     try {
-      const res = await authenticatedFetch("/api/laboratory/lab-results", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          labRequestItemId: id,
-          result_value: it.result_value ?? null,
-          result_unit: it.result_unit ?? null,
-          reference_range: it.reference_range ?? null,
-          flag: it.flag ?? null,
-          remarks: it.remarks ?? null,
-          status: it.result_status ?? "Pending",
-        }),
-      });
-      const json = (await res.json().catch(() => ({}))) as {
-        error?: string;
-        row?: {
-          lab_request_item_id?: string;
-          result_value?: string | null;
-          result_unit?: string | null;
-          reference_range?: string | null;
-          flag?: string | null;
-          remarks?: string | null;
-          status?: string | null;
-        };
-      };
-      if (!res.ok) {
-        const msg = json.error ?? `Request failed (${res.status})`;
-        setReqError(msg);
+      const result = await persistLabResultItem(it);
+      if (!result.ok) {
+        setReqError(result.error);
         setToastSeverity("error");
-        setToastMessage(msg);
+        setToastMessage(result.error);
         setToastOpen(true);
         return;
       }
-      const rid = json.row?.lab_request_item_id?.trim();
-      if (rid) {
-        setReqItems((prev) =>
-          prev.map((x) => {
-            if (x.id !== rid) return x;
-            const next = {
-              ...x,
-              result_value: json.row!.result_value ?? null,
-              result_unit: json.row!.result_unit ?? null,
-              reference_range: json.row!.reference_range ?? null,
-              flag: json.row!.flag ?? null,
-              remarks: json.row!.remarks ?? null,
-              result_status: json.row!.status ?? x.result_status,
-            };
-            return mergeAutoFlagIntoLabResultRow(next, reqHeader?.patient_sex ?? null);
-          }),
-        );
-      }
+      const rid = result.row.lab_request_item_id!.trim();
+      setReqItems((prev) =>
+        prev.map((x) => (x.id === rid ? mergePersistedLabResultRow(x, result.row, reqHeader?.patient_sex ?? null) : x)),
+      );
       void loadQueue();
       setReqError("");
       setToastSeverity("success");
@@ -548,6 +624,45 @@ export default function LabResultsPage() {
     }
   };
 
+  const saveCategoryResults = async (section: LabResultCategorySection) => {
+    const targets = section.items.filter(isLabItemCollected);
+    if (targets.length === 0) return;
+    setReqError("");
+    setCategoryResultsSavingId(section.categoryId);
+    const patientSex = reqHeader?.patient_sex ?? null;
+    try {
+      let savedCount = 0;
+      for (const it of targets) {
+        const result = await persistLabResultItem(it);
+        if (!result.ok) {
+          setReqError(result.error);
+          setToastSeverity("error");
+          setToastMessage(result.error);
+          setToastOpen(true);
+          return;
+        }
+        savedCount += 1;
+        const rid = result.row.lab_request_item_id!.trim();
+        setReqItems((prev) =>
+          prev.map((x) => (x.id === rid ? mergePersistedLabResultRow(x, result.row, patientSex) : x)),
+        );
+      }
+      await loadQueue();
+      setReqError("");
+      setToastSeverity("success");
+      setToastMessage(`Saved ${savedCount} result${savedCount === 1 ? "" : "s"}.`);
+      setToastOpen(true);
+    } catch {
+      const msg = "Failed to save results.";
+      setReqError(msg);
+      setToastSeverity("error");
+      setToastMessage(msg);
+      setToastOpen(true);
+    } finally {
+      setCategoryResultsSavingId(null);
+    }
+  };
+
   const handlePrintLabResults = async () => {
     if (!reqHeader || reqItems.length === 0) return;
     const ok = await openLabResultsPrintWindow({ header: reqHeader, items: reqItems });
@@ -556,6 +671,17 @@ export default function LabResultsPage() {
       setToastMessage("Could not generate lab result PDF. Check that template files exist and try again.");
       setToastOpen(true);
     }
+  };
+
+  const handlePrintTestChecklist = () => {
+    if (!reqHeader || reqItems.length === 0) return;
+    openLabTestChecklistPrintWindow({
+      header: reqHeader,
+      sections: resultSections.map((s) => ({
+        categoryName: s.categoryName,
+        items: s.items,
+      })),
+    });
   };
 
   const flagOptions = ["Normal", "High", "Low", "Critical", "Abnormal"] as const;
@@ -667,7 +793,10 @@ export default function LabResultsPage() {
                 <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
                   {sorted.map((t) => {
                     const active = (t.lab_request_id ?? "").trim() === selectedRequestId;
-                    const canOpen = canOpenLabQueueRequest(t.status, t.lab_request_id);
+                    const canOpen = canOpenLabQueueRequest(t.status, t.lab_request_id, {
+                      labAnyCollected: t.lab_any_collected,
+                    });
+                    const statusChip = queueTicketStatusChip(t);
                     return (
                       <Card
                         key={t.id}
@@ -680,7 +809,11 @@ export default function LabResultsPage() {
                         }}
                         onClick={() => {
                           const lr = (t.lab_request_id ?? "").trim();
-                          if (!lr || !canOpenLabQueueRequest(t.status, lr)) return;
+                          if (
+                            !lr ||
+                            !canOpenLabQueueRequest(t.status, lr, { labAnyCollected: t.lab_any_collected })
+                          )
+                            return;
                           openLabRequestFromTicket(lr);
                         }}
                       >
@@ -695,7 +828,7 @@ export default function LabResultsPage() {
                               </Typography>
                             </Box>
                             <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 0.75 }}>
-                              <Chip label={t.status} color={statusColor[t.status]} size="small" />
+                              <Chip label={statusChip.label} color={statusChip.color} size="small" />
                               <Typography variant="caption" color="text.secondary" sx={{ textAlign: "right" }}>
                                 {formatTicketWhen(t)}
                               </Typography>
@@ -706,6 +839,7 @@ export default function LabResultsPage() {
                               title={labCallButtonTooltip(t.status, {
                                 includesImaging: t.includes_imaging,
                                 specimenCollected: isSpecimenCollectedOnTicket(t.notes),
+                                labAnyCollected: t.lab_any_collected,
                                 labAllCollected: t.lab_all_collected,
                                 imagingAllCaptured: t.imaging_all_captured,
                                 activeDept: t.active_dept,
@@ -732,6 +866,7 @@ export default function LabResultsPage() {
                                       canLabCallPatient(t.status, {
                                         includesImaging: t.includes_imaging,
                                         specimenCollected: isSpecimenCollectedOnTicket(t.notes),
+                                        labAnyCollected: t.lab_any_collected,
                                         labAllCollected: t.lab_all_collected,
                                         imagingAllCaptured: t.imaging_all_captured,
                                         activeDept: t.active_dept,
@@ -743,7 +878,11 @@ export default function LabResultsPage() {
                                 </Button>
                               </span>
                             </Tooltip>
-                            <Tooltip title={labQueueRequestButtonTooltip(t.status, t.lab_request_id)}>
+                            <Tooltip
+                              title={labQueueRequestButtonTooltip(t.status, t.lab_request_id, {
+                                labAnyCollected: t.lab_any_collected,
+                              })}
+                            >
                               <span>
                                 <Button
                                   variant="outlined"
@@ -753,7 +892,13 @@ export default function LabResultsPage() {
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     const lr = (t.lab_request_id ?? "").trim();
-                                    if (!lr || !canOpenLabQueueRequest(t.status, lr)) return;
+                                    if (
+                                      !lr ||
+                                      !canOpenLabQueueRequest(t.status, lr, {
+                                        labAnyCollected: t.lab_any_collected,
+                                      })
+                                    )
+                                      return;
                                     openLabRequestFromTicket(lr);
                                   }}
                                   sx={{ borderRadius: 999, textTransform: "none", fontWeight: 700 }}
@@ -865,7 +1010,11 @@ export default function LabResultsPage() {
                               </Typography>
                             </Box>
                             <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 0.75 }}>
-                              <Chip label={t.status} color={statusColor[t.status]} size="small" />
+                              <Chip
+                                label={queueTicketStatusChip(t).label}
+                                color={queueTicketStatusChip(t).color}
+                                size="small"
+                              />
                               <Typography variant="caption" color="text.secondary" sx={{ textAlign: "right" }}>
                                 {formatTicketWhen(t)}
                               </Typography>
@@ -915,18 +1064,29 @@ export default function LabResultsPage() {
               <Typography variant="subtitle1" fontWeight={800}>
                 Request details
               </Typography>
-              <Button
-                variant="outlined"
-                size="small"
-                startIcon={<PrintOutlinedIcon />}
-                disabled={!reqHeader || reqItems.length === 0}
-                onClick={() => void handlePrintLabResults()}
-              >
-                Print Laboratory Results
-              </Button>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={<PrintOutlinedIcon />}
+                  disabled={!reqHeader || reqItems.length === 0}
+                  onClick={() => void handlePrintLabResults()}
+                >
+                  Print Laboratory Results
+                </Button>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={<PrintOutlinedIcon />}
+                  disabled={!reqHeader || reqItems.length === 0}
+                  onClick={handlePrintTestChecklist}
+                >
+                  Print Test Checklist
+                </Button>
+              </Stack>
             </Box>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-              Select a ticket on the left to view requested tests. Mark each category as collected to enable result entry for its tests.
+              Select a ticket on the left to view requested tests. Check Collected on each category to mark every test in that group as collected and enable result entry.
               {reqHeader?.patient_id != null && priorResults.length > 0
                 ? " Use “Previous result” on each line to copy a value from this patient’s earlier lab orders."
                 : null}
@@ -1034,9 +1194,55 @@ export default function LabResultsPage() {
               </Typography>
             ) : (
               <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                {resultSections.map((section) => {
-                  const { allCollected, indeterminate } = categoryCollectState(section.items);
+                <Box sx={{ maxWidth: 480 }}>
+                  <TextField
+                    {...commonFieldProps}
+                    hiddenLabel
+                    placeholder="Search tests by name, code, or category…"
+                    value={testSearchQuery}
+                    onChange={(e) => setTestSearchQuery(e.target.value)}
+                    sx={[fieldInputSx, { "& .MuiInputBase-input": { textTransform: "none" } }]}
+                    slotProps={{
+                      input: {
+                        startAdornment: (
+                          <InputAdornment position="start">
+                            <SearchIcon fontSize="small" sx={{ color: "info.main" }} />
+                          </InputAdornment>
+                        ),
+                        endAdornment: testSearchActive ? (
+                          <InputAdornment position="end">
+                            <IconButton
+                              size="small"
+                              aria-label="Clear test search"
+                              onClick={() => setTestSearchQuery("")}
+                              edge="end"
+                            >
+                              <ClearOutlinedIcon fontSize="small" />
+                            </IconButton>
+                          </InputAdornment>
+                        ) : undefined,
+                      },
+                    }}
+                  />
+                  {testSearchActive ? (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
+                      {testSearchMatchCount} of {reqItems.length} test{reqItems.length === 1 ? "" : "s"} match &ldquo;
+                      {testSearchQuery.trim()}&rdquo;
+                    </Typography>
+                  ) : null}
+                </Box>
+
+                {testSearchActive && filteredResultSections.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary">
+                    No tests match your search.
+                  </Typography>
+                ) : (
+                  filteredResultSections.map((section) => {
+                  const fullSection = resultSectionByCategoryId.get(section.categoryId) ?? section;
+                  const { allCollected, indeterminate } = categoryCollectState(fullSection.items);
                   const categoryBusy = categoryCollectingId === section.categoryId;
+                  const categoryResultsSaving = categoryResultsSavingId === section.categoryId;
+                  const categoryHasCollectedItems = fullSection.items.some(isLabItemCollected);
                   return (
                     <Box
                       key={section.categoryId}
@@ -1071,36 +1277,58 @@ export default function LabResultsPage() {
                             {section.categoryName.toUpperCase()}
                           </Typography>
                           <Typography variant="caption" color="text.secondary">
-                            {section.items.length} test{section.items.length === 1 ? "" : "s"}
+                            {testSearchActive
+                              ? `${section.items.length} of ${fullSection.items.length} test${fullSection.items.length === 1 ? "" : "s"}`
+                              : `${section.items.length} test${section.items.length === 1 ? "" : "s"}`}
                           </Typography>
                         </Box>
-                        <FormControlLabel
-                          sx={{ m: 0, alignItems: "center", flexShrink: 0 }}
-                          control={
-                            <Checkbox
-                              checked={allCollected}
-                              indeterminate={indeterminate}
-                              disabled={categoryBusy}
-                              onChange={(_, checked) => void saveCategoryCollected(section, checked)}
-                            />
-                          }
-                          label={
-                            <Typography variant="caption" fontWeight={800}>
-                              Collected
-                            </Typography>
-                          }
-                          labelPlacement="start"
-                        />
+                        <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0, flexWrap: "wrap" }}>
+                          <Button
+                            variant="outlined"
+                            size="small"
+                            startIcon={
+                              categoryResultsSaving ? (
+                                <CircularProgress size={16} color="inherit" />
+                              ) : (
+                                <SaveOutlinedIcon fontSize="small" />
+                              )
+                            }
+                            disabled={!categoryHasCollectedItems || categoryBusy || categoryResultsSaving}
+                            onClick={() => void saveCategoryResults(fullSection)}
+                            sx={{ textTransform: "none", fontWeight: 700, whiteSpace: "nowrap" }}
+                          >
+                            Save all results
+                          </Button>
+                          <FormControlLabel
+                            sx={{ m: 0, alignItems: "center" }}
+                            control={
+                              <Checkbox
+                                checked={allCollected}
+                                indeterminate={indeterminate}
+                                disabled={categoryBusy || categoryResultsSaving}
+                                onChange={(_, checked) => void saveCategoryCollected(fullSection, checked)}
+                              />
+                            }
+                            label={
+                              <Typography variant="caption" fontWeight={800}>
+                                Collected
+                              </Typography>
+                            }
+                            labelPlacement="start"
+                          />
+                        </Stack>
                       </Box>
 
                       <Box sx={{ display: "flex", flexDirection: "column", gap: 1.25, p: 1.5 }}>
                         {section.items.map((it) => {
-                          const categoryCollected = allCollected;
-                          const busy = itemSavingId === it.id || categoryBusy;
+                          const categoryCollected = isLabItemCollected(it);
+                          const busy =
+                            itemSavingId === it.id || categoryBusy || categoryResultsSaving;
                           const priorOptions = priorResultsByTestId.get(it.lab_test_id) ?? [];
                           return (
                             <Box
                               key={it.id}
+                              id={`lab-res-card-${it.id}`}
                               sx={{
                                 border: "1px solid #000",
                                 borderRadius: 2,
@@ -1335,7 +1563,8 @@ export default function LabResultsPage() {
                       </Box>
                     </Box>
                   );
-                })}
+                })
+                )}
               </Box>
             )}
           </CardContent>

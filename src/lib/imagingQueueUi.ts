@@ -38,6 +38,22 @@ export type ImagingQueuePresentation = {
 
 const BLOCKED: QueueTicketStatus[] = ["Cancelled", "Skipped", "No Show"];
 
+function imagingCapturedPresentation(
+  gate: ImagingQueueLabGate,
+  progress?: ImagingQueueStudyProgress,
+): ImagingQueuePresentation | null {
+  if (progress?.allCaptured !== true) return null;
+  const labStillPending = gate.includesLab && !gate.labAllCollected;
+  return {
+    displayStatus: labStillPending ? "Captured · lab pending" : "Captured",
+    chipColor: "success",
+    canImagingCall: false,
+    canOpenImagingRequest: true,
+    imagingCallTooltip: "Imaging studies already captured",
+    openImagingTooltip: "Open imaging request",
+  };
+}
+
 export function getImagingQueuePresentation(
   ticketStatus: QueueTicketStatus,
   imagingRequestId: string | null | undefined,
@@ -80,26 +96,29 @@ export function getImagingQueuePresentation(
   }
 
   if (ticketStatus === "Waiting") {
+    const capturedPres = imagingCapturedPresentation(gate, progress);
+    if (capturedPres) return capturedPres;
+
     const labReady = isLabReadyForImaging(gate);
-    const labPending = gate.includesLab && !labReady;
     const partialReleased = gate.includesLab && gate.labPartialReleased && !gate.labAllCollected;
     return {
-      displayStatus: labPending
-        ? "Waiting · lab pending"
-        : partialReleased
-          ? "Waiting · partial collection"
-          : "Waiting",
+      displayStatus: partialReleased
+        ? "Waiting · partial collection"
+        : "Waiting",
       chipColor: "warning",
-      canImagingCall: labReady,
+      canImagingCall: true,
       canOpenImagingRequest: false,
-      imagingCallTooltip: labReady
-        ? "Call patient to imaging"
-        : "Mark specimens collected or use Partially collected on the lab request",
+      imagingCallTooltip: gate.includesLab && !labReady
+        ? "Call patient to imaging (lab may still be pending)"
+        : "Call patient to imaging",
       openImagingTooltip: "Call the patient first",
     };
   }
 
   if (ticketStatus === "Called") {
+    const capturedPres = imagingCapturedPresentation(gate, progress);
+    if (capturedPres) return capturedPres;
+
     if (activeDept === "IMAG") {
       return {
         displayStatus: "Called at imaging",
@@ -111,47 +130,60 @@ export function getImagingQueuePresentation(
       };
     }
     if (activeDept === "LAB") {
+      const labReady = isLabReadyForImaging(gate);
+      if (gate.labPartialReleased && labReady) {
+        return {
+          displayStatus: "Ready for imaging",
+          chipColor: "warning",
+          canImagingCall: true,
+          canOpenImagingRequest: false,
+          imagingCallTooltip: "Call patient to imaging (released from lab)",
+          openImagingTooltip: "Call the patient first",
+        };
+      }
       return {
-        displayStatus: "Called at lab",
+        displayStatus: "At laboratory",
         chipColor: "info",
         canImagingCall: false,
         canOpenImagingRequest: false,
-        imagingCallTooltip: "Patient is at the laboratory",
-        openImagingTooltip: "Wait for laboratory collection",
+        imagingCallTooltip:
+          "Patient is at the laboratory — use Partially collected on the lab request first",
+        openImagingTooltip: "Wait for laboratory partial release",
+      };
+    }
+    const labReady = isLabReadyForImaging(gate);
+    if (gate.includesLab && gate.labPartialReleased && labReady) {
+      return {
+        displayStatus: "Ready for imaging",
+        chipColor: "warning",
+        canImagingCall: true,
+        canOpenImagingRequest: false,
+        imagingCallTooltip: "Call patient to imaging (released from lab)",
+        openImagingTooltip: "Call the patient first",
       };
     }
     return {
-      displayStatus: "Called",
+      displayStatus: "Called at imaging",
       chipColor: "info",
       canImagingCall: false,
       canOpenImagingRequest: true,
-      imagingCallTooltip: "Patient was already called",
+      imagingCallTooltip: "Patient is at imaging",
       openImagingTooltip: "Open imaging request",
     };
   }
 
   if (ticketStatus === "Collected") {
-    const allCaptured = progress?.allCaptured === true;
-    if (allCaptured) {
-      return {
-        displayStatus: "Collected",
-        chipColor: "success",
-        canImagingCall: false,
-        canOpenImagingRequest: true,
-        imagingCallTooltip: "Collection complete",
-        openImagingTooltip: "Open imaging request",
-      };
-    }
+    const capturedPres = imagingCapturedPresentation(gate, progress);
+    if (capturedPres) return capturedPres;
+
     const labReady = isLabReadyForImaging(gate);
     return {
       displayStatus:
         gate.includesLab && labReady ? "Ready for imaging" : "Collected",
       chipColor: "warning",
-      canImagingCall: labReady,
+      canImagingCall: true,
       canOpenImagingRequest: false,
-      imagingCallTooltip: labReady
-        ? "Call patient to imaging"
-        : "Complete lab collection or partial release first",
+      imagingCallTooltip: "Call patient to imaging",
       openImagingTooltip: "Call the patient first",
     };
   }

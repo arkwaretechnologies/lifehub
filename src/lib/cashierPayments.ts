@@ -5,6 +5,7 @@ export const LAB_SALES_TABLE = "lab_sales" as const;
 export const LAB_SALE_ITEMS_TABLE = "lab_sale_items" as const;
 
 export const LAB_SALE_STATUS_COMPLETED = "Completed" as const;
+export const LAB_SALE_STATUS_REFUNDED = "Refunded" as const;
 
 function roundMoney2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -217,6 +218,146 @@ export async function createLabSaleWithItems(args: {
   const itemsRes = await supabase.from(LAB_SALE_ITEMS_TABLE).insert(itemRows);
   if (itemsRes.error) {
     // Best-effort rollback to prevent a header with no items.
+    await supabase.from(LAB_SALES_TABLE).delete().eq("id", labSaleId);
+    return { labSaleId: null, error: itemsRes.error.message };
+  }
+
+  return { labSaleId, error: null };
+}
+
+/** Supplemental collection after a paid order amendment (positive delta). */
+export async function createLabAmendmentSupplementalSale(args: {
+  amendmentId: string;
+  labRequestId?: string | null;
+  imagingRequestId?: string | null;
+  patientId: number | null;
+  orNumber: string;
+  paymentMethodId: number;
+  amountTendered: number | null;
+  changeAmount: number | null;
+  amountDelta: number;
+  items: LabSaleItemInsertRow[];
+}): Promise<{ labSaleId: string | null; error: string | null }> {
+  const delta = roundMoney2(args.amountDelta);
+  if (delta <= 0) return { labSaleId: null, error: "Supplemental sale requires a positive amount." };
+
+  let items = args.items.filter(Boolean);
+  if (items.length === 0) {
+    const labId = String(args.labRequestId ?? "").trim() || null;
+    const imgId = String(args.imagingRequestId ?? "").trim() || null;
+    if (labId) {
+      items = [{ lab_test_id: labId, quantity: 1, unit_price: delta, discount: 0, notes: "Order amendment" }];
+    } else if (imgId) {
+      items = [{ imaging_catalog_id: imgId, quantity: 1, unit_price: delta, discount: 0, notes: "Order amendment" }];
+    } else {
+      return { labSaleId: null, error: "No billable lines for amendment." };
+    }
+  }
+
+  let subtotal = 0;
+  for (const it of items) {
+    subtotal = roundMoney2(subtotal + roundMoney2(it.quantity * it.unit_price - it.discount));
+  }
+  const discountAmount = Math.max(0, roundMoney2(subtotal - delta));
+
+  return createLabSaleWithItems({
+    labRequestId: args.labRequestId,
+    imagingRequestId: args.imagingRequestId,
+    patientId: args.patientId,
+    orNumber: args.orNumber,
+    paymentMethodId: args.paymentMethodId,
+    amountTendered: args.amountTendered,
+    changeAmount: args.changeAmount,
+    discountTypeId: null,
+    discountAmount,
+    items,
+    notes: `Amendment:${args.amendmentId}`,
+  });
+}
+
+/** Refund excess after a paid order amendment (negative delta). */
+export async function createLabAmendmentRefundSale(args: {
+  amendmentId: string;
+  labRequestId?: string | null;
+  imagingRequestId?: string | null;
+  patientId: number | null;
+  orNumber: string;
+  paymentMethodId: number;
+  refundAmount: number;
+  items: LabSaleItemInsertRow[];
+}): Promise<{ labSaleId: string | null; error: string | null }> {
+  const refund = roundMoney2(args.refundAmount);
+  if (refund <= 0) return { labSaleId: null, error: "Refund amount must be positive." };
+
+  const labRequestId = String(args.labRequestId ?? "").trim() || null;
+  const imagingRequestId = String(args.imagingRequestId ?? "").trim() || null;
+  if (!labRequestId && !imagingRequestId) {
+    return { labSaleId: null, error: "Missing lab or imaging request id." };
+  }
+
+  let items = args.items;
+  if (items.length === 0) {
+    if (labRequestId) {
+      items = [{ lab_test_id: labRequestId, quantity: 1, unit_price: refund, discount: 0, notes: "Amendment refund" }];
+    } else {
+      items = [
+        {
+          imaging_catalog_id: imagingRequestId,
+          quantity: 1,
+          unit_price: refund,
+          discount: 0,
+          notes: "Amendment refund",
+        },
+      ];
+    }
+  }
+
+  const orTrimmed = args.orNumber.trim();
+  if (!orTrimmed) return { labSaleId: null, error: "Missing OR number." };
+
+  const now = new Date();
+  const salePayload = {
+    patient_id: args.patientId,
+    lab_request_id: labRequestId,
+    imaging_request_id: imagingRequestId,
+    or_number: orTrimmed,
+    sale_date: localDateYmd(now),
+    sale_time: localTimeHms(now),
+    subtotal: refund,
+    discount_type_id: null as number | null,
+    discount_amount: 0,
+    vat_exempt: false,
+    vat_amount: 0,
+    total_amount: refund,
+    amount_tendered: refund,
+    change_amount: 0,
+    payment_method_id: args.paymentMethodId,
+    hmo_insurance_name: null as string | null,
+    philhealth_claim_no: null as string | null,
+    status: LAB_SALE_STATUS_REFUNDED,
+    void_reason: null as string | null,
+    served_by: null as string | null,
+    notes: `Amendment refund:${args.amendmentId}`,
+    updated_at: now.toISOString(),
+  };
+
+  const ins = await supabase.from(LAB_SALES_TABLE).insert(salePayload).select("id").single();
+  if (ins.error) return { labSaleId: null, error: ins.error.message };
+  const labSaleId = (ins.data as { id?: string } | null)?.id ?? null;
+  if (!labSaleId) return { labSaleId: null, error: "Could not create refund sale." };
+
+  const itemRows = items.map((it) => ({
+    lab_sale_id: labSaleId,
+    lab_test_id: it.lab_test_id ?? null,
+    imaging_catalog_id: it.imaging_catalog_id ?? null,
+    quantity: it.quantity,
+    unit_price: it.unit_price,
+    discount: it.discount,
+    notes: it.notes,
+  }));
+
+  const itemsRes = await supabase.from(LAB_SALE_ITEMS_TABLE).insert(itemRows);
+  if (itemsRes.error) {
     await supabase.from(LAB_SALES_TABLE).delete().eq("id", labSaleId);
     return { labSaleId: null, error: itemsRes.error.message };
   }

@@ -1,12 +1,16 @@
 import { NextResponse } from "next/server";
 import { applyPartialLabReleaseToNotes } from "@/lib/labPartialCollection";
 import { computeImagingRequestQueueState } from "@/lib/imagingQueueSync";
-import { computeLabRequestQueueCollectionState } from "@/lib/labQueueTicketSync";
+import {
+  computeLabRequestQueueCollectionState,
+  listUncollectedEntryItemIdsForLabRequest,
+} from "@/lib/labQueueTicketSync";
 import {
   applyActiveDeptToNotes,
   nextSharedQueueState,
   parseActiveDeptFromNotes,
 } from "@/lib/queueActiveDept";
+import { applySpecimenCollectedTagToNotes } from "@/lib/labQueueUi";
 import { queueAdminClient } from "@/lib/receptionQueueServer";
 import type { QueueTicketStatus } from "@/lib/queueReception";
 
@@ -14,25 +18,13 @@ type Body = {
   labRequestItemId?: unknown;
   labRequestItemIds?: unknown;
   collected?: unknown;
+  /** Mark every result-entry line on this request as collected. */
+  labRequestId?: unknown;
+  collectAllUncollected?: unknown;
 };
-
-const TICKET_TAG = "[Specimen]";
-
-function normalizeWhitespace(s: string): string {
-  return s.replace(/\r\n/g, "\n").replace(/[ \t]+\n/g, "\n").trim();
-}
 
 function collectedValue(collected: boolean): string | null {
   return collected ? "Y" : null;
-}
-
-function setTicketSummary(existing: string | null, allCollected: boolean): string {
-  const now = new Date().toISOString();
-  const base = normalizeWhitespace(existing ?? "");
-  const lines = base ? base.split("\n") : [];
-  const filtered = lines.filter((l) => !l.startsWith(TICKET_TAG));
-  filtered.push(allCollected ? `${TICKET_TAG} collected_at=${now}` : `${TICKET_TAG} collected_at=`);
-  return filtered.join("\n").trim();
 }
 
 function parseItemIds(body: Body): string[] {
@@ -93,7 +85,7 @@ async function syncQueueAfterSpecimenChange(
       source: "lab_collect",
     });
 
-    let notesWithSpecimen = setTicketSummary(t.notes, allCollected);
+    let notesWithSpecimen = applySpecimenCollectedTagToNotes(t.notes, allCollected);
     if (allCollected) {
       notesWithSpecimen = applyPartialLabReleaseToNotes(notesWithSpecimen, false);
     }
@@ -111,16 +103,40 @@ async function syncQueueAfterSpecimenChange(
 
 export async function PATCH(req: Request) {
   const body = (await req.json().catch(() => ({}))) as Body;
-  const itemIds = parseItemIds(body);
-  const collected = body.collected === true;
-
-  if (itemIds.length === 0) {
-    return NextResponse.json({ error: "labRequestItemId or labRequestItemIds is required." }, { status: 400 });
-  }
+  const collectAll = body.collectAllUncollected === true;
+  const labRequestIdBulk =
+    typeof body.labRequestId === "string" ? body.labRequestId.trim() : "";
+  let itemIds = parseItemIds(body);
+  let collected = body.collected === true;
 
   const admin = queueAdminClient();
   if (!admin) {
     return NextResponse.json({ error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." }, { status: 500 });
+  }
+
+  if (collectAll) {
+    if (!labRequestIdBulk) {
+      return NextResponse.json({ error: "labRequestId is required for collectAllUncollected." }, { status: 400 });
+    }
+    const pending = await listUncollectedEntryItemIdsForLabRequest(admin, labRequestIdBulk);
+    if (pending.error) return NextResponse.json({ error: pending.error }, { status: 500 });
+    if (pending.ids.length === 0) {
+      const sync = await syncQueueAfterSpecimenChange(admin, labRequestIdBulk);
+      if (sync.error) return NextResponse.json({ error: sync.error }, { status: 500 });
+      return NextResponse.json({
+        ok: true,
+        collected: true,
+        updatedCount: 0,
+        allCollected: sync.allCollected,
+        allHasResults: sync.allHasResults,
+      });
+    }
+    itemIds = pending.ids;
+    collected = true;
+  }
+
+  if (itemIds.length === 0) {
+    return NextResponse.json({ error: "labRequestItemId or labRequestItemIds is required." }, { status: 400 });
   }
 
   const { data: itemRows, error: selErr } = await admin

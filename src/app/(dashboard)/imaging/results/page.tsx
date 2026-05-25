@@ -149,10 +149,11 @@ export default function ImagingResultsPage() {
   const canOpenRequest = selectedTicket?.can_open_imaging === true;
   const canMarkCaptured =
     canOpenRequest &&
-    (selectedTicket?.status === "Serving" ||
-      selectedTicket?.status === "Called" ||
+    (selectedTicket?.active_dept === "IMAG" ||
+      selectedTicket?.status === "Serving" ||
       selectedTicket?.status === "Collected" ||
-      selectedTicket?.status === "Completed");
+      selectedTicket?.status === "Completed" ||
+      (selectedTicket?.status === "Called" && selectedTicket?.active_dept !== "LAB"));
   const [itemBusyId, setItemBusyId] = useState<string | null>(null);
 
   const openImagingRequestFromTicket = (imagingRequestId: string) => {

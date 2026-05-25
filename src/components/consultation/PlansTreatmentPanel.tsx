@@ -64,6 +64,7 @@ import {
 } from "@/lib/labRequests";
 import {
   applyPanelLabTestToggle,
+  collapseComponentsToPanel,
   expandPanelTestIds,
   fetchLabCatalogGrouped,
   filterLabRequestItemsForResultEntry,
@@ -94,12 +95,13 @@ import {
   buildImagingRequestLinesFromCatalog,
   fetchActiveImagingCatalog,
   imagingSelectionEqual,
+  imagingSelectionFromRequestItems,
   parseImagingBlockToSelection,
   upsertImagingBlock,
   type ImagingCatalogRow,
   type ImagingLineSelection,
 } from "@/lib/imagingCatalog";
-import { imagingSelectionHasChecked } from "@/lib/imagingRequests";
+import { imagingSelectionHasChecked, fetchImagingRequestItemsForRequestIdsClient } from "@/lib/imagingRequests";
 import type { LabRequestItemView } from "@/app/api/laboratory/lab-request/route";
 
 const tabPanelSx = { pt: 2, minHeight: 280 };
@@ -225,6 +227,13 @@ function money2(v: number): string {
   return out.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function labSelectionSnapshot(testIds: Iterable<string>, pkgIds: Iterable<string>): string {
+  return JSON.stringify({
+    tests: [...testIds].map((id) => String(id).trim()).filter(Boolean).sort(),
+    pkgs: [...pkgIds].map((id) => String(id).trim()).filter(Boolean).sort(),
+  });
+}
+
 function medicationLinesFromSnapshot(snapshot: string): MedicationLineDraft[] {
   try {
     const arr = JSON.parse(snapshot) as Array<{
@@ -318,8 +327,21 @@ export default function PlansTreatmentPanel({
   const [labPackages, setLabPackages] = useState<LabPackageWithTests[]>([]);
   const [selectedLabPackageIds, setSelectedLabPackageIds] = useState<Set<string>>(() => new Set());
   const [paidLabRequestIds, setPaidLabRequestIds] = useState<Set<string>>(() => new Set());
+  const [paidImagingRequestIds, setPaidImagingRequestIds] = useState<Set<string>>(() => new Set());
+  const [primaryPaidImagingRequestId, setPrimaryPaidImagingRequestId] = useState("");
+  const [encounterImagingRequestIds, setEncounterImagingRequestIds] = useState<string[]>([]);
+  /** Catalog codes already on a saved imaging_request (paid or unpaid). */
+  const [savedImagingCatalogCodes, setSavedImagingCatalogCodes] = useState<Set<string>>(() => new Set());
   /** Lab requests that have at least one saved `lab_results` row (payment not required). */
   const [labRequestIdsWithResults, setLabRequestIdsWithResults] = useState<Set<string>>(() => new Set());
+
+  const [labsModalMode, setLabsModalMode] = useState<"order" | "amend">("order");
+  const [imagingModalMode, setImagingModalMode] = useState<"order" | "amend">("order");
+  const [amendConfirmOpen, setAmendConfirmOpen] = useState(false);
+  const [amendPendingWarnings, setAmendPendingWarnings] = useState<string[]>([]);
+  const [amendPendingKind, setAmendPendingKind] = useState<"lab" | "imaging" | null>(null);
+  const [amendSaveReminderOpen, setAmendSaveReminderOpen] = useState(false);
+  const [amendSaveReminderText, setAmendSaveReminderText] = useState("");
 
   const [labResultsModalOpen, setLabResultsModalOpen] = useState(false);
   const [labResultsRequestId, setLabResultsRequestId] = useState("");
@@ -350,6 +372,8 @@ export default function PlansTreatmentPanel({
   const imagingCatalogRef = useRef<ImagingCatalogRow[]>([]);
   const imagingOpenedForParseRef = useRef(false);
   const imagingBaselineRef = useRef<Record<string, ImagingLineSelection>>({});
+  const labSelectionBaselineRef = useRef("");
+  const labsBaselineCapturedRef = useRef(false);
   const medsBaselineStrRef = useRef("");
   const medsBaselineReadyRef = useRef(false);
 
@@ -376,12 +400,13 @@ export default function PlansTreatmentPanel({
     };
   }, []);
 
-  /** When the imaging modal opens and catalog is ready, hydrate from plan_notes once. */
+  /** New orders: hydrate modal from plan_notes. Amend mode loads from imaging_request_items in openImagingAmendModal. */
   useEffect(() => {
     if (!imagingModalOpen) {
       imagingOpenedForParseRef.current = false;
       return;
     }
+    if (imagingModalMode === "amend") return;
     if (imagingCatalog.length === 0) return;
     if (!imagingOpenedForParseRef.current) {
       const parsed = parseImagingBlockToSelection(formRef.current.plan_notes ?? "", imagingCatalog);
@@ -389,7 +414,19 @@ export default function PlansTreatmentPanel({
       imagingBaselineRef.current = parsed;
       imagingOpenedForParseRef.current = true;
     }
-  }, [imagingModalOpen, imagingCatalog]);
+  }, [imagingModalOpen, imagingCatalog, imagingModalMode]);
+
+  /** Capture lab modal baseline once after catalog load (order mode). Amend mode sets baseline in openLabAmendModal. */
+  useEffect(() => {
+    if (!labsModalOpen) {
+      labsBaselineCapturedRef.current = false;
+      return;
+    }
+    if (labsModalMode === "amend" || labTestsLoading) return;
+    if (labsBaselineCapturedRef.current) return;
+    labSelectionBaselineRef.current = labSelectionSnapshot(selectedLabTestIds, selectedLabPackageIds);
+    labsBaselineCapturedRef.current = true;
+  }, [labsModalOpen, labsModalMode, labTestsLoading, selectedLabTestIds, selectedLabPackageIds]);
 
   const mergeIntoProductCache = useCallback((rows: ProductCatalogRow[]) => {
     if (rows.length === 0) return;
@@ -716,6 +753,64 @@ export default function PlansTreatmentPanel({
     setLabRequestIdsWithResults(withResults);
   }, []);
 
+  const refreshSavedImagingCatalogCodes = useCallback(async (imagingRequestId?: string) => {
+    const reqId = (imagingRequestId ?? primaryPaidImagingRequestId).trim();
+    if (!reqId) {
+      setSavedImagingCatalogCodes(new Set());
+      return;
+    }
+    const catalog =
+      imagingCatalogRef.current.length > 0
+        ? imagingCatalogRef.current
+        : (await fetchActiveImagingCatalog()).rows;
+    const { rows: items, error } = await fetchImagingRequestItemsForRequestIdsClient([reqId]);
+    if (error) return;
+    const sel = imagingSelectionFromRequestItems(catalog, items);
+    setSavedImagingCatalogCodes(
+      new Set(Object.keys(sel).filter((code) => sel[code]?.checked)),
+    );
+  }, [primaryPaidImagingRequestId]);
+
+  const syncPaidImagingForEncounter = useCallback(async () => {
+    const { data: reqRows, error: rErr } = await supabase
+      .from("imaging_requests")
+      .select("id")
+      .eq("encounter_id", transId)
+      .order("created_at", { ascending: false });
+    if (rErr) {
+      setPaidImagingRequestIds(new Set());
+      setPrimaryPaidImagingRequestId("");
+      setEncounterImagingRequestIds([]);
+      return;
+    }
+    const reqIds = ((reqRows ?? []) as Array<{ id: string }>).map((r) => r.id).filter(Boolean);
+    if (reqIds.length === 0) {
+      setPaidImagingRequestIds(new Set());
+      setPrimaryPaidImagingRequestId("");
+      setEncounterImagingRequestIds([]);
+      return;
+    }
+    setEncounterImagingRequestIds(reqIds);
+    if (reqIds.length > 0) {
+      setForm((f) => (f.plan_imaging ? f : { ...f, plan_imaging: true }));
+    }
+    const { data: salesRows } = await supabase
+      .from("lab_sales")
+      .select("imaging_request_id")
+      .in("imaging_request_id", reqIds);
+    const paid = new Set<string>();
+    for (const row of (salesRows ?? []) as Array<{ imaging_request_id?: string | null }>) {
+      const id = String(row.imaging_request_id ?? "").trim();
+      if (id) paid.add(id);
+    }
+    setPaidImagingRequestIds(paid);
+    const primaryPaid = reqIds.find((id) => paid.has(id)) ?? "";
+    setPrimaryPaidImagingRequestId(primaryPaid);
+    const primaryReq = primaryPaid || reqIds[0] || "";
+    if (primaryReq) await refreshSavedImagingCatalogCodes(primaryReq);
+    else setSavedImagingCatalogCodes(new Set());
+  }, [transId, refreshSavedImagingCatalogCodes]);
+
   useEffect(() => {
     if (!labsModalOpen) return;
     let cancelled = false;
@@ -815,11 +910,12 @@ export default function PlansTreatmentPanel({
       const reqIds = enc.requests.map((r) => r.id).filter(Boolean);
       if (cancelled) return;
       await syncPaidAndResultsFromRequestIds(reqIds);
+      await syncPaidImagingForEncounter();
     })();
     return () => {
       cancelled = true;
     };
-  }, [transId, hydrated, loading, syncPaidAndResultsFromRequestIds]);
+  }, [transId, hydrated, loading, syncPaidAndResultsFromRequestIds, syncPaidImagingForEncounter]);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -831,11 +927,12 @@ export default function PlansTreatmentPanel({
         setEncounterLabRequests(enc.requests);
         setRequestedTestIdSet(new Set(enc.requestedTestIds));
         await syncPaidAndResultsFromRequestIds(enc.requests.map((r) => r.id).filter(Boolean));
+        await syncPaidImagingForEncounter();
       })();
     };
     window.addEventListener("lifehub:lab-requests-updated", handler);
     return () => window.removeEventListener("lifehub:lab-requests-updated", handler);
-  }, [transId, syncPaidAndResultsFromRequestIds]);
+  }, [transId, syncPaidAndResultsFromRequestIds, syncPaidImagingForEncounter]);
 
   const toggleLabTestSelection = useCallback(
     (testId: string) => {
@@ -1064,6 +1161,52 @@ export default function PlansTreatmentPanel({
     return sum;
   }, [selectedLabTestIds, labPriceByTestId, labPackages, selectedLabPackageIds, testsCoveredBySelectedPackages]);
 
+  useEffect(() => {
+    const onEncounterTestIds = new Set(encounterLabRequests.flatMap((r) => r.labTestIds));
+    const unstagedLab: Array<{ name: string; price: number; testId?: string }> = [];
+    for (const pkg of labPackages) {
+      if (!selectedLabPackageIds.has(pkg.id)) continue;
+      unstagedLab.push({ name: `${pkg.name} (laboratory package)`, price: pkg.package_price });
+    }
+    for (const id of selectedLabTestIds) {
+      if (testsCoveredBySelectedPackages.has(id)) continue;
+      if (onEncounterTestIds.has(id)) continue;
+      const t = labCatalogTests.find((x) => x.id === id);
+      unstagedLab.push({
+        name: t?.name ?? `Lab test ${id.slice(0, 8)}…`,
+        price: labPriceByTestId.get(id) ?? 0,
+        testId: id,
+      });
+    }
+
+    const unstagedImaging: Array<{ name: string; price: number }> = [];
+    const catalogForDraft =
+      imagingCatalog.length > 0 ? imagingCatalog : imagingCatalogRef.current;
+    for (const c of catalogForDraft) {
+      if (!c.code || !imagingForm[c.code]?.checked) continue;
+      if (savedImagingCatalogCodes.has(c.code)) continue;
+      unstagedImaging.push({ name: c.name, price: Math.round(c.default_price * 100) / 100 });
+    }
+
+    window.dispatchEvent(
+      new CustomEvent("lifehub:consultation-charges-draft", {
+        detail: { transId, unstagedLab, unstagedImaging },
+      }),
+    );
+  }, [
+    transId,
+    encounterLabRequests,
+    selectedLabTestIds,
+    selectedLabPackageIds,
+    labPackages,
+    labCatalogTests,
+    labPriceByTestId,
+    testsCoveredBySelectedPackages,
+    imagingCatalog,
+    imagingForm,
+    savedImagingCatalogCodes,
+  ]);
+
   /** Paid at cashier OR lab already has saved result rows (results may exist without `lab_sales`). */
   const canViewLabResults = useMemo(() => {
     if (encounterLabRequests.length === 0) return false;
@@ -1083,6 +1226,25 @@ export default function PlansTreatmentPanel({
     }
     return encounterLabRequests[0]?.id ?? "";
   }, [encounterLabRequests, paidLabRequestIds, labRequestIdsWithResults]);
+
+  const primaryPaidLabRequestId = useMemo(() => {
+    for (const r of encounterLabRequests) {
+      if (paidLabRequestIds.has(r.id)) return r.id;
+    }
+    return "";
+  }, [encounterLabRequests, paidLabRequestIds]);
+
+  const canEditPaidLabs = paidLabRequestIds.size > 0;
+  const canEditPaidImaging = paidImagingRequestIds.size > 0;
+
+  const patientPayloadForAmend = useCallback(
+    () => ({
+      id: parsePatientIdForLab(patient.patientId),
+      name: patient.name,
+      contact_no: patient.contactNo?.trim() ? patient.contactNo.trim() : null,
+    }),
+    [patient.patientId, patient.name, patient.contactNo],
+  );
 
   const openLabResultsModal = useCallback((labRequestId: string) => {
     const id = String(labRequestId ?? "").trim();
@@ -1125,13 +1287,252 @@ export default function PlansTreatmentPanel({
   }, [labResultsModalOpen, labResultsRequestId]);
 
   const labDialogFooterHint = useMemo(() => {
+    if (labsModalMode === "amend") {
+      const n = selectedLabTestIds.size;
+      if (n === 0) return "Select tests for this order";
+      return `${n} test${n === 1 ? "" : "s"} · ${money2(labSelectedTotal)} (balance settled at cashier if changed)`;
+    }
     const nReq = requestedTestIdSet.size;
     const nNew = selectedLabTestIds.size;
     if (nReq === 0 && nNew === 0) return "Select tests to request";
     if (nReq === 0) return `${nNew} test${nNew === 1 ? "" : "s"} selected · ${money2(labSelectedTotal)}`;
     if (nNew === 0) return `${nReq} already requested — select more to add another request`;
     return `${nReq} already requested · ${nNew} new selected · ${money2(labSelectedTotal)}`;
-  }, [requestedTestIdSet, selectedLabTestIds, labSelectedTotal]);
+  }, [labsModalMode, requestedTestIdSet, selectedLabTestIds, labSelectedTotal]);
+
+  const submitLabAmend = useCallback(
+    async (acknowledgedWarnings = false) => {
+      const labRequestId = primaryPaidLabRequestId.trim();
+      if (!labRequestId) {
+        setLabDialogError("No paid lab order found for this visit.");
+        return;
+      }
+      setLabDialogError("");
+      setLabSubmitting(true);
+      const packageIds = [...selectedLabPackageIds]
+        .map((pid) => parseLabRequestPackageId(pid))
+        .filter((n): n is number => n != null);
+      const payload = patientPayloadForAmend();
+      if (payload.id == null) {
+        setLabSubmitting(false);
+        setLabDialogError("Patient id is required.");
+        return;
+      }
+      try {
+        const res = await authenticatedFetch("/api/consultation/diagnostic-amend/lab", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            encounterId: transId,
+            labRequestId,
+            labTestIds: [...selectedLabTestIds],
+            packageIds,
+            itemPriority: labRequestPriority,
+            acknowledgedWarnings,
+            patient: payload,
+          }),
+        });
+        const json = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          warnings?: string[];
+          amountDelta?: number;
+          needsCashier?: boolean;
+          queueDisplay?: string;
+        };
+        if (res.status === 409 && json.error === "CONFIRM_WARNINGS") {
+          setAmendPendingWarnings(Array.isArray(json.warnings) ? json.warnings : []);
+          setAmendPendingKind("lab");
+          setAmendConfirmOpen(true);
+          return;
+        }
+        if (!res.ok) {
+          setLabDialogError(json.error ?? `Request failed (${res.status})`);
+          return;
+        }
+        setLabToastMessage(
+          json.needsCashier
+            ? `Order updated. Patient owes ${money2(json.amountDelta ?? 0)} at cashier.`
+            : json.amountDelta != null && json.amountDelta < 0
+              ? `Order updated. Refund ${money2(Math.abs(json.amountDelta))} at cashier.`
+              : "Lab order updated.",
+        );
+        setLabToastOpen(true);
+        setAmendSaveReminderText(
+          json.needsCashier
+            ? "Laboratory order updated. You can keep adding or removing tests here until you are finished, then use Save consultation. The patient will settle the lab balance at the cashier after that."
+            : "Laboratory order updated. You can keep adding or removing tests here until you are finished, then use Save consultation.",
+        );
+        setAmendSaveReminderOpen(true);
+        const encRefresh = await fetchLabRequestsForEncounter(transId);
+        if (!encRefresh.error) {
+          setEncounterLabRequests(encRefresh.requests);
+          setRequestedTestIdSet(new Set(encRefresh.requestedTestIds));
+          await syncPaidAndResultsFromRequestIds(encRefresh.requests.map((r) => r.id).filter(Boolean));
+        }
+        window.dispatchEvent(new CustomEvent("lifehub:lab-requests-updated", { detail: { transId } }));
+        labSelectionBaselineRef.current = labSelectionSnapshot(selectedLabTestIds, selectedLabPackageIds);
+        labsBaselineCapturedRef.current = true;
+        setUnsavedCloseDialog(null);
+        setLabsModalOpen(false);
+        setLabsModalMode("order");
+      } catch {
+        setLabDialogError("Could not save lab order changes.");
+      } finally {
+        setLabSubmitting(false);
+      }
+    },
+    [
+      primaryPaidLabRequestId,
+      selectedLabPackageIds,
+      selectedLabTestIds,
+      patientPayloadForAmend,
+      transId,
+      labRequestPriority,
+      syncPaidAndResultsFromRequestIds,
+    ],
+  );
+
+  const submitImagingAmend = useCallback(
+    async (acknowledgedWarnings = false) => {
+      const imagingRequestId = primaryPaidImagingRequestId.trim();
+      if (!imagingRequestId) {
+        setImagingCatalogError("No paid imaging order found for this visit.");
+        return;
+      }
+      setImagingCatalogError("");
+      const payload = patientPayloadForAmend();
+      if (payload.id == null) {
+        setImagingCatalogError("Patient id is required.");
+        return;
+      }
+      try {
+        const res = await authenticatedFetch("/api/consultation/diagnostic-amend/imaging", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            encounterId: transId,
+            imagingRequestId,
+            selection: imagingForm,
+            acknowledgedWarnings,
+            patient: payload,
+          }),
+        });
+        const json = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          warnings?: string[];
+          amountDelta?: number;
+          needsCashier?: boolean;
+        };
+        if (res.status === 409 && json.error === "CONFIRM_WARNINGS") {
+          setAmendPendingWarnings(Array.isArray(json.warnings) ? json.warnings : []);
+          setAmendPendingKind("imaging");
+          setAmendConfirmOpen(true);
+          return;
+        }
+        if (!res.ok) {
+          setImagingCatalogError(json.error ?? `Request failed (${res.status})`);
+          return;
+        }
+        setLabToastMessage(
+          json.needsCashier
+            ? `Imaging updated. Patient owes ${money2(json.amountDelta ?? 0)} at cashier.`
+            : json.amountDelta != null && json.amountDelta < 0
+              ? `Imaging updated. Refund ${money2(Math.abs(json.amountDelta))} at cashier.`
+              : "Imaging order updated.",
+        );
+        setLabToastOpen(true);
+        setAmendSaveReminderText(
+          json.needsCashier
+            ? "Imaging order updated. You can keep adding or removing studies here until you are finished, then use Save consultation. The patient will settle the imaging balance at the cashier after that."
+            : "Imaging order updated. You can keep adding or removing studies here until you are finished, then use Save consultation.",
+        );
+        setAmendSaveReminderOpen(true);
+        imagingBaselineRef.current = { ...imagingForm };
+        await syncPaidImagingForEncounter();
+        await refreshSavedImagingCatalogCodes(imagingRequestId);
+        window.dispatchEvent(new CustomEvent("lifehub:imaging-updated", { detail: { transId } }));
+        setUnsavedCloseDialog(null);
+        setImagingModalOpen(false);
+        setImagingModalMode("order");
+      } catch {
+        setImagingCatalogError("Could not save imaging order changes.");
+      }
+    },
+    [
+      primaryPaidImagingRequestId,
+      imagingForm,
+      patientPayloadForAmend,
+      transId,
+      syncPaidImagingForEncounter,
+      refreshSavedImagingCatalogCodes,
+    ],
+  );
+
+  const openLabAmendModal = useCallback(async () => {
+    const labRequestId = primaryPaidLabRequestId.trim();
+    if (!labRequestId) return;
+    setLabsModalMode("amend");
+    setLabDialogError("");
+    setLabsModalOpen(true);
+    setLabTestsLoading(true);
+    try {
+      const [cat, stored, pkgRes] = await Promise.all([
+        fetchLabCatalogGrouped(),
+        fetchLabRequestItemsForRequestIds(supabase, [labRequestId]),
+        fetchActiveLabPackagesWithTests(),
+      ]);
+      const catalogFromFetch = cat.error ? [] : cat.sections.flatMap((s) => s.tests);
+      if (!cat.error) {
+        setLabSections(cat.sections);
+        const pricesAll = await fetchActiveLabPricesByTestIds(catalogFromFetch.map((t) => t.id));
+        if (!pricesAll.error) setLabPriceByTestId(pricesAll.pricesByTestId);
+      }
+      if (!pkgRes.error) setLabPackages(pkgRes.packages.filter((p) => p.labTestIds.length > 0));
+      const billable = stored.items.filter((i) => i.is_billable).map((i) => i.lab_test_id);
+      const testSet = new Set(collapseComponentsToPanel(billable, catalogFromFetch));
+      const pkgSet = new Set<string>();
+      const req = encounterLabRequests.find((r) => r.id === labRequestId);
+      if (req) {
+        for (const lp of req.lab_packages) pkgSet.add(String(lp.id));
+      }
+      setSelectedLabTestIds(testSet);
+      setSelectedLabPackageIds(pkgSet);
+      labSelectionBaselineRef.current = labSelectionSnapshot(testSet, pkgSet);
+      labsBaselineCapturedRef.current = true;
+    } finally {
+      setLabTestsLoading(false);
+    }
+  }, [primaryPaidLabRequestId, encounterLabRequests]);
+
+  const openImagingAmendModal = useCallback(async () => {
+    const imagingRequestId = primaryPaidImagingRequestId.trim();
+    if (!imagingRequestId) return;
+    setImagingModalMode("amend");
+    setImagingCatalogError("");
+    imagingOpenedForParseRef.current = true;
+    try {
+      const { rows: catalog, error: catErr } = await fetchActiveImagingCatalog();
+      if (catErr) {
+        setImagingCatalogError(catErr);
+        return;
+      }
+      const { rows: items, error: iErr } = await fetchImagingRequestItemsForRequestIdsClient([imagingRequestId]);
+      if (iErr) {
+        setImagingCatalogError(iErr);
+        return;
+      }
+      const next = imagingSelectionFromRequestItems(catalog, items);
+      setImagingCatalog(catalog);
+      setImagingForm(next);
+      imagingBaselineRef.current = { ...next };
+      setSavedImagingCatalogCodes(
+        new Set(Object.keys(next).filter((code) => next[code]?.checked)),
+      );
+      setImagingModalOpen(true);
+    } catch {
+      setImagingCatalogError("Could not load imaging order.");
+    }
+  }, [primaryPaidImagingRequestId]);
 
   const submitLabRequest = useCallback(async () => {
     setLabDialogError("");
@@ -1186,6 +1587,11 @@ export default function PlansTreatmentPanel({
       await syncPaidAndResultsFromRequestIds(encRefresh.requests.map((r) => r.id).filter(Boolean));
       window.dispatchEvent(new CustomEvent("lifehub:lab-requests-updated", { detail: { transId } }));
     }
+    labSelectionBaselineRef.current = labSelectionSnapshot(new Set(), new Set());
+    labsBaselineCapturedRef.current = true;
+    setUnsavedCloseDialog(null);
+    setLabsModalOpen(false);
+    setLabsModalMode("order");
   }, [
     transId,
     patient.patientId,
@@ -1212,12 +1618,17 @@ export default function PlansTreatmentPanel({
             encounterLabRequests.length > 0,
     }));
     setLabsModalOpen(false);
+    setLabsModalMode("order");
   }, [labTestsLoading, selectedLabTestIds, requestedTestIdSet, encounterLabRequests]);
 
   const closeImagingModal = useCallback(() => {
     setForm((f) => {
       const lines = buildImagingRequestLinesFromCatalog(imagingCatalogRef.current, imagingForm);
+      const hasSavedImagingRequest = encounterImagingRequestIds.length > 0;
       if (lines.length === 0) {
+        if (hasSavedImagingRequest) {
+          return { ...f, plan_imaging: true };
+        }
         return {
           ...f,
           plan_imaging: false,
@@ -1228,7 +1639,8 @@ export default function PlansTreatmentPanel({
       return f;
     });
     setImagingModalOpen(false);
-  }, [imagingForm]);
+    setImagingModalMode("order");
+  }, [imagingForm, encounterImagingRequestIds.length]);
 
   const closeMedicationsModal = useCallback(() => {
     medsBaselineReadyRef.current = false;
@@ -1254,14 +1666,19 @@ export default function PlansTreatmentPanel({
   const discardImagingModalClose = useCallback(() => {
     const baseline = { ...imagingBaselineRef.current };
     const lines = buildImagingRequestLinesFromCatalog(imagingCatalogRef.current, baseline);
+    const hasSavedImagingRequest = encounterImagingRequestIds.length > 0;
     setForm((f) => ({
       ...f,
-      plan_imaging: lines.length > 0,
-      plan_notes: lines.length === 0 ? upsertImagingBlock(f.plan_notes ?? "", []) : f.plan_notes,
+      plan_imaging: lines.length > 0 || hasSavedImagingRequest,
+      plan_notes:
+        lines.length === 0 && !hasSavedImagingRequest
+          ? upsertImagingBlock(f.plan_notes ?? "", [])
+          : f.plan_notes,
     }));
     setImagingForm(baseline);
     setImagingModalOpen(false);
-  }, []);
+    setImagingModalMode("order");
+  }, [encounterImagingRequestIds.length]);
 
   /** Revert medications to baseline snapshot; uncheck main if no products in baseline. */
   const discardMedicationsModalClose = useCallback(() => {
@@ -1276,12 +1693,14 @@ export default function PlansTreatmentPanel({
   }, []);
 
   const requestCloseLabsModal = useCallback(() => {
-    if (selectedLabTestIds.size > 0) {
+    if (
+      labSelectionSnapshot(selectedLabTestIds, selectedLabPackageIds) !== labSelectionBaselineRef.current
+    ) {
       setUnsavedCloseDialog("labs");
       return;
     }
     closeLabsModal();
-  }, [selectedLabTestIds, closeLabsModal]);
+  }, [selectedLabTestIds, selectedLabPackageIds, closeLabsModal]);
 
   const requestCloseImagingModal = useCallback(() => {
     if (!imagingSelectionEqual(imagingForm, imagingBaselineRef.current)) {
@@ -1405,6 +1824,7 @@ export default function PlansTreatmentPanel({
                           if (canViewLabResults && viewId) {
                             openLabResultsModal(viewId);
                           } else {
+                            setLabsModalMode("order");
                             setLabsModalOpen(true);
                           }
                         } else setLabsModalOpen(false);
@@ -1415,21 +1835,35 @@ export default function PlansTreatmentPanel({
                   sx={consultFormControlLabelSx}
                 />
                 {(form.plan_labs || encounterLabRequests.length > 0) && !loading ? (
-                  <Button
-                    type="button"
-                    variant="text"
-                    size="small"
-                    onClick={() => {
-                      if (canViewLabResults && viewResultsLabRequestId) {
-                        openLabResultsModal(viewResultsLabRequestId);
-                        return;
-                      }
-                      setLabsModalOpen(true);
-                    }}
-                    sx={{ textTransform: "uppercase", minWidth: "auto", py: 0.25, px: 0.75 }}
-                  >
-                    {canViewLabResults ? "View result" : "View catalog"}
-                  </Button>
+                  <Stack spacing={0.25} sx={{ ml: 0.5 }}>
+                    <Button
+                      type="button"
+                      variant="text"
+                      size="small"
+                      onClick={() => {
+                        if (canViewLabResults && viewResultsLabRequestId) {
+                          openLabResultsModal(viewResultsLabRequestId);
+                          return;
+                        }
+                        setLabsModalMode("order");
+                        setLabsModalOpen(true);
+                      }}
+                      sx={{ textTransform: "uppercase", minWidth: "auto", py: 0.25, px: 0.75 }}
+                    >
+                      {canViewLabResults ? "View result" : "View catalog"}
+                    </Button>
+                    {canEditPaidLabs ? (
+                      <Button
+                        type="button"
+                        variant="text"
+                        size="small"
+                        onClick={() => void openLabAmendModal()}
+                        sx={{ textTransform: "uppercase", minWidth: "auto", py: 0.25, px: 0.75 }}
+                      >
+                        Edit or add test
+                      </Button>
+                    ) : null}
+                  </Stack>
                 ) : null}
               </Box>
             </Grid>
@@ -1452,15 +1886,31 @@ export default function PlansTreatmentPanel({
                   sx={consultFormControlLabelSx}
                 />
                 {form.plan_imaging && !loading ? (
-                  <Button
-                    type="button"
-                    variant="text"
-                    size="small"
-                    onClick={() => setImagingModalOpen(true)}
-                    sx={{ textTransform: "uppercase", minWidth: "auto", py: 0.25, px: 0.75 }}
-                  >
-                    View studies
-                  </Button>
+                  <Stack spacing={0.25} sx={{ ml: 0.5 }}>
+                    <Button
+                      type="button"
+                      variant="text"
+                      size="small"
+                      onClick={() => {
+                        setImagingModalMode("order");
+                        setImagingModalOpen(true);
+                      }}
+                      sx={{ textTransform: "uppercase", minWidth: "auto", py: 0.25, px: 0.75 }}
+                    >
+                      View studies
+                    </Button>
+                    {canEditPaidImaging ? (
+                      <Button
+                        type="button"
+                        variant="text"
+                        size="small"
+                        onClick={() => void openImagingAmendModal()}
+                        sx={{ textTransform: "uppercase", minWidth: "auto", py: 0.25, px: 0.75 }}
+                      >
+                        Edit or add study
+                      </Button>
+                    ) : null}
+                  </Stack>
                 ) : null}
               </Box>
             </Grid>
@@ -1598,7 +2048,7 @@ export default function PlansTreatmentPanel({
             py: 1.5,
           }}
         >
-          LABORATORY REQUEST
+          LABORATORY REQUEST{labsModalMode === "amend" ? " — EDIT ORDER" : ""}
         </DialogTitle>
         <DialogContent
           dividers
@@ -1770,7 +2220,8 @@ export default function PlansTreatmentPanel({
               onToggleTest={toggleLabTestSelection}
               priceByTestId={labPriceByTestId}
               testsCoveredByPackages={testsCoveredBySelectedPackages}
-              requestedTestIds={isNew ? undefined : requestedTestIdSet}
+              requestedTestIds={labsModalMode === "amend" || isNew ? undefined : requestedTestIdSet}
+              catalogMode={labsModalMode}
             />
             </Box>
           ) : null}
@@ -1785,11 +2236,17 @@ export default function PlansTreatmentPanel({
               variant="contained"
               color="secondary"
               disabled={labTestsLoading || labSubmitting || selectedLabTestIds.size === 0}
-              onClick={() => void submitLabRequest()}
+              onClick={() =>
+                void (labsModalMode === "amend" ? submitLabAmend(false) : submitLabRequest())
+              }
               startIcon={<SaveOutlinedIcon />}
               sx={{ textTransform: "none" }}
             >
-              {labSubmitting ? "Saving…" : "Save Request"}
+              {labSubmitting
+                ? "Saving…"
+                : labsModalMode === "amend"
+                  ? "Save changes"
+                  : "Save Request"}
             </Button>
             <Button
               onClick={requestCloseLabsModal}
@@ -1931,7 +2388,7 @@ export default function PlansTreatmentPanel({
             py: 1.5,
           }}
         >
-          IMAGING
+          IMAGING{imagingModalMode === "amend" ? " — EDIT ORDER" : ""}
         </DialogTitle>
         <DialogContent
           dividers
@@ -2036,6 +2493,10 @@ export default function PlansTreatmentPanel({
             }
             startIcon={<SaveOutlinedIcon />}
             onClick={() => {
+              if (imagingModalMode === "amend") {
+                void submitImagingAmend(false);
+                return;
+              }
               void (async () => {
                 const lines = buildImagingRequestLinesFromCatalog(imagingCatalog, imagingForm);
                 if (lines.length > 0 && imagingSelectionHasChecked(imagingForm)) {
@@ -2065,12 +2526,13 @@ export default function PlansTreatmentPanel({
                 }));
                 imagingBaselineRef.current = { ...imagingForm };
                 window.dispatchEvent(new CustomEvent("lifehub:imaging-updated", { detail: { transId } }));
+                await syncPaidImagingForEncounter();
                 setImagingModalOpen(false);
               })();
             }}
             sx={{ textTransform: "none" }}
           >
-            Save Request
+            {imagingModalMode === "amend" ? "Save changes" : "Save Request"}
           </Button>
           <Button
             onClick={requestCloseImagingModal}
@@ -2342,9 +2804,9 @@ export default function PlansTreatmentPanel({
         <DialogContent dividers>
           <Typography variant="body2" color="text.secondary">
             {unsavedCloseDialog === "labs"
-              ? "You have lab tests selected that are not saved yet. Save your request before closing, or close without saving."
+              ? "Your lab order has unsaved changes. Use Save changes or Save request first, or close without saving."
               : unsavedCloseDialog === "imaging"
-                ? "Your imaging selections are not saved to the plan yet. Save your request before closing, or close without saving."
+                ? "Your imaging order has unsaved changes. Use Save changes or Save request first, or close without saving."
                 : unsavedCloseDialog === "medications"
                   ? "Your medication changes are not saved yet. Save medications before closing, or close without saving."
                   : ""}
@@ -2374,6 +2836,53 @@ export default function PlansTreatmentPanel({
             sx={{ textTransform: "none" }}
           >
             Close without saving
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={amendSaveReminderOpen} onClose={() => setAmendSaveReminderOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ fontWeight: 800 }}>Save consultation</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">{amendSaveReminderText}</Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 2, py: 1.5 }}>
+          <Button onClick={() => setAmendSaveReminderOpen(false)} variant="contained" sx={{ textTransform: "none" }}>
+            OK
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={amendConfirmOpen} onClose={() => setAmendConfirmOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ fontWeight: 800 }}>Confirm order change</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 1.5 }}>
+            Some tests or studies you are removing may already have specimen collected, results entered, or imaging
+            captured. Continuing may require lab or imaging staff to redo work.
+          </Typography>
+          <Stack component="ul" spacing={0.5} sx={{ m: 0, pl: 2.5 }}>
+            {amendPendingWarnings.map((w) => (
+              <Typography key={w} component="li" variant="body2">
+                {w}
+              </Typography>
+            ))}
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 2, py: 1.5 }}>
+          <Button onClick={() => setAmendConfirmOpen(false)} sx={{ textTransform: "none" }}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="warning"
+            onClick={() => {
+              setAmendConfirmOpen(false);
+              if (amendPendingKind === "lab") void submitLabAmend(true);
+              else if (amendPendingKind === "imaging") void submitImagingAmend(true);
+              setAmendPendingKind(null);
+            }}
+            sx={{ textTransform: "none" }}
+          >
+            Continue anyway
           </Button>
         </DialogActions>
       </Dialog>

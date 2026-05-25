@@ -6,8 +6,9 @@ import {
 } from "@/components/consultation/consultationTypes";
 import {
   fetchCashierUnpaidPhysicianFeeEncounterCounts,
+  fetchEncounterTransIdsWithPendingDiagnosticAmendments,
+  fetchEncounterTransIdsWithUnpaidImagingRequests,
   fetchEncounterTransIdsWithUnpaidLabRequests,
-  isCashierHiddenEncounterDisposition,
 } from "@/lib/cashierLabQueue";
 import { buildPatientSearchOrFilter, PATIENT_DIRECTORY_SELECT, sanitizePatientSearchQuery } from "@/lib/patientsCatalog";
 import { supabase } from "@/lib/supabaseClient";
@@ -723,9 +724,8 @@ export async function fetchConsultationPatientsPage(
 /**
  * Cashier: paginated encounter search by keywords (space-separated tokens are AND-ed).
  * Each token matches if it appears in patient name (matched uppercase), encounter `trans_id` (partial, lowercase), full UUID equality, or numeric `patient_id`.
- * Returns encounters that either have unpaid `physician_fee_sales` (same as before) **or** have at least one
- * visit-linked `lab_requests` row not yet on `lab_sales` (e.g. reception laboratory intake awaiting cashier payment).
- * Encounters whose `disposition` is Paid or Completed are excluded.
+ * Returns encounters that have unpaid `physician_fee_sales`, visit-linked `lab_requests` / `imaging_requests`
+ * not yet on `lab_sales`, and/or pending `diagnostic_order_amendments` (post-payment order changes).
  */
 export async function fetchCashierEncountersSearchPage(
   pageIndex: number,
@@ -744,10 +744,12 @@ export async function fetchCashierEncountersSearchPage(
   const from = pageIndex * pageSize;
   const to = from + pageSize - 1;
 
-  const [patientMatches, unpaidQueueRes, labPendingRes] = await Promise.all([
+  const [patientMatches, unpaidQueueRes, labPendingRes, amendPendingRes, imagingPendingRes] = await Promise.all([
     Promise.all(tokens.map((tok) => fetchPatientIdsForCashierSearchToken(tok))),
     fetchCashierUnpaidPhysicianFeeEncounterCounts(),
     fetchEncounterTransIdsWithUnpaidLabRequests(),
+    fetchEncounterTransIdsWithPendingDiagnosticAmendments(),
+    fetchEncounterTransIdsWithUnpaidImagingRequests(),
   ]);
   const patientLookupError = patientMatches.find((m) => m.error)?.error;
   if (patientLookupError) {
@@ -759,11 +761,22 @@ export async function fetchCashierEncountersSearchPage(
   if (labPendingRes.error) {
     return { rows: [], count: 0, error: labPendingRes.error };
   }
+  if (amendPendingRes.error) {
+    return { rows: [], count: 0, error: amendPendingRes.error };
+  }
+  if (imagingPendingRes.error) {
+    return { rows: [], count: 0, error: imagingPendingRes.error };
+  }
 
   const unpaidEncounterIds = new Set(
     [...unpaidQueueRes.pendingByEncounterId.keys()].map((k) => String(k).trim().toLowerCase()),
   );
-  const eligibleEncounterIds = new Set<string>([...unpaidEncounterIds, ...labPendingRes.ids]);
+  const eligibleEncounterIds = new Set<string>([
+    ...unpaidEncounterIds,
+    ...labPendingRes.ids,
+    ...amendPendingRes.ids,
+    ...imagingPendingRes.ids,
+  ]);
   if (eligibleEncounterIds.size === 0) {
     return { rows: [], count: 0, error: null };
   }
@@ -810,7 +823,6 @@ export async function fetchCashierEncountersSearchPage(
     for (const row of metaRows ?? []) {
       const r = row as SortMeta;
       if (r.trans_id == null || r.trans_id === "") continue;
-      if (isCashierHiddenEncounterDisposition(r.disposition)) continue;
       metaById.set(String(r.trans_id), { ...r, trans_id: String(r.trans_id) });
     }
   }

@@ -52,9 +52,13 @@ export async function POST(req: Request) {
   }
 
   const activeDept = parseActiveDeptFromNotes(ticket.notes);
-  if (activeDept === "LAB") {
+  const labPartialReleased = parsePartialLabReleaseFromNotes(ticket.notes);
+  if (activeDept === "LAB" && !labPartialReleased) {
     return NextResponse.json(
-      { error: "Patient is currently at the laboratory. Wait until specimens are collected." },
+      {
+        error:
+          "Patient is still at the laboratory. Use Partially collected on the lab request to release for imaging.",
+      },
       { status: 409 },
     );
   }
@@ -82,33 +86,35 @@ export async function POST(req: Request) {
   const labReady = isLabReadyForImaging({
     includesLab,
     labAllCollected,
-    labPartialReleased: parsePartialLabReleaseFromNotes(ticket.notes),
+    labPartialReleased,
   });
 
-  if (ticket.status === "Waiting" && includesLab && !labReady) {
+  const releasedFromLab =
+    ticket.status === "Called" &&
+    activeDept === "LAB" &&
+    labPartialReleased &&
+    labReady;
+
+  if (
+    ticket.status !== "Waiting" &&
+    ticket.status !== "Called" &&
+    ticket.status !== "Collected" &&
+    !releasedFromLab
+  ) {
     return NextResponse.json(
-      {
-        error:
-          "Laboratory collection is still pending. Mark specimens collected or use Partially collected on the lab request.",
-      },
+      { error: "Patient is not ready for imaging." },
       { status: 409 },
     );
   }
 
-  if (ticket.status !== "Waiting" && ticket.status !== "Called") {
-    if (ticket.status === "Collected") {
-      if (includesLab && !labReady) {
-        return NextResponse.json(
-          { error: "Patient is not ready for imaging." },
-          { status: 409 },
-        );
-      }
-    } else {
-      return NextResponse.json(
-        { error: "Patient is not ready for imaging." },
-        { status: 409 },
-      );
-    }
+  if (ticket.status === "Called" && activeDept === "LAB" && !labPartialReleased) {
+    return NextResponse.json(
+      {
+        error:
+          "Patient is still at the laboratory. Use Partially collected on the lab request to release for imaging.",
+      },
+      { status: 409 },
+    );
   }
 
   const now = new Date().toISOString();

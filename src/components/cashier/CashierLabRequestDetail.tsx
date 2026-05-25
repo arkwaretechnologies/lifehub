@@ -494,7 +494,6 @@ export default function CashierLabRequestDetail() {
         }
       }
 
-      setPayOpen(false);
       const paymentLines: { label: string; amount: number }[] = items.map((it) => ({
         label: (it.test_name ?? "").trim() || `Test ${it.lab_test_id}`,
         amount: labLineCheckoutUnitFee(pkgReq, items, it, priceRes.unitPriceById),
@@ -530,11 +529,13 @@ export default function CashierLabRequestDetail() {
           queueTicketId: labQueueSlip.queueTicketId,
         });
       }
+      setPayOpen(false);
+      setPayBusy(false);
       setPaySuccess(`Payment saved.${labQueueLine}`);
-      scheduleCashierHomeNavigation(() => router.replace("/cashier?tab=walkin"));
+      scheduleCashierHomeNavigation("/cashier?tab=walkin");
+      return;
     } catch (e) {
       setPayError(e instanceof Error ? e.message : "Could not save payment.");
-    } finally {
       setPayBusy(false);
     }
   }

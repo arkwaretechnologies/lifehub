@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
 import {
   adminLabRequestIdsWithLabSales,
+  adminRepairQueueTicketModalityFlags,
   adminUnpaidLabRequestIdsOnCounter,
   labQueueCode,
 } from "@/lib/diagnosticQueueServer";
@@ -41,6 +42,7 @@ export type LabQueueRow = {
   /** From linked `lab_requests` when present. */
   request_date?: string | null;
   request_time?: string | null;
+  lab_any_collected?: boolean;
   lab_all_collected?: boolean;
   lab_partial_released?: boolean;
   imaging_all_captured?: boolean;
@@ -275,13 +277,21 @@ export async function GET(req: Request) {
 
   const todayIso = queueTicketTodayIsoDate();
 
+  if (scope === "active_today" || scope === "today_all") {
+    const repair = await adminRepairQueueTicketModalityFlags(admin, todayIso);
+    if (repair.error) {
+      return NextResponse.json({ error: repair.error }, { status: 500 });
+    }
+  }
+
   let base = admin
     .from("queue_tickets")
     .select(
       "id, queue_display, patient_name, status, ticket_date, issued_at, called_at, serving_at, encounter_id, lab_request_id, imaging_request_id, includes_lab, includes_imaging, notes",
       { count: "exact" },
     )
-    .eq("includes_lab", true)
+    .eq("counter_id", counterId)
+    .or("includes_lab.eq.true,lab_request_id.not.is.null")
     .order("issued_at", { ascending: true });
 
   // Default view: today's active tickets. Search can request a broader scope.
@@ -371,10 +381,14 @@ export async function GET(req: Request) {
   rows = await Promise.all(
     rows.map(async (r) => {
       const labId = String(r.lab_request_id ?? "").trim();
+      let labAnyCollected = false;
       let labAllCollected = false;
       if (labId) {
         const st = await computeLabRequestQueueCollectionState(admin, labId);
-        labAllCollected = !st.error && st.allCollected;
+        if (!st.error) {
+          labAnyCollected = st.anyCollected;
+          labAllCollected = st.allCollected;
+        }
       }
       const specimenCollected = /^\[Specimen\]\s+collected_at=.+/m.test(r.notes ?? "");
       const labPartialReleased = parsePartialLabReleaseFromNotes(r.notes);
@@ -386,6 +400,7 @@ export async function GET(req: Request) {
         status: r.status,
         includes_lab: r.includes_lab,
         includes_imaging: r.includes_imaging,
+        lab_any_collected: labAnyCollected,
         lab_all_collected: labAllCollected,
         lab_partial_released: labPartialReleased,
         specimen_collected: specimenCollected,
@@ -395,12 +410,14 @@ export async function GET(req: Request) {
       const can_lab_call = canLabCallPatient(r.status, {
         includesImaging,
         specimenCollected,
+        labAnyCollected,
         labAllCollected,
         imagingAllCaptured,
         activeDept,
       });
       return {
         ...r,
+        lab_any_collected: labAnyCollected,
         lab_all_collected: labAllCollected,
         lab_partial_released: labPartialReleased,
         imaging_all_captured: imagingAllCaptured,

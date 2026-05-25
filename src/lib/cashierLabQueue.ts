@@ -1,5 +1,7 @@
+import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { supabase } from "@/lib/supabaseClient";
 import { PHYSICIAN_FEE_SALES_TABLE, PHYSICIAN_FEE_STATUS_PAID } from "@/lib/physicianFeeSales";
+import { IMAGING_REQUESTS_TABLE } from "@/lib/imagingRequests";
 import {
   enrichEncounterLabRequestSummariesWithPackages,
   LAB_REQUEST_ITEMS_TABLE,
@@ -227,6 +229,108 @@ export async function fetchEncounterTransIdsWithUnpaidLabRequests(): Promise<{
   }
 
   return { ids: out, error: null };
+}
+
+/** Visit encounters with pending `diagnostic_order_amendments` (service role via API). */
+export async function fetchEncounterTransIdsWithPendingDiagnosticAmendments(): Promise<{
+  ids: Set<string>;
+  amountDueByEncounterId: Map<string, number>;
+  error: string | null;
+}> {
+  try {
+    const res = await authenticatedFetch("/api/cashier/pending-diagnostic-amendment-encounters", {
+      cache: "no-store",
+    });
+    const json = (await res.json().catch(() => ({}))) as {
+      encounterIds?: string[];
+      amountDueByEncounterId?: Record<string, number>;
+      error?: string;
+    };
+    if (!res.ok) {
+      return { ids: new Set(), amountDueByEncounterId: new Map(), error: json.error ?? `Request failed (${res.status})` };
+    }
+    const out = new Set<string>();
+    for (const id of json.encounterIds ?? []) {
+      const enc = String(id).trim();
+      if (enc) out.add(enc.toLowerCase());
+    }
+    const amountDueByEncounterId = new Map<string, number>();
+    for (const [k, v] of Object.entries(json.amountDueByEncounterId ?? {})) {
+      const key = String(k).trim().toLowerCase();
+      if (!key) continue;
+      const n = Number(v);
+      if (Number.isFinite(n) && n > 0) amountDueByEncounterId.set(key, n);
+    }
+    return { ids: out, amountDueByEncounterId, error: null };
+  } catch {
+    return { ids: new Set(), amountDueByEncounterId: new Map(), error: "Could not load pending diagnostic amendments." };
+  }
+}
+
+/** Visit-linked imaging orders with no `lab_sales.imaging_request_id` yet. */
+export async function fetchEncounterTransIdsWithUnpaidImagingRequests(): Promise<{
+  ids: Set<string>;
+  error: string | null;
+}> {
+  const sold = await fetchImagingRequestIdsReferencedInLabSales();
+  if (sold.error) {
+    return { ids: new Set(), error: sold.error };
+  }
+
+  const out = new Set<string>();
+  let from = 0;
+  for (;;) {
+    const { data, error } = await supabase
+      .from(IMAGING_REQUESTS_TABLE)
+      .select("id, encounter_id")
+      .not("encounter_id", "is", null)
+      .range(from, from + PAGE_SIZE - 1);
+
+    if (error) {
+      return { ids: new Set(), error: error.message };
+    }
+
+    const rows = (data ?? []) as Array<{ id?: string; encounter_id?: string | null }>;
+    for (const r of rows) {
+      const rid = String(r.id ?? "").trim();
+      const enc = String(r.encounter_id ?? "").trim();
+      if (!rid || !enc) continue;
+      if (sold.set.has(rid)) continue;
+      out.add(enc.toLowerCase());
+    }
+
+    if (rows.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+
+  return { ids: out, error: null };
+}
+
+async function fetchImagingRequestIdsReferencedInLabSales(): Promise<{ set: Set<string>; error: string | null }> {
+  const set = new Set<string>();
+  let from = 0;
+  for (;;) {
+    const { data, error } = await supabase
+      .from(LAB_SALES_TABLE)
+      .select("imaging_request_id")
+      .not("imaging_request_id", "is", null)
+      .range(from, from + PAGE_SIZE - 1);
+
+    if (error) {
+      return { set: new Set(), error: error.message };
+    }
+
+    const rows = (data ?? []) as Array<{ imaging_request_id?: string | null }>;
+    for (const r of rows) {
+      const id = String(r.imaging_request_id ?? "").trim();
+      if (id) set.add(id);
+    }
+
+    if (rows.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+
+  return { set, error: null };
 }
 
 /**

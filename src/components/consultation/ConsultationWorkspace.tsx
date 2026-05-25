@@ -1,8 +1,23 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, Tab, Tabs, Typography } from "@mui/material";
+import {
+  Alert,
+  Box,
+  Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Fab,
+  Snackbar,
+  Tab,
+  Tabs,
+  Tooltip,
+  Typography,
+  Zoom,
+} from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import CloseOutlinedIcon from "@mui/icons-material/CloseOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
@@ -98,7 +113,79 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [printing, setPrinting] = useState(false);
+  const [saveFabVisible, setSaveFabVisible] = useState(false);
+  const [saveToastOpen, setSaveToastOpen] = useState(false);
+  const [saveToastMessage, setSaveToastMessage] = useState("");
+  const [saveToastSeverity, setSaveToastSeverity] = useState<"success" | "error">("success");
+  const saveNavigateAfterToastRef = useRef(false);
+  const saveToolbarRef = useRef<HTMLDivElement>(null);
   const { dirty, runSaveAll, saving } = useConsultationSave();
+
+  const handleSaveConsultation = useCallback(async () => {
+    const r = await runSaveAll();
+    if (r.ok) {
+      const syncRes = await authenticatedFetch("/api/consultation/sync-diagnostic-amendments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ encounterId: transId }),
+      }).catch(() => null);
+      const syncJson = syncRes
+        ? ((await syncRes.json().catch(() => ({}))) as { error?: string; synced?: number })
+        : {};
+      if (syncRes && !syncRes.ok) {
+        setSaveToastSeverity("error");
+        setSaveToastMessage(syncJson.error ?? "Consultation saved, but cashier balances could not be updated.");
+        saveNavigateAfterToastRef.current = false;
+        setSaveToastOpen(true);
+        return;
+      }
+
+      await authenticatedFetch("/api/consultation/complete-queue-ticket", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transId }),
+      }).catch(() => {});
+      const savedCount = r.savedPanelKeys.length;
+      setSaveToastSeverity("success");
+      setSaveToastMessage(
+        savedCount > 0
+          ? "Consultation saved successfully. Any lab or imaging balance due is ready at Cashier."
+          : "Consultation saved. Collect any new lab or imaging balance at Cashier.",
+      );
+      saveNavigateAfterToastRef.current = true;
+      setSaveToastOpen(true);
+    } else {
+      setSaveToastSeverity("error");
+      setSaveToastMessage(r.error ?? "Failed to save consultation.");
+      saveNavigateAfterToastRef.current = false;
+      setSaveToastOpen(true);
+    }
+  }, [runSaveAll, transId]);
+
+  const handleSaveToastClose = useCallback(
+    (_: unknown, reason?: string) => {
+      if (reason === "clickaway") return;
+      setSaveToastOpen(false);
+      if (saveNavigateAfterToastRef.current) {
+        saveNavigateAfterToastRef.current = false;
+        router.push("/consultation");
+      }
+    },
+    [router],
+  );
+
+  useEffect(() => {
+    const el = saveToolbarRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setSaveFabVisible(!entry.isIntersecting);
+      },
+      { root: null, threshold: 0, rootMargin: "-8px 0px 0px 0px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   function getPhysiciansRecordChiefComplaintFromDom(): string | null {
     if (typeof document === "undefined") return null;
@@ -308,7 +395,10 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
 
   return (
     <Box sx={{ maxWidth: 1200, mx: "auto" }}>
-      <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 1.5, mb: 2, flexWrap: "wrap" }}>
+      <Box
+        ref={saveToolbarRef}
+        sx={{ display: "flex", justifyContent: "flex-end", gap: 1.5, mb: 2, flexWrap: "wrap" }}
+      >
         <Button
           type="button"
           variant="outlined"
@@ -469,20 +559,7 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
           color="primary"
           startIcon={<SaveOutlinedIcon />}
           disabled={saving}
-          onClick={() => {
-            void (async () => {
-              const r = await runSaveAll();
-              if (r.ok) {
-                await authenticatedFetch("/api/consultation/complete-queue-ticket", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ transId }),
-                }).catch(() => {});
-                router.push("/consultation");
-              }
-              else window.alert(r.error ?? "Failed to save consultation.");
-            })();
-          }}
+          onClick={() => void handleSaveConsultation()}
           sx={{ textTransform: "capitalize", borderRadius: 999, px: 2.5 }}
         >
           {saving ? "Saving…" : "Save consultation"}
@@ -651,6 +728,72 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
       <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 2, textAlign: "center" }}>
         Form: LH-HPE-001 · LifeHub Medical & Diagnostic Center
       </Typography>
+
+      <Snackbar
+        open={saveToastOpen}
+        autoHideDuration={saveToastSeverity === "success" ? 2800 : 6000}
+        onClose={handleSaveToastClose}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert severity={saveToastSeverity} variant="filled" onClose={handleSaveToastClose} sx={{ width: "100%" }}>
+          {saveToastMessage}
+        </Alert>
+      </Snackbar>
+
+      <Zoom in={saveFabVisible} unmountOnExit>
+        <Tooltip title={saving ? "Saving…" : dirty ? "Save consultation (unsaved changes)" : "Save consultation"} placement="left">
+          <Box
+            component="span"
+            sx={{
+              position: "fixed",
+              bottom: { xs: 20, md: 28 },
+              right: { xs: 20, md: 28 },
+              zIndex: (theme) => theme.zIndex.snackbar - 1,
+              display: "inline-flex",
+            }}
+          >
+            <Fab
+              color="primary"
+              aria-label="Save consultation"
+              disabled={saving}
+              onClick={() => void handleSaveConsultation()}
+              sx={{
+                width: 56,
+                height: 56,
+                boxShadow: (theme) =>
+                  dirty
+                    ? `0 8px 24px ${theme.palette.primary.main}66`
+                    : "0 8px 20px rgba(0,0,0,0.18)",
+                transition: (theme) =>
+                  theme.transitions.create(["box-shadow", "transform"], {
+                    duration: theme.transitions.duration.shorter,
+                  }),
+                "&:hover": {
+                  transform: "scale(1.06)",
+                },
+                ...(dirty && !saving
+                  ? {
+                      "&::after": {
+                        content: '""',
+                        position: "absolute",
+                        top: 6,
+                        right: 6,
+                        width: 10,
+                        height: 10,
+                        borderRadius: "50%",
+                        bgcolor: "warning.main",
+                        border: "2px solid",
+                        borderColor: "primary.main",
+                      },
+                    }
+                  : {}),
+              }}
+            >
+              <SaveOutlinedIcon />
+            </Fab>
+          </Box>
+        </Tooltip>
+      </Zoom>
     </Box>
   );
 }

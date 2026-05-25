@@ -41,16 +41,13 @@ export function openThermalPrintHtml(html: string, title: string): Promise<void>
   });
 }
 
-/** Defer cashier navigation until after print iframes attach (avoids Next.js aborted-callback noise). */
-export function scheduleCashierHomeNavigation(
-  navigate: () => void,
-  delayMs = 50,
-): void {
+/**
+ * Return to cashier home after payment + thermal print.
+ * Uses full navigation (not client router.replace) so Next.js does not throw
+ * "The provided callback is no longer runnable" when the encounter page unmounts mid-transition.
+ */
+export function scheduleCashierHomeNavigation(href: string, delayMs = 400): void {
   window.setTimeout(() => {
-    try {
-      navigate();
-    } catch {
-      /* ignore if router transition was superseded */
-    }
+    window.location.assign(href);
   }, delayMs);
 }

@@ -31,6 +31,10 @@ function formatMoney(v: number | string | null | undefined): string {
   return moneyNum(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function roundMoney2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
 function isCashMethod(m: Pick<PaymentMethodRow, "code" | "name"> | null): boolean {
   if (!m) return false;
   const c = (m.code ?? "").trim().toUpperCase();
@@ -52,11 +56,18 @@ export function PaymentModal(props: {
   open: boolean;
   title: string;
   totalDue: number;
+  /** Discount applies to this portion only; defaults to {@link totalDue}. */
+  discountableSubtotal?: number;
+  /** Added after discount (e.g. order amendments); can be negative for net refunds. */
+  fixedAdjustments?: number;
   summaryRows?: PaymentModalSummaryRow[];
   paymentMethods: PaymentMethodRow[];
   discountTypes?: DiscountTypeRow[];
   busy?: boolean;
   errorText?: string;
+  confirmLabel?: string;
+  /** Refund flow: no discount/cash tender validation. */
+  isRefund?: boolean;
   onGenerateOrNumber?: () => Promise<string>;
   onClose: () => void;
   /** Shown when paying laboratory orders: used if reception did not link an entrance ticket for this visit today. */
@@ -82,11 +93,15 @@ export function PaymentModal(props: {
     open,
     title,
     totalDue,
+    discountableSubtotal,
+    fixedAdjustments = 0,
     summaryRows,
     paymentMethods,
     discountTypes,
     busy,
     errorText,
+    confirmLabel = "Pay",
+    isRefund = false,
     onGenerateOrNumber,
     onClose,
     onConfirm,
@@ -153,7 +168,7 @@ export function PaymentModal(props: {
     return pctNum(selectedDiscount?.discount_pct);
   }, [discountTypeId, otherDiscountPct, selectedDiscount?.discount_pct]);
 
-  const showDiscountSection = (discountTypes?.length ?? 0) > 0;
+  const showDiscountSection = !isRefund && (discountTypes?.length ?? 0) > 0;
 
   const effectiveDiscountMode = useMemo(() => {
     // If a discount type is selected from DB, it’s always percentage-based.
@@ -182,7 +197,7 @@ export function PaymentModal(props: {
   }, [discountTypeId, selectedDiscount]);
 
   const discountAmount = useMemo(() => {
-    const due = moneyNum(totalDue);
+    const due = moneyNum(discountableSubtotal ?? totalDue);
     if (due <= 0) return 0;
     if (selectedDiscount || effectiveDiscountMode === "pct") {
       const pct = Number.isFinite(effectiveDiscountPct) ? Math.max(0, effectiveDiscountPct) : 0;
@@ -191,11 +206,13 @@ export function PaymentModal(props: {
     }
     // amount mode
     return Math.min(due, otherDiscountAmount);
-  }, [effectiveDiscountMode, effectiveDiscountPct, otherDiscountAmount, selectedDiscount, totalDue]);
+  }, [discountableSubtotal, effectiveDiscountMode, effectiveDiscountPct, otherDiscountAmount, selectedDiscount, totalDue]);
 
   const totalAfterDiscount = useMemo(() => {
-    return Math.max(0, moneyNum(totalDue) - discountAmount);
-  }, [discountAmount, totalDue]);
+    if (isRefund) return moneyNum(totalDue);
+    const base = moneyNum(discountableSubtotal ?? totalDue);
+    return Math.max(0, roundMoney2(Math.max(0, base - discountAmount) + moneyNum(fixedAdjustments)));
+  }, [discountAmount, discountableSubtotal, fixedAdjustments, isRefund, totalDue]);
 
   const amountTendered = useMemo(() => {
     const t = amountTenderedRaw.trim();
@@ -216,13 +233,14 @@ export function PaymentModal(props: {
     if (!selectedMethod) return true;
     // OR can be auto-generated on confirm if `onGenerateOrNumber` exists.
     if (!orNumber.trim() && !onGenerateOrNumber) return true;
+    if (isRefund) return false;
     if (cashMode) {
       const t = amountTendered;
       if (t == null) return true;
       if (t < totalAfterDiscount) return true;
     }
     return false;
-  }, [amountTendered, busy, cashMode, onGenerateOrNumber, orNumber, selectedMethod, totalAfterDiscount]);
+  }, [amountTendered, busy, cashMode, isRefund, onGenerateOrNumber, orNumber, selectedMethod, totalAfterDiscount]);
 
   const effectiveSummaryRows = useMemo(() => {
     const rows = (summaryRows ?? []).filter((r) => r && r.label && Number.isFinite(r.amount));
@@ -266,7 +284,7 @@ export function PaymentModal(props: {
       setLocalError("Enter an OR number.");
       return;
     }
-    if (cashMode) {
+    if (!isRefund && cashMode) {
       if (amountTendered == null || !Number.isFinite(amountTendered)) {
         setLocalError("Enter a valid amount tendered.");
         return;
@@ -288,17 +306,21 @@ export function PaymentModal(props: {
       }
     }
 
-    await onConfirm({
-      paymentMethod: selectedMethod,
-      orNumber: or,
-      discountType: typeof discountTypeId === "string" && discountTypeId === "other" ? null : selectedDiscount,
-      discountMode: effectiveDiscountMode,
-      discountPct: effectiveDiscountMode === "pct" ? effectiveDiscountPct : 0,
-      discountAmount,
-      amountTendered: cashMode ? (amountTendered ?? 0) : null,
-      changeAmount: cashMode ? (computedChange ?? 0) : null,
-      labQueuePriorityId,
-    });
+    try {
+      await onConfirm({
+        paymentMethod: selectedMethod,
+        orNumber: or,
+        discountType: typeof discountTypeId === "string" && discountTypeId === "other" ? null : selectedDiscount,
+        discountMode: effectiveDiscountMode,
+        discountPct: effectiveDiscountMode === "pct" ? effectiveDiscountPct : 0,
+        discountAmount,
+        amountTendered: cashMode ? (amountTendered ?? 0) : null,
+        changeAmount: cashMode ? (computedChange ?? 0) : null,
+        labQueuePriorityId,
+      });
+    } catch {
+      /* Parent may navigate away after payment; ignore stale router/modal errors. */
+    }
   }
 
   return (
@@ -511,7 +533,7 @@ export function PaymentModal(props: {
           </Box>
         ) : null}
 
-        {cashMode ? (
+        {!isRefund && cashMode ? (
           <>
             <TextField
               fullWidth
@@ -544,7 +566,7 @@ export function PaymentModal(props: {
           color="secondary"
           disabled={disableConfirm || genBusy}
         >
-          Pay
+          {confirmLabel}
         </Button>
       </DialogActions>
       </form>

@@ -98,6 +98,7 @@ export function nextSharedQueueState(input: SharedQueueStateInput): SharedQueueS
 
   if (source === "imaging_capture") {
     if (imagingDone && !labDone) {
+      // Imaging done; lab still pending — return to Waiting so lab can call/collect.
       return { status: "Waiting", active: null };
     }
     if (!imagingDone) {

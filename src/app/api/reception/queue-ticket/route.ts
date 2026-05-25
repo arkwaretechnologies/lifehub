@@ -165,12 +165,14 @@ export async function PATCH(req: Request) {
         if (current?.status) {
           const specimenCollected = isSpecimenCollectedOnTicket(current.notes);
           const labId = String(current.lab_request_id ?? "").trim();
+          let labAnyCollected = specimenCollected;
           let labAllCollected = specimenCollected;
           if (labId) {
             const labState = await computeLabRequestQueueCollectionState(admin, labId);
             if (labState.error) {
               return NextResponse.json({ error: labState.error }, { status: 500 });
             }
+            labAnyCollected = labAnyCollected || labState.anyCollected;
             labAllCollected = labAllCollected || labState.allCollected;
           }
           const imgId = String(current.imaging_request_id ?? "").trim();
@@ -198,6 +200,7 @@ export async function PATCH(req: Request) {
             !canLabCallPatient(current.status, {
               includesImaging,
               specimenCollected,
+              labAnyCollected,
               labAllCollected,
               imagingAllCaptured,
             })
@@ -206,7 +209,9 @@ export async function PATCH(req: Request) {
               {
                 error: labAllCollected
                   ? "Specimen already collected — enter results instead of calling again."
-                  : "This ticket cannot be called in its current status.",
+                  : labAnyCollected
+                    ? "Partial collection in progress — open Request to continue."
+                    : "This ticket cannot be called in its current status.",
               },
               { status: 409 },
             );

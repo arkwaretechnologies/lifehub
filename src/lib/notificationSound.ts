@@ -75,3 +75,23 @@ export async function playNotificationChime(): Promise<void> {
     /* ignore — e.g. autoplay blocked until user interacts with the page */
   }
 }
+
+/** Short tri-tone pop (iMessage-style incoming message). */
+export async function playChatMessageSound(): Promise<void> {
+  if (typeof window === "undefined") return;
+
+  try {
+    const ctx = getContext();
+    if (ctx.state === "suspended") {
+      await ctx.resume();
+    }
+    if (ctx.state !== "running") return;
+
+    const t = ctx.currentTime;
+    playTone(ctx, 587.33, t, 0.045, 0.2);
+    playTone(ctx, 739.99, t + 0.05, 0.045, 0.17);
+    playTone(ctx, 880, t + 0.1, 0.07, 0.15);
+  } catch {
+    /* ignore */
+  }
+}

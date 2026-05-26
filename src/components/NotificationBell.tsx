@@ -56,6 +56,11 @@ export default function NotificationBell() {
   /** null = first fetch (no chime); then tracks unread ids we've already announced. */
   const seenUnreadIdsRef = useRef<Set<string> | null>(null);
 
+  const markAllRead = useCallback(async () => {
+    if (!canView || userId == null) return;
+    await authenticatedFetch("/api/notifications/read-all", { method: "PATCH" });
+  }, [canView, userId]);
+
   const load = useCallback(async () => {
     if (!canView || userId == null) return;
     setLoading(true);
@@ -161,7 +166,10 @@ export default function NotificationBell() {
           primeNotificationSound();
           void resumeNotificationAudio();
           setAnchorEl(e.currentTarget);
-          void load();
+          void (async () => {
+            await markAllRead();
+            await load();
+          })();
         }}
       >
         <Badge
@@ -181,7 +189,10 @@ export default function NotificationBell() {
       <Popover
         open={Boolean(anchorEl)}
         anchorEl={anchorEl}
-        onClose={() => setAnchorEl(null)}
+        onClose={() => {
+          setAnchorEl(null);
+          void load();
+        }}
         anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
         transformOrigin={{ vertical: "top", horizontal: "right" }}
         slotProps={{ paper: { sx: { width: 360, maxHeight: 480 } } }}

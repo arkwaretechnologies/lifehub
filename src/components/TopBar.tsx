@@ -25,13 +25,12 @@ import {
   CircularProgress,
 } from "@mui/material";
 import MenuIcon from "@mui/icons-material/Menu";
+import ChatDropdown from "@/components/ChatDropdown";
 import NotificationBell from "@/components/NotificationBell";
 import LogoutIcon from "@mui/icons-material/Logout";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import CloseIcon from "@mui/icons-material/Close";
 import SearchIcon from "@mui/icons-material/Search";
-import MailOutlineIcon from "@mui/icons-material/MailOutline";
-import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
 import { useAuth } from "@/components/AuthProvider";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { DRAWER_WIDTH } from "@/components/Sidebar";
@@ -187,10 +186,6 @@ export default function TopBar({ onMenuToggle }: TopBarProps) {
 
           {/* Right section */}
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-            <IconButton sx={{ color: "text.secondary", display: { xs: "none", md: "inline-flex" } }}>
-              <MailOutlineIcon fontSize="small" />
-            </IconButton>
-
             <Box
               sx={{
                 display: { xs: "none", md: "flex" },
@@ -211,11 +206,8 @@ export default function TopBar({ onMenuToggle }: TopBarProps) {
               </Typography>
             </Box>
 
+            <ChatDropdown />
             <NotificationBell />
-
-            <IconButton sx={{ color: "text.secondary", display: { xs: "none", md: "inline-flex" } }}>
-              <MoreHorizIcon fontSize="small" />
-            </IconButton>
 
             <IconButton
               onClick={(e) => setAnchorEl(e.currentTarget)}

@@ -1159,15 +1159,6 @@ export async function adminIssueDiagnosticQueueTicket(
   );
   if (qnErr.error) return { error: qnErr.error };
 
-  if (input.includesLab) {
-    void insertLabQueueNewRequestNotifications(admin, {
-      queueDisplay: issued.result.queueDisplay,
-      patientName: input.patient.name,
-      queueTicketId: issued.result.queueTicketId,
-      labRequestId,
-    });
-  }
-
   return { error: null, result: { ...issued.result, reused: false } };
 }
 
@@ -1263,6 +1254,15 @@ export async function adminIssueCashierLaboratoryQueueTicket(input: {
 
   if (issued.error || !issued.result) {
     return { error: issued.error ?? "Could not issue diagnostic queue ticket." };
+  }
+
+  if (labUniq.length > 0 && !issued.result.reused) {
+    void insertLabQueueNewRequestNotifications(admin, {
+      queueDisplay: issued.result.queueDisplay,
+      patientName: input.patient.name,
+      queueTicketId: issued.result.queueTicketId,
+      labRequestId: primaryLabRequestId,
+    });
   }
 
   return {

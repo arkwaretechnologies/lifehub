@@ -22,7 +22,7 @@ export async function GET(req: Request) {
   }
 
   const canPharmacy = userCanApprovePharmacyLineRequests(session.menuAccess);
-  const canLab = userCanReceiveLabQueueNotifications(session.menuAccess);
+  const canLab = userCanReceiveLabQueueNotifications(session.profile.role);
   if (!canPharmacy && !canLab) {
     return NextResponse.json({ notifications: [], unreadCount: 0 });
   }

@@ -23,8 +23,10 @@ import {
 import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
 import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
 import type { LabQueueRow } from "@/app/api/laboratory/lab-queue/route";
+import { useAuth } from "@/components/AuthProvider";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { useLabQueueNewRequestAlerts } from "@/hooks/useLabQueueNewRequestAlerts";
+import { userCanReceiveLabQueueNotifications } from "@/lib/labQueueNotificationServer";
 import {
   labImagingColumnLabel,
   labQueueDisplayChipColor,
@@ -40,6 +42,8 @@ import {
 
 export default function LaboratoryPage() {
   const router = useRouter();
+  const { profile } = useAuth();
+  const labAlertsEnabled = userCanReceiveLabQueueNotifications(profile?.role);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
   const [rows, setRows] = useState<LabQueueRow[]>([]);
@@ -75,6 +79,7 @@ export default function LaboratoryPage() {
     rows,
     refresh: silentRefresh,
     ready: !loading,
+    enabled: labAlertsEnabled,
   });
 
   const goToResults = (ticket: LabQueueRow) => {

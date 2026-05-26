@@ -45,7 +45,7 @@ export default function NotificationBell() {
 
   const canPharmacy =
     menuAccess.rbac && canApprovePharmacyLineRequests(menuAccess.pageKeys);
-  const canLab = menuAccess.rbac && userCanReceiveLabQueueNotifications(menuAccess);
+  const canLab = userCanReceiveLabQueueNotifications(profile?.role);
   const canView = canPharmacy || canLab;
 
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);

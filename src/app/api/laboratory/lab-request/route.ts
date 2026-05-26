@@ -8,10 +8,10 @@ import {
 } from "@/lib/labRequests";
 import type { LabResultPrintPosition } from "@/lib/labResultsPrintLayout";
 import { parseResultsPrintLayouts } from "@/lib/labResultsPrintLayout";
+import { fetchLabResultTemplates, isAllowedLabResultTemplateCode } from "@/lib/labResultTemplates";
 import {
   compareLabTestSortOrder,
   filterLabRequestItemsForResultEntry,
-  isAllowedLabResultsTemplateCode,
   labResultsTemplateCodeFromCatalogTestCode,
 } from "@/lib/labTests";
 import { queueAdminClient } from "@/lib/receptionQueueServer";
@@ -76,11 +76,12 @@ async function resolveRequestingPhysicianLabel(
   return ref || null;
 }
 
-/** Zip DB template CSV + layout json; filter allowlisted codes; catalog fallback when DB yields none. */
+/** Zip DB template CSV + layout json; filter registered codes; catalog fallback when DB yields none. */
 function resolvePrintTemplatesForTest(
   fromDb: string | null | undefined,
   catalogTestCode: string | null | undefined,
   rawLayout: unknown | null,
+  registeredTemplateCodes: ReadonlySet<string>,
 ): { results_template_code: string | null; results_print_layouts: (LabResultPrintPosition | null)[] } {
   const rawParts = String(fromDb ?? "")
     .split(",")
@@ -91,7 +92,7 @@ function resolvePrintTemplatesForTest(
     code,
     layout: i < slots.length ? slots[i] : null,
   }));
-  const filtered = pairs.filter((p) => isAllowedLabResultsTemplateCode(p.code));
+  const filtered = pairs.filter((p) => isAllowedLabResultTemplateCode(p.code, registeredTemplateCodes));
   if (filtered.length > 0) {
     return {
       results_template_code: filtered.map((p) => p.code).join(","),
@@ -100,7 +101,7 @@ function resolvePrintTemplatesForTest(
   }
   const cat = labResultsTemplateCodeFromCatalogTestCode(catalogTestCode);
   const c = (cat ?? "").trim().toUpperCase();
-  if (c && isAllowedLabResultsTemplateCode(c)) {
+  if (c && isAllowedLabResultTemplateCode(c, registeredTemplateCodes)) {
     const first = slots.length > 0 ? slots[0] : null;
     return {
       results_template_code: c,
@@ -167,6 +168,10 @@ export async function GET(req: Request) {
   if (!admin) {
     return NextResponse.json({ error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." }, { status: 500 });
   }
+
+  const tplRes = await fetchLabResultTemplates(admin);
+  if (tplRes.error) return NextResponse.json({ error: tplRes.error }, { status: 500 });
+  const registeredTemplateCodes = new Set(tplRes.templates.map((t) => t.code));
 
   const { data: header, error: hErr } = await admin
     .from("lab_requests")
@@ -385,6 +390,7 @@ export async function GET(req: Request) {
       t?.results_template_code,
       t?.code ?? null,
       t?.results_print_layout ?? null,
+      registeredTemplateCodes,
     );
     return {
       id: r.id,

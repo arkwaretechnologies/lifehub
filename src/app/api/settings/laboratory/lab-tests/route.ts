@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { parseResultsPrintLayoutInput } from "@/lib/labResultsPrintLayout";
+import { fetchActiveLabResultTemplateCodes, isAllowedLabResultTemplateCode } from "@/lib/labResultTemplates";
 import {
-  isAllowedLabResultsTemplateCode,
   LAB_CATEGORIES_TABLE,
   LAB_TEST_CATALOG_SELECT,
   LAB_TESTS_TABLE,
@@ -149,8 +149,12 @@ export async function POST(req: Request) {
       ? null
       : String(body.reference_range).trim() || null;
   const results_template_code = normalizeResultsTemplateCodeForStorage(body?.results_template_code);
-  if (results_template_code && !isAllowedLabResultsTemplateCode(results_template_code)) {
-    return NextResponse.json({ error: "Unsupported results template code." }, { status: 400 });
+  if (results_template_code) {
+    const tplCodes = await fetchActiveLabResultTemplateCodes(db);
+    if (tplCodes.error) return NextResponse.json({ error: tplCodes.error }, { status: 400 });
+    if (!isAllowedLabResultTemplateCode(results_template_code, tplCodes.codes)) {
+      return NextResponse.json({ error: "Unsupported results template code." }, { status: 400 });
+    }
   }
 
   const layoutParsed = parseResultsPrintLayoutInput(body?.results_print_layout ?? null);

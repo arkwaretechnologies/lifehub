@@ -52,13 +52,9 @@ import {
   buildPrintLayoutJsonFromFormFields,
   printLayoutFormFieldsFromDb,
 } from "@/lib/labResultsPrintLayout";
+import { splitAllowlistedResultsTemplateCodes } from "@/lib/labResultTemplates";
 import type { LabCategoryRow, LabTestCatalogItem } from "@/lib/labTests";
-import {
-  filterOrderableLabTests,
-  isNonOrderableResultLine,
-  LAB_RESULTS_PRINT_TEMPLATE_CODES_ORDER,
-  splitAllowlistedResultsTemplateCodes,
-} from "@/lib/labTests";
+import { filterOrderableLabTests, isNonOrderableResultLine } from "@/lib/labTests";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 
 type TestForm = {
@@ -107,8 +103,8 @@ const emptyForm = (): TestForm => ({
   print_page_index: "",
 });
 
-function rowToForm(r: LabTestCatalogItem): TestForm {
-  const tplCodes = splitAllowlistedResultsTemplateCodes(r.results_template_code);
+function rowToForm(r: LabTestCatalogItem, allowedTemplateCodes: ReadonlySet<string>): TestForm {
+  const tplCodes = splitAllowlistedResultsTemplateCodes(r.results_template_code, allowedTemplateCodes);
   const layout = printLayoutFormFieldsFromDb(r.results_print_layout);
   return {
     category_id: String(r.category_id ?? ""),
@@ -274,6 +270,7 @@ function parseOptionalNumber(raw: string): number | null {
 export default function SettingsLabTestsPage() {
   const [tests, setTests] = useState<LabTestCatalogItem[]>([]);
   const [categories, setCategories] = useState<LabCategoryRow[]>([]);
+  const [resultTemplateCodes, setResultTemplateCodes] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState("");
 
@@ -301,15 +298,19 @@ export default function SettingsLabTestsPage() {
     setListError("");
     setLoading(true);
     try {
-      const [cRes, tRes] = await Promise.all([
+      const [cRes, tRes, tplRes] = await Promise.all([
         authenticatedFetch("/api/settings/laboratory/categories"),
         authenticatedFetch("/api/settings/laboratory/lab-tests"),
+        authenticatedFetch("/api/laboratory/lab-result-templates"),
       ]);
       const cJson = (await cRes.json().catch(() => null)) as
         | { categories?: LabCategoryRow[]; error?: string }
         | null;
       const tJson = (await tRes.json().catch(() => null)) as
         | { tests?: LabTestCatalogItem[]; error?: string }
+        | null;
+      const tplJson = (await tplRes.json().catch(() => null)) as
+        | { templates?: Array<{ code?: string }>; error?: string }
         | null;
 
       let errMsg = "";
@@ -327,6 +328,17 @@ export default function SettingsLabTestsPage() {
         setTests(tJson?.tests ?? []);
       }
 
+      if (!tplRes.ok || tplJson?.error) {
+        errMsg = errMsg || (tplJson?.error ?? "Failed to load result templates.");
+        setResultTemplateCodes([]);
+      } else {
+        setResultTemplateCodes(
+          (tplJson?.templates ?? [])
+            .map((t) => String(t.code ?? "").trim().toUpperCase())
+            .filter(Boolean),
+        );
+      }
+
       setListError(errMsg);
     } catch {
       setListError("Failed to load data.");
@@ -340,6 +352,11 @@ export default function SettingsLabTestsPage() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  const allowedTemplateCodeSet = useMemo(
+    () => new Set(resultTemplateCodes),
+    [resultTemplateCodes],
+  );
 
   const categoryLabel = useCallback(
     (categoryId: number | string) => {
@@ -423,7 +440,7 @@ export default function SettingsLabTestsPage() {
 
   const openEdit = (r: LabTestCatalogItem) => {
     setEditingId(r.id);
-    setEditForm(rowToForm(r));
+    setEditForm(rowToForm(r, allowedTemplateCodeSet));
     setEditError("");
     setEditOpen(true);
   };
@@ -681,7 +698,7 @@ export default function SettingsLabTestsPage() {
           <MenuItem value="">
             <em>Infer from test code</em>
           </MenuItem>
-          {LAB_RESULTS_PRINT_TEMPLATE_CODES_ORDER.map((code) => (
+          {resultTemplateCodes.map((code) => (
             <MenuItem key={code} value={code}>
               {code}
             </MenuItem>
@@ -963,7 +980,8 @@ export default function SettingsLabTestsPage() {
                         <TableCell sx={{ maxWidth: 120 }}>{r.specimen_type ?? "—"}</TableCell>
                         <TableCell>{r.unit ?? "—"}</TableCell>
                         <TableCell sx={{ whiteSpace: "nowrap", fontFamily: "monospace", fontSize: "0.8rem" }}>
-                          {splitAllowlistedResultsTemplateCodes(r.results_template_code)[0] ?? "—"}
+                          {splitAllowlistedResultsTemplateCodes(r.results_template_code, allowedTemplateCodeSet)[0] ??
+                            "—"}
                         </TableCell>
                         <TableCell align="right">{r.price != null && r.price !== "" ? String(r.price) : "—"}</TableCell>
                         <TableCell align="center">

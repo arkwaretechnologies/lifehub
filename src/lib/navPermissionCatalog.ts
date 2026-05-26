@@ -171,6 +171,16 @@ export const PERMISSION_MODULES: PermissionModule[] = [
             href: "/settings/laboratory/lab-tests",
           },
           {
+            label: "Result templates",
+            pageKey: "settings/laboratory/result-templates",
+            href: "/settings/laboratory/result-templates",
+          },
+          {
+            label: "Lab signatories",
+            pageKey: "settings/laboratory/signatories",
+            href: "/settings/laboratory/signatories",
+          },
+          {
             label: "Imaging",
             pageKey: "settings/laboratory/imaging",
             href: "/settings/laboratory/imaging",

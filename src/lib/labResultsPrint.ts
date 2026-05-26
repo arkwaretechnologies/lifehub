@@ -1,13 +1,16 @@
 import type { LabRequestHeaderView, LabRequestItemView } from "@/app/api/laboratory/lab-request/route";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { formatDateMMDDYYYY, formatLabTime } from "@/lib/dateDisplay";
+import { compareLabTestSortOrder, labResultsTemplateCodeFromCatalogTestCode } from "@/lib/labTests";
+import { computeLabResultAutoFlag } from "@/lib/labResultAutoFlag";
+import type { LabResultSignatoriesMap } from "@/lib/labResultSignatories";
+import type { LabResultTemplateSignatureLayout } from "@/lib/labResultTemplates";
 import {
-  isAllowedLabResultsTemplateCode,
-  labResultsTemplateCodeFromCatalogTestCode,
-  sortResultsTemplateCodes,
+  isAllowedLabResultTemplateCode,
+  sortLabResultTemplateCodes,
   splitAllowlistedResultsTemplateCodes,
-  compareLabTestSortOrder,
-} from "@/lib/labTests";
+} from "@/lib/labResultTemplates";
+import type { LabResultPrintPosition } from "@/lib/labResultsPrintLayout";
 import { getPrintLayoutForTemplateCode, LAB_PRINT_FALLBACK } from "@/lib/labResultsPrintLayout";
 import type { PDFDocument } from "pdf-lib";
 import { rgb } from "pdf-lib";
@@ -36,13 +39,79 @@ function formatReleasedDateTime(iso: string | null | undefined): string {
   return `${mm}-${day}-${y} · ${h}:${min}`;
 }
 
-function effectiveTemplateCodes(it: LabRequestItemView): string[] {
-  const fromApi = splitAllowlistedResultsTemplateCodes(it.results_template_code);
+type TemplateRegistry = {
+  allowedCodes: Set<string>;
+  signatureByCode: Map<string, LabResultTemplateSignatureLayout | null>;
+  sortTemplates: Array<{ code: string; sort_order: number | null }>;
+};
+
+async function fetchTemplateRegistry(): Promise<TemplateRegistry | null> {
+  const res = await authenticatedFetch("/api/laboratory/lab-result-templates?activeOnly=false", {
+    cache: "no-store",
+  });
+  if (!res.ok) return null;
+  const json = (await res.json().catch(() => null)) as {
+    templates?: Array<{
+      code?: string;
+      sort_order?: number | null;
+      signature_layout?: LabResultTemplateSignatureLayout | null;
+    }>;
+  } | null;
+  const templates = json?.templates ?? [];
+  const allowedCodes = new Set<string>();
+  const signatureByCode = new Map<string, LabResultTemplateSignatureLayout | null>();
+  const sortTemplates: Array<{ code: string; sort_order: number | null }> = [];
+  for (const t of templates) {
+    const code = String(t.code ?? "").trim().toUpperCase();
+    if (!code) continue;
+    allowedCodes.add(code);
+    signatureByCode.set(code, t.signature_layout ?? null);
+    sortTemplates.push({ code, sort_order: t.sort_order ?? null });
+  }
+  return { allowedCodes, signatureByCode, sortTemplates };
+}
+
+async function fetchSignatoriesForPrint(): Promise<LabResultSignatoriesMap | null> {
+  const res = await authenticatedFetch("/api/laboratory/lab-result-signatories", { cache: "no-store" });
+  if (!res.ok) return null;
+  const json = (await res.json().catch(() => null)) as {
+    signatories?: LabResultSignatoriesMap;
+  } | null;
+  return json?.signatories ?? null;
+}
+
+function effectiveTemplateCodes(it: LabRequestItemView, allowedCodes: Set<string>): string[] {
+  const fromApi = splitAllowlistedResultsTemplateCodes(it.results_template_code, allowedCodes);
   if (fromApi.length > 0) return fromApi;
   const inferred = labResultsTemplateCodeFromCatalogTestCode(it.test_code);
   const c = (inferred ?? "").trim().toUpperCase();
-  if (c && isAllowedLabResultsTemplateCode(c)) return [c];
+  if (c && isAllowedLabResultTemplateCode(c, allowedCodes)) return [c];
   return [];
+}
+
+function drawSignatureSlot(
+  page: import("pdf-lib").PDFPage,
+  text: string | null | undefined,
+  pos: LabResultPrintPosition | null,
+  font: import("pdf-lib").PDFFont,
+): void {
+  if (!pos) return;
+  const t = (text ?? "").trim();
+  if (!t) return;
+  drawAtTopRef(page, t, pos.refX, pos.refFromTop, pos.fontSize ?? 9, font, { maxWidth: pos.maxWidth });
+}
+
+function drawTemplateSignatures(
+  page: import("pdf-lib").PDFPage,
+  layout: LabResultTemplateSignatureLayout | null | undefined,
+  signatories: LabResultSignatoriesMap | null | undefined,
+  font: import("pdf-lib").PDFFont,
+): void {
+  if (!layout || !signatories) return;
+  drawSignatureSlot(page, signatories.medtech.full_name, layout.medtech.name, font);
+  drawSignatureSlot(page, signatories.medtech.license_no, layout.medtech.license, font);
+  drawSignatureSlot(page, signatories.pathologist.full_name, layout.pathologist.name, font);
+  drawSignatureSlot(page, signatories.pathologist.license_no, layout.pathologist.license, font);
 }
 
 function scaleRefToPage(page: { getSize(): { width: number; height: number } }): { sx: number; sy: number } {
@@ -50,32 +119,23 @@ function scaleRefToPage(page: { getSize(): { width: number; height: number } }):
   return { sx: width / REF_W, sy: height / REF_H };
 }
 
-/** PDF text color for printed result lines from lab flag (matches results UI options). */
-function printTextColorForFlag(flag: string | null | undefined) {
-  const f = (flag ?? "").trim().toLowerCase();
-  switch (f) {
-    case "normal":
-      return rgb(0.1, 0.45, 0.2);
-    case "high":
-      return rgb(0.82, 0.2, 0.12);
-    case "low":
-      return rgb(0.12, 0.35, 0.82);
-    case "critical":
-      return rgb(0.92, 0.05, 0.08);
-    case "abnormal":
-      return rgb(0.78, 0.42, 0.08);
-    default:
-      return rgb(0.12, 0.12, 0.12);
-  }
+const PRINT_RESULT_BLACK = rgb(0, 0, 0);
+const PRINT_RESULT_ABOVE_RANGE_RED = rgb(0.82, 0.2, 0.12);
+
+/** Printed analyte line: result value only (uppercase). */
+function formatPrintedResultValue(it: LabRequestItemView): string {
+  const raw = (it.result_value ?? "").trim();
+  return raw ? raw.toUpperCase() : "—";
 }
 
-/** Printed analyte line: result value (uppercase for print); hyphen and flag only when flag is set. */
-function formatPrintedResultFlag(it: LabRequestItemView): string {
-  const raw = (it.result_value ?? "").trim();
-  const v = raw ? raw.toUpperCase() : "—";
-  const fl = (it.flag ?? "").trim();
-  if (!fl) return v;
-  return `${v} - ${fl}`;
+/** Red when numeric result is above the sex-adjusted reference range; otherwise black. */
+function printTextColorForResult(
+  it: LabRequestItemView,
+  patientSex: string | null | undefined,
+): ReturnType<typeof rgb> {
+  const auto = computeLabResultAutoFlag(it.result_value, it.reference_range, patientSex);
+  if (auto === "High") return PRINT_RESULT_ABOVE_RANGE_RED;
+  return PRINT_RESULT_BLACK;
 }
 
 function drawAtTopRef(
@@ -85,7 +145,7 @@ function drawAtTopRef(
   refFromTop: number,
   refSize: number,
   font: import("pdf-lib").PDFFont,
-  opts?: { maxWidth?: number; colorFromFlag?: string | null; lineHeight?: number },
+  opts?: { maxWidth?: number; color?: ReturnType<typeof rgb>; lineHeight?: number },
 ): void {
   const t = text.trim();
   if (!t) return;
@@ -96,8 +156,7 @@ function drawAtTopRef(
   const fromTop = refFromTop * sy;
   const size = refSize * scale;
   const y = height - fromTop;
-  const color =
-    opts != null && "colorFromFlag" in opts ? printTextColorForFlag(opts.colorFromFlag) : rgb(0, 0, 0);
+  const color = opts?.color ?? PRINT_RESULT_BLACK;
   page.drawText(t, {
     x,
     y,
@@ -136,7 +195,7 @@ function printPdfBlob(blob: Blob): void {
 }
 
 function formatResultLine(it: LabRequestItemView): string {
-  return formatPrintedResultFlag(it);
+  return formatPrintedResultValue(it);
 }
 
 function pushWrappedParagraph(lines: string[], paragraph: string, maxChars: number): void {
@@ -204,6 +263,7 @@ function drawGroupResultsForTemplate(
   groupItems: LabRequestItemView[],
   font: import("pdf-lib").PDFFont,
   currentTemplateCode: string,
+  patientSex: string | null | undefined,
 ): void {
   const sorted = [...groupItems].sort((a, b) =>
     compareLabTestSortOrder(
@@ -222,11 +282,11 @@ function drawGroupResultsForTemplate(
     if (pos) {
       const pi = Math.min(pos.pageIndex ?? 0, Math.max(0, pageCount - 1));
       const page = merged.getPage(templatePageStart + pi);
-      const line = formatPrintedResultFlag(it);
+      const line = formatPrintedResultValue(it);
       const fs = pos.fontSize ?? 8;
       drawAtTopRef(page, line, pos.refX, pos.refFromTop, fs, font, {
         maxWidth: pos.maxWidth,
-        colorFromFlag: it.flag,
+        color: printTextColorForResult(it, patientSex),
       });
     } else {
       fallback.push(it);
@@ -239,10 +299,10 @@ function drawGroupResultsForTemplate(
   let n = 0;
   for (const it of fallback) {
     if (n >= LAB_PRINT_FALLBACK.maxLines) break;
-    const line = formatPrintedResultFlag(it);
+    const line = formatPrintedResultValue(it);
     drawAtTopRef(page0, line, LAB_PRINT_FALLBACK.refX, fromTop, LAB_PRINT_FALLBACK.fontSize, font, {
       maxWidth: LAB_PRINT_FALLBACK.maxWidth,
-      colorFromFlag: it.flag,
+      color: printTextColorForResult(it, patientSex),
     });
     fromTop += LAB_PRINT_FALLBACK.rowStep;
     n += 1;
@@ -266,6 +326,12 @@ export async function openLabResultsPrintWindow(args: {
   if (!items.length) return false;
 
   try {
+    const [registry, signatories] = await Promise.all([
+      fetchTemplateRegistry(),
+      fetchSignatoriesForPrint(),
+    ]);
+    if (!registry || !signatories) return false;
+
     const { PDFDocument, StandardFonts } = await import("pdf-lib");
 
     const merged = await PDFDocument.create();
@@ -276,7 +342,7 @@ export async function openLabResultsPrintWindow(args: {
     const noTemplate: LabRequestItemView[] = [];
 
     for (const it of items) {
-      const codes = effectiveTemplateCodes(it);
+      const codes = effectiveTemplateCodes(it, registry.allowedCodes);
       if (codes.length === 0) {
         noTemplate.push(it);
         continue;
@@ -288,7 +354,7 @@ export async function openLabResultsPrintWindow(args: {
       }
     }
 
-    const ordered = sortResultsTemplateCodes(byTpl.keys());
+    const ordered = sortLabResultTemplateCodes(byTpl.keys(), registry.sortTemplates);
 
     for (const code of ordered) {
       const groupItems = byTpl.get(code);
@@ -304,10 +370,21 @@ export async function openLabResultsPrintWindow(args: {
         merged.addPage(page);
       }
       const pageCount = copied.length;
+      const signatureLayout = registry.signatureByCode.get(code) ?? null;
       for (let i = 0; i < pageCount; i++) {
-        drawSharedHeader(merged.getPage(templatePageStart + i), header, font);
+        const page = merged.getPage(templatePageStart + i);
+        drawSharedHeader(page, header, font);
+        drawTemplateSignatures(page, signatureLayout, signatories, font);
       }
-      drawGroupResultsForTemplate(merged, templatePageStart, pageCount, groupItems, font, code);
+      drawGroupResultsForTemplate(
+        merged,
+        templatePageStart,
+        pageCount,
+        groupItems,
+        font,
+        code,
+        header.patient_sex,
+      );
     }
 
     if (noTemplate.length > 0) {
@@ -336,7 +413,9 @@ export async function openLabResultsPrintWindow(args: {
             drawAtTopRef(page, "(continued)", 48, 232, 9, font);
             fromTop = 256;
           }
-          drawAtTopRef(page, line, 48, fromTop, 8.5, mono, { colorFromFlag: it.flag });
+          drawAtTopRef(page, line, 48, fromTop, 8.5, mono, {
+            color: printTextColorForResult(it, header.patient_sex),
+          });
           fromTop += lineStep;
         }
       }

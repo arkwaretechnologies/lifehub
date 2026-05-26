@@ -1,27 +1,32 @@
-import { readFile } from "fs/promises";
-import path from "path";
+import { access, readFile } from "fs/promises";
 import { NextResponse } from "next/server";
-import {
-  isAllowedLabResultsTemplateCode,
-  LAB_RESULTS_TEMPLATES_RELATIVE_DIR,
-  labResultsTemplatePdfFileName,
-} from "@/lib/labTests";
+import { fetchLabResultTemplateByCode, labResultTemplatePdfAbsolutePath } from "@/lib/labResultTemplates";
+import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
 
-/** Serves blank lab result PDFs from `templates/Lab Results/` for client-side filling (allowlisted `code` only). */
+export const runtime = "nodejs";
+
+/** Serves blank lab result PDFs from `templates/Lab Results/` for client-side filling (DB-registered code only). */
 export async function GET(req: Request) {
   const raw = new URL(req.url).searchParams.get("code")?.trim() ?? "";
   const code = raw.toUpperCase();
-  if (!code || !isAllowedLabResultsTemplateCode(code)) {
+  if (!code) {
+    return NextResponse.json({ error: "code is required." }, { status: 400 });
+  }
+
+  const admin = supabaseAdminClient();
+  if (!admin) {
+    return NextResponse.json({ error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." }, { status: 500 });
+  }
+
+  const { template, error } = await fetchLabResultTemplateByCode(admin, code);
+  if (error) return NextResponse.json({ error }, { status: 500 });
+  if (!template) {
     return NextResponse.json({ error: "Invalid or unsupported template code." }, { status: 400 });
   }
 
-  const fileName = labResultsTemplatePdfFileName(code);
-  if (!fileName) {
-    return NextResponse.json({ error: "Invalid template code." }, { status: 400 });
-  }
-
-  const filePath = path.join(process.cwd(), LAB_RESULTS_TEMPLATES_RELATIVE_DIR, fileName);
+  const filePath = labResultTemplatePdfAbsolutePath(template.file_name);
   try {
+    await access(filePath);
     const buf = await readFile(filePath);
     return new NextResponse(buf, {
       headers: {

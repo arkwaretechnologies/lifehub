@@ -824,7 +824,7 @@ export function labResultsTemplatePdfRelativePath(resultsTemplateCode: string): 
   return `${LAB_RESULTS_TEMPLATES_RELATIVE_DIR}/${name}`;
 }
 
-/** Order of blood chemistry result forms (LIFEHUB-MEDICAL-Results-BLOODCHEM*.pdf). */
+/** Blood chemistry result PDF stems — used only for catalog UI grouping (not print allowlist). */
 export const LAB_RESULTS_BLOODCHEM_TEMPLATE_ORDER = [
   "BLOODCHEM1",
   "BLOODCHEM2",
@@ -839,24 +839,6 @@ export const LAB_RESULTS_BLOODCHEM_TEMPLATE_ORDER = [
   "BLOODCHEM11",
 ] as const;
 
-/** Fixed merge/print order for lab result PDF templates (must match on-disk stems). */
-export const LAB_RESULTS_PRINT_TEMPLATE_CODES_ORDER: readonly string[] = [
-  "HEMA",
-  ...LAB_RESULTS_BLOODCHEM_TEMPLATE_ORDER,
-  "URINALYSIS",
-  "ART",
-  "FECALYSIS"
-];
-
-const LAB_RESULTS_PRINT_ALLOWLIST = new Set(LAB_RESULTS_PRINT_TEMPLATE_CODES_ORDER);
-
-/** True when `code` maps to `LIFEHUB-MEDICAL-Results-<code>.pdf` under {@link LAB_RESULTS_TEMPLATES_RELATIVE_DIR}. */
-export function isAllowedLabResultsTemplateCode(code: string): boolean {
-  const c = String(code ?? "").trim().toUpperCase();
-  return c !== "" && LAB_RESULTS_PRINT_ALLOWLIST.has(c);
-}
-
-/** Split comma-separated `results_template_code`; keep only allowlisted stems, preserve order. */
 /** Normalize a single template code for storage; null when empty. */
 export function normalizeResultsTemplateCodeForStorage(
   raw: string | null | undefined,
@@ -865,33 +847,11 @@ export function normalizeResultsTemplateCodeForStorage(
   return c === "" ? null : c;
 }
 
-export function splitAllowlistedResultsTemplateCodes(csv: string | null | undefined): string[] {
-  const out: string[] = [];
-  for (const part of String(csv ?? "").split(",")) {
-    const c = part.trim().toUpperCase();
-    if (c && isAllowedLabResultsTemplateCode(c)) out.push(c);
-  }
-  return out;
-}
-
-/** Deduplicates and sorts template codes for merged printing (unknown codes sort after known, alphabetically). */
-export function sortResultsTemplateCodes(codes: Iterable<string>): string[] {
-  const uniq = [
-    ...new Set(
-      [...codes]
-        .map((c) => String(c ?? "").trim().toUpperCase())
-        .filter((c) => c !== ""),
-    ),
-  ];
-  const idx = new Map(LAB_RESULTS_PRINT_TEMPLATE_CODES_ORDER.map((c, i) => [c, i]));
-  uniq.sort((a, b) => {
-    const ia = idx.has(a) ? (idx.get(a) as number) : 1000;
-    const ib = idx.has(b) ? (idx.get(b) as number) : 1000;
-    if (ia !== ib) return ia - ib;
-    return a.localeCompare(b, undefined, { sensitivity: "base" });
-  });
-  return uniq;
-}
+export {
+  isAllowedLabResultTemplateCode as isAllowedLabResultsTemplateCode,
+  splitAllowlistedResultsTemplateCodes,
+  sortLabResultTemplateCodes as sortResultsTemplateCodes,
+} from "@/lib/labResultTemplates";
 
 /**
  * When `lab_tests.results_template_code` is null in the DB, infer the blank PDF stem from stable

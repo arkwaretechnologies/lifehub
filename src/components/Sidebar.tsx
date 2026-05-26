@@ -257,6 +257,18 @@ const menuSections: MenuSection[] = [
                 pageKey: "settings/laboratory/lab-tests",
               },
               {
+                label: "Result templates",
+                icon: <AssignmentOutlinedIcon />,
+                href: "/settings/laboratory/result-templates",
+                pageKey: "settings/laboratory/result-templates",
+              },
+              {
+                label: "Lab signatories",
+                icon: <AssignmentOutlinedIcon />,
+                href: "/settings/laboratory/signatories",
+                pageKey: "settings/laboratory/signatories",
+              },
+              {
                 label: "Imaging",
                 icon: <CameraAltOutlinedIcon />,
                 href: "/settings/laboratory/imaging",

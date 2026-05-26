@@ -31,6 +31,7 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/components/AuthProvider";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
+import { isLabSignatureRole } from "@/lib/labResultSignatures";
 
 type AppUserRow = {
   user_id: number | string;
@@ -102,6 +103,14 @@ function isPhysicianRole(roleName: string): boolean {
   return roleName.trim().toUpperCase() === "PHYSICIAN";
 }
 
+function clearsLabSignatureFields(roleName: string): boolean {
+  return !isLabSignatureRole(roleName);
+}
+
+function clearsPhysicianOnlyFields(roleName: string): boolean {
+  return !isPhysicianRole(roleName);
+}
+
 function rowToForm(r: AppUserRow): UserForm {
   return {
     username: r.username ?? "",
@@ -120,6 +129,7 @@ function rowToForm(r: AppUserRow): UserForm {
 }
 
 function formToUpdatePayload(f: UserForm) {
+  const labSig = isLabSignatureRole(f.role);
   const ph = isPhysicianRole(f.role);
   return {
     username: f.username.trim(),
@@ -129,8 +139,8 @@ function formToUpdatePayload(f: UserForm) {
     role: f.role.trim(),
     branch_code: f.branch_code.trim() || null,
     address: f.address.trim() || null,
-    specialty: ph ? f.specialty.trim() || null : null,
-    license_no: ph ? f.license_no.trim() || null : null,
+    specialty: labSig ? f.specialty.trim() || null : null,
+    license_no: labSig ? f.license_no.trim() || null : null,
     s2_no: ph ? f.s2_no.trim() || null : null,
     ptr_no: ph ? f.ptr_no.trim() || null : null,
   };
@@ -458,9 +468,10 @@ export default function UsersPage() {
                     setAddForm((p) => ({
                       ...p,
                       role: next,
-                      ...(!isPhysicianRole(next)
-                        ? { specialty: "", license_no: "", s2_no: "", ptr_no: "" }
+                      ...(clearsLabSignatureFields(next)
+                        ? { specialty: "", license_no: "" }
                         : {}),
+                      ...(clearsPhysicianOnlyFields(next) ? { s2_no: "", ptr_no: "" } : {}),
                     }));
                   }}
                   required
@@ -535,7 +546,7 @@ export default function UsersPage() {
                   onChange={(e) => setAddForm((p) => ({ ...p, address: e.target.value }))}
                 />
               </Grid>
-              {isPhysicianRole(addForm.role) ? (
+              {isLabSignatureRole(addForm.role) ? (
                 <Grid size={{ xs: 12 }}>
                   <Grid container spacing={2}>
                     <Grid size={{ xs: 12, sm: 6 }}>
@@ -546,6 +557,7 @@ export default function UsersPage() {
                         {...dialogFieldProps}
                         value={addForm.specialty}
                         onChange={(e) => setAddForm((p) => ({ ...p, specialty: e.target.value }))}
+                        placeholder="Medical Technologist or Pathologist"
                       />
                     </Grid>
                     <Grid size={{ xs: 12, sm: 6 }}>
@@ -558,6 +570,12 @@ export default function UsersPage() {
                         onChange={(e) => setAddForm((p) => ({ ...p, license_no: e.target.value }))}
                       />
                     </Grid>
+                  </Grid>
+                </Grid>
+              ) : null}
+              {isPhysicianRole(addForm.role) ? (
+                <Grid size={{ xs: 12 }}>
+                  <Grid container spacing={2}>
                     <Grid size={{ xs: 12, sm: 6 }}>
                       <Typography variant="caption" color="text.secondary" fontWeight={600} display="block" sx={{ mb: 0.75 }}>
                         S2 no.
@@ -637,9 +655,10 @@ export default function UsersPage() {
                     setEditForm((p) => ({
                       ...p,
                       role: next,
-                      ...(!isPhysicianRole(next)
-                        ? { specialty: "", license_no: "", s2_no: "", ptr_no: "" }
+                      ...(clearsLabSignatureFields(next)
+                        ? { specialty: "", license_no: "" }
                         : {}),
+                      ...(clearsPhysicianOnlyFields(next) ? { s2_no: "", ptr_no: "" } : {}),
                     }));
                   }}
                   SelectProps={{ displayEmpty: true }}
@@ -713,7 +732,7 @@ export default function UsersPage() {
                   onChange={(e) => setEditForm((p) => ({ ...p, address: e.target.value }))}
                 />
               </Grid>
-              {isPhysicianRole(editForm.role) ? (
+              {isLabSignatureRole(editForm.role) ? (
                 <Grid size={{ xs: 12 }}>
                   <Grid container spacing={2}>
                     <Grid size={{ xs: 12, sm: 6 }}>
@@ -724,6 +743,7 @@ export default function UsersPage() {
                         {...dialogFieldProps}
                         value={editForm.specialty}
                         onChange={(e) => setEditForm((p) => ({ ...p, specialty: e.target.value }))}
+                        placeholder="Medical Technologist or Pathologist"
                       />
                     </Grid>
                     <Grid size={{ xs: 12, sm: 6 }}>
@@ -736,6 +756,12 @@ export default function UsersPage() {
                         onChange={(e) => setEditForm((p) => ({ ...p, license_no: e.target.value }))}
                       />
                     </Grid>
+                  </Grid>
+                </Grid>
+              ) : null}
+              {isPhysicianRole(editForm.role) ? (
+                <Grid size={{ xs: 12 }}>
+                  <Grid container spacing={2}>
                     <Grid size={{ xs: 12, sm: 6 }}>
                       <Typography variant="caption" color="text.secondary" fontWeight={600} display="block" sx={{ mb: 0.75 }}>
                         S2 no.

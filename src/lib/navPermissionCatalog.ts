@@ -2,6 +2,7 @@
  * Assignable sidebar destinations for `public.role_pages.page_key`.
  * Only leaf keys are stored in the DB; parent rows are UI-only (bulk select).
  */
+import { CONSULTATION_LAB_REPORTS, POS_REPORTS } from "@/lib/reportsNavLeaves";
 
 export type NavLeaf = {
   label: string;
@@ -124,12 +125,32 @@ export const PERMISSION_MODULES: PermissionModule[] = [
     href: "/cashier",
   },
   {
-    kind: "leaf",
+    kind: "group",
     id: "reports",
     sectionHeading: "MANAGEMENT",
     label: "Reports",
-    pageKey: "reports",
-    href: "/reports",
+    children: [
+      {
+        kind: "subgroup",
+        id: "reports-consultation-lab",
+        label: "Consultation and Lab Reports",
+        children: CONSULTATION_LAB_REPORTS.map((leaf) => ({
+          label: leaf.label,
+          pageKey: leaf.pageKey,
+          href: leaf.href,
+        })),
+      },
+      {
+        kind: "subgroup",
+        id: "reports-pos",
+        label: "POS Reports",
+        children: POS_REPORTS.map((leaf) => ({
+          label: leaf.label,
+          pageKey: leaf.pageKey,
+          href: leaf.href,
+        })),
+      },
+    ],
   },
   {
     kind: "leaf",
@@ -207,8 +228,9 @@ const _all = new Set<string>();
 for (const m of PERMISSION_MODULES) {
   for (const k of leafKeysForModule(m)) _all.add(k);
 }
-/** Legacy `role_pages` rows may still store umbrella `settings` without granular keys. */
+/** Legacy `role_pages` rows may still store umbrella keys without granular children. */
 _all.add("settings");
+_all.add("reports");
 export const ALLOWED_PAGE_KEYS: ReadonlySet<string> = _all;
 
 /** Granular pharmacy capabilities (assignable in Roles → Menu access). */
@@ -291,6 +313,13 @@ export function userMayAccessPath(pathname: string, pageKeys: readonly string[])
     return keys.has(settingsKey);
   }
 
+  if (p === "/reports" || p.startsWith("/reports/")) {
+    if (keys.has("reports")) return true;
+    const reportsKey = pageKeyForPath(pathname);
+    if (reportsKey == null) return false;
+    return keys.has(reportsKey);
+  }
+
   const key = pageKeyForPath(pathname);
   if (key == null) return true;
   return keys.has(key);
@@ -327,11 +356,13 @@ export function firstAllowedHref(pageKeys: string[]): string | null {
   for (const m of PERMISSION_MODULES) {
     if (m.kind === "leaf" && allowed.has(m.pageKey)) return m.href;
     if (m.kind === "group") {
-      const settingsUmbrella = m.id === "settings" && allowed.has("settings");
+      const umbrella =
+        (m.id === "settings" && allowed.has("settings")) ||
+        (m.id === "reports" && allowed.has("reports"));
       for (const c of m.children) {
         if (isNavSubgroup(c)) {
           for (const leaf of c.children) {
-            if (settingsUmbrella || allowed.has(leaf.pageKey)) return leaf.href;
+            if (umbrella || allowed.has(leaf.pageKey)) return leaf.href;
           }
         } else {
           const leaf = c as NavLeaf;

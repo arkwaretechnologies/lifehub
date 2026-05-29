@@ -1,28 +1,32 @@
 "use client";
 
-import { Card, CardContent, Typography } from "@mui/material";
-import AssessmentOutlinedIcon from "@mui/icons-material/AssessmentOutlined";
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { Box, CircularProgress } from "@mui/material";
+import { useAuth } from "@/components/AuthProvider";
+import { firstAllowedHref } from "@/lib/navPermissionCatalog";
+import { POS_REPORTS } from "@/lib/reportsNavLeaves";
 
 export default function ReportsPage() {
-  return (
-    <>
-      <Typography variant="h5" sx={{ mb: 3 }}>
-        Reports
-      </Typography>
+  const router = useRouter();
+  const { menuAccess, loading } = useAuth();
 
-      <Card>
-        <CardContent sx={{ p: 6, textAlign: "center" }}>
-          <AssessmentOutlinedIcon
-            sx={{ fontSize: 64, color: "text.secondary", mb: 2 }}
-          />
-          <Typography variant="h6" color="text.secondary">
-            Reports page coming soon.
-          </Typography>
-          <Typography variant="body2" color="text.secondary" mt={1}>
-            Analytics and generated reports will be available here.
-          </Typography>
-        </CardContent>
-      </Card>
-    </>
+  useEffect(() => {
+    if (loading) return;
+    const keys = menuAccess.rbac ? menuAccess.pageKeys : null;
+    if (!keys) {
+      router.replace(POS_REPORTS[0].href);
+      return;
+    }
+    const allowed = new Set(keys);
+    const firstPos = POS_REPORTS.find((r) => allowed.has(r.pageKey) || allowed.has("reports"));
+    const href = firstPos?.href ?? firstAllowedHref(keys) ?? "/dashboard";
+    router.replace(href);
+  }, [loading, menuAccess, router]);
+
+  return (
+    <Box sx={{ display: "flex", justifyContent: "center", py: 8 }}>
+      <CircularProgress />
+    </Box>
   );
 }

@@ -31,7 +31,15 @@ import LocalHospitalOutlinedIcon from "@mui/icons-material/LocalHospitalOutlined
 import CalendarMonthOutlinedIcon from "@mui/icons-material/CalendarMonthOutlined";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import AssessmentOutlinedIcon from "@mui/icons-material/AssessmentOutlined";
+import TrendingUpOutlinedIcon from "@mui/icons-material/TrendingUpOutlined";
+import ReceiptLongOutlinedIcon from "@mui/icons-material/ReceiptLongOutlined";
+import PaymentsOutlinedIcon from "@mui/icons-material/PaymentsOutlined";
+import BlockOutlinedIcon from "@mui/icons-material/BlockOutlined";
+import HistoryOutlinedIcon from "@mui/icons-material/HistoryOutlined";
+import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
+import InventoryOutlinedIcon from "@mui/icons-material/InventoryOutlined";
 import BusinessOutlinedIcon from "@mui/icons-material/BusinessOutlined";
+import { CONSULTATION_LAB_REPORTS, POS_REPORTS } from "@/lib/reportsNavLeaves";
 import AdminPanelSettingsOutlinedIcon from "@mui/icons-material/AdminPanelSettingsOutlined";
 import PeopleOutlinedIcon from "@mui/icons-material/PeopleOutlined";
 import RuleOutlinedIcon from "@mui/icons-material/RuleOutlined";
@@ -199,11 +207,80 @@ const menuSections: MenuSection[] = [
     heading: "MANAGEMENT",
     items: [
       {
-        kind: "link",
-        label: "reports",
+        kind: "group",
+        id: "reports",
+        label: "Reports",
         icon: <AssessmentOutlinedIcon />,
-        href: "/reports",
-        pageKey: "reports",
+        children: [
+          {
+            kind: "subgroup",
+            id: "reports-consultation-lab",
+            label: "Consultation and Lab Reports",
+            icon: <LocalHospitalOutlinedIcon />,
+            children: CONSULTATION_LAB_REPORTS.map((leaf) => ({
+              label: leaf.label,
+              icon: <AssessmentOutlinedIcon />,
+              href: leaf.href,
+              pageKey: leaf.pageKey,
+            })),
+          },
+          {
+            kind: "subgroup",
+            id: "reports-pos",
+            label: "POS Reports",
+            icon: <PointOfSaleOutlinedIcon />,
+            children: [
+              {
+                label: POS_REPORTS[0].label,
+                icon: <TrendingUpOutlinedIcon />,
+                href: POS_REPORTS[0].href,
+                pageKey: POS_REPORTS[0].pageKey,
+              },
+              {
+                label: POS_REPORTS[1].label,
+                icon: <Inventory2OutlinedIcon />,
+                href: POS_REPORTS[1].href,
+                pageKey: POS_REPORTS[1].pageKey,
+              },
+              {
+                label: POS_REPORTS[2].label,
+                icon: <AssignmentOutlinedIcon />,
+                href: POS_REPORTS[2].href,
+                pageKey: POS_REPORTS[2].pageKey,
+              },
+              {
+                label: POS_REPORTS[3].label,
+                icon: <PaymentsOutlinedIcon />,
+                href: POS_REPORTS[3].href,
+                pageKey: POS_REPORTS[3].pageKey,
+              },
+              {
+                label: POS_REPORTS[4].label,
+                icon: <BlockOutlinedIcon />,
+                href: POS_REPORTS[4].href,
+                pageKey: POS_REPORTS[4].pageKey,
+              },
+              {
+                label: POS_REPORTS[5].label,
+                icon: <HistoryOutlinedIcon />,
+                href: POS_REPORTS[5].href,
+                pageKey: POS_REPORTS[5].pageKey,
+              },
+              {
+                label: POS_REPORTS[6].label,
+                icon: <WarningAmberOutlinedIcon />,
+                href: POS_REPORTS[6].href,
+                pageKey: POS_REPORTS[6].pageKey,
+              },
+              {
+                label: POS_REPORTS[7].label,
+                icon: <InventoryOutlinedIcon />,
+                href: POS_REPORTS[7].href,
+                pageKey: POS_REPORTS[7].pageKey,
+              },
+            ],
+          },
+        ],
       },
       {
         kind: "link",
@@ -306,8 +383,9 @@ function filterMenuSectionsByRbac(
         }
       } else {
         const g = item;
-        if (g.id === "settings") {
-          if (allowed.has("settings")) {
+        if (g.id === "settings" || g.id === "reports") {
+          const umbrellaKey = g.id === "settings" ? "settings" : "reports";
+          if (allowed.has(umbrellaKey)) {
             items.push({ ...g, children: [...g.children] });
           } else {
             const nextChildren: (MenuGroupChildLeaf | MenuNestedGroupItem)[] = [];
@@ -394,8 +472,11 @@ const emptyNavMessage =
 const defaultOpenGroups: Record<string, boolean> = {
   "patient-care": true,
   "user-management": true,
-  settings: true,
-  "settings-laboratory": true,
+  reports: false,
+  "reports-consultation-lab": false,
+  "reports-pos": false,
+  settings: false,
+  "settings-laboratory": false,
 };
 
 interface SidebarProps {

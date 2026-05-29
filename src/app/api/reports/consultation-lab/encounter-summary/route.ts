@@ -1,0 +1,130 @@
+import { NextRequest, NextResponse } from "next/server";
+import {
+  encounterSummaryCacheKey,
+  resolveEncounterSummaryRange,
+  type EncounterSummaryDepartmentRow,
+  type EncounterSummaryResponse,
+  type EncounterSummaryStatusRow,
+} from "@/lib/encounterSummaryReport";
+import { PHARMACY_SALES_TABLE } from "@/lib/pharmacyPosDb";
+import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
+import { readUpstashJson, writeUpstashJson } from "@/lib/upstashCache";
+
+const ENCOUNTER_SUMMARY_CACHE_TTL_SECONDS = 180;
+
+type EncounterRow = {
+  trans_id: string;
+  patient_id: number | null;
+  disposition: string | null;
+};
+
+function addCount(map: Map<string, number>, key: string): void {
+  map.set(key, (map.get(key) ?? 0) + 1);
+}
+
+export async function GET(req: NextRequest) {
+  const admin = supabaseAdminClient();
+  if (!admin) {
+    return NextResponse.json({ error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." }, { status: 500 });
+  }
+
+  const sp = req.nextUrl.searchParams;
+  const parsed = resolveEncounterSummaryRange(sp.get("period"), sp.get("start"), sp.get("end"));
+  if (parsed.error) {
+    return NextResponse.json({ error: parsed.error }, { status: 400 });
+  }
+  const { period, range } = parsed;
+  const key = encounterSummaryCacheKey(period, range);
+
+  const cached = await readUpstashJson<EncounterSummaryResponse>(key);
+  if (cached) return NextResponse.json({ ...cached, cacheHit: true });
+
+  const { data: encounters, error: encErr } = await admin
+    .from("encounters")
+    .select("trans_id, patient_id, disposition")
+    .gte("encounter_date", range.startDate)
+    .lte("encounter_date", range.endDate);
+  if (encErr) return NextResponse.json({ error: encErr.message }, { status: 500 });
+
+  const rows = (encounters ?? []) as EncounterRow[];
+  const encounterIds = rows.map((r) => String(r.trans_id ?? "").trim()).filter(Boolean);
+  const encounterSet = new Set(encounterIds);
+
+  const [labRes, imagingRes, pharmacyRes] = await Promise.all([
+    encounterIds.length > 0
+      ? admin
+          .from("lab_requests")
+          .select("encounter_id")
+          .in("encounter_id", encounterIds)
+          .gte("request_date", range.startDate)
+          .lte("request_date", range.endDate)
+      : Promise.resolve({ data: [], error: null }),
+    encounterIds.length > 0
+      ? admin
+          .from("imaging_requests")
+          .select("encounter_id")
+          .in("encounter_id", encounterIds)
+          .gte("request_date", range.startDate)
+          .lte("request_date", range.endDate)
+      : Promise.resolve({ data: [], error: null }),
+    admin
+      .from(PHARMACY_SALES_TABLE)
+      .select("patient_id")
+      .eq("status", "Completed")
+      .gte("sale_date", range.startDate)
+      .lte("sale_date", range.endDate),
+  ]);
+
+  if (labRes.error) return NextResponse.json({ error: labRes.error.message }, { status: 500 });
+  if (imagingRes.error) return NextResponse.json({ error: imagingRes.error.message }, { status: 500 });
+  if (pharmacyRes.error) return NextResponse.json({ error: pharmacyRes.error.message }, { status: 500 });
+
+  const statusCounts = new Map<string, number>();
+  for (const row of rows) {
+    const label = (row.disposition ?? "").trim() === "" ? "In progress" : "Completed";
+    addCount(statusCounts, label);
+  }
+  const statusBreakdown: EncounterSummaryStatusRow[] = [...statusCounts.entries()]
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count);
+
+  const labSet = new Set(
+    ((labRes.data ?? []) as Array<{ encounter_id?: string | null }>)
+      .map((r) => String(r.encounter_id ?? "").trim())
+      .filter((id) => id !== "" && encounterSet.has(id)),
+  );
+  const imagingSet = new Set(
+    ((imagingRes.data ?? []) as Array<{ encounter_id?: string | null }>)
+      .map((r) => String(r.encounter_id ?? "").trim())
+      .filter((id) => id !== "" && encounterSet.has(id)),
+  );
+  const encounterPatientSet = new Set(
+    rows.map((r) => r.patient_id).filter((id): id is number => id != null),
+  );
+  const pharmacySet = new Set(
+    ((pharmacyRes.data ?? []) as Array<{ patient_id?: number | null }>)
+      .map((r) => r.patient_id)
+      .filter((id): id is number => id != null && encounterPatientSet.has(id)),
+  );
+
+  const departmentBreakdown: EncounterSummaryDepartmentRow[] = [
+    { label: "Consultation", count: rows.length },
+    { label: "Laboratory", count: labSet.size },
+    { label: "Imaging", count: imagingSet.size },
+    { label: "Pharmacy", count: pharmacySet.size },
+  ];
+
+  const payload: EncounterSummaryResponse = {
+    period,
+    range,
+    totalEncounters: rows.length,
+    uniquePatients: new Set(rows.map((r) => r.patient_id).filter((id): id is number => id != null)).size,
+    statusBreakdown,
+    departmentBreakdown,
+    error: null,
+    cacheHit: false,
+  };
+
+  await writeUpstashJson(key, payload, ENCOUNTER_SUMMARY_CACHE_TTL_SECONDS);
+  return NextResponse.json(payload);
+}

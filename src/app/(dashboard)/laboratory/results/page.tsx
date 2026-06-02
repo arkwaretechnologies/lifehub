@@ -8,6 +8,7 @@ import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
 import PrintOutlinedIcon from "@mui/icons-material/PrintOutlined";
 import SaveOutlinedIcon from "@mui/icons-material/SaveOutlined";
 import ClearOutlinedIcon from "@mui/icons-material/ClearOutlined";
+import SmsOutlinedIcon from "@mui/icons-material/SmsOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import {
   Alert,
@@ -19,6 +20,11 @@ import {
   Chip,
   CircularProgress,
   Divider,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
   FormControl,
   FormControlLabel,
   IconButton,
@@ -40,6 +46,14 @@ function formatLabRequestDateTime(requestDate: string, requestTime: string | nul
   const t = formatLabTime(requestTime);
   if (!d) return t === "—" ? "—" : t;
   return t === "—" ? d : `${d} · ${t}`;
+}
+
+function formatSmsSentAt(value: string | null | undefined): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "—";
+  const dt = new Date(raw);
+  if (!Number.isFinite(dt.getTime())) return raw;
+  return dt.toLocaleString();
 }
 import { commonFieldProps, fieldInputSx } from "@/components/fieldInputStyles";
 import { FormFieldLabel } from "@/components/FormFieldLabel";
@@ -229,6 +243,8 @@ export default function LabResultsPage() {
   const [toastOpen, setToastOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState("");
   const [toastSeverity, setToastSeverity] = useState<"success" | "error">("success");
+  const [sendSmsBusy, setSendSmsBusy] = useState(false);
+  const [resendSmsDialogOpen, setResendSmsDialogOpen] = useState(false);
 
   const queueTicketStatusChip = (t: LabQueueRow) => {
     const label = t.lab_display_status ?? t.status;
@@ -393,6 +409,8 @@ export default function LabResultsPage() {
     if (!requestCollectSummary.anyCollected || requestCollectSummary.allCollected) return false;
     return selectedTicket.status === "Called" && selectedTicket.active_dept === "LAB";
   }, [selectedTicket, selectedRequestId, requestCollectSummary]);
+
+  const canSendResultSms = Boolean(reqHeader?.id && reqHeader?.any_result_saved && reqHeader?.patient_contact_no);
 
   const priorResultsByTestId = useMemo(() => {
     const m = new Map<string, PatientPriorLabResultEntry[]>();
@@ -610,6 +628,7 @@ export default function LabResultsPage() {
       setReqItems((prev) =>
         prev.map((x) => (x.id === rid ? mergePersistedLabResultRow(x, result.row, reqHeader?.patient_sex ?? null) : x)),
       );
+      setReqHeader((prev) => (prev ? { ...prev, any_result_saved: true } : prev));
       void loadQueue();
       setReqError("");
       setToastSeverity("success");
@@ -649,6 +668,7 @@ export default function LabResultsPage() {
           prev.map((x) => (x.id === rid ? mergePersistedLabResultRow(x, result.row, patientSex) : x)),
         );
       }
+      setReqHeader((prev) => (prev ? { ...prev, any_result_saved: true } : prev));
       await loadQueue();
       setReqError("");
       setToastSeverity("success");
@@ -684,6 +704,54 @@ export default function LabResultsPage() {
         items: s.items,
       })),
     });
+  };
+
+  const sendResultReadySms = async (forceResend: boolean) => {
+    if (!reqHeader) return;
+    setReqError("");
+    setSendSmsBusy(true);
+    try {
+      const res = await authenticatedFetch("/api/laboratory/lab-result-ready-sms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          labRequestId: reqHeader.id,
+          forceResend,
+        }),
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        code?: string;
+        result_sms_sent_at?: string;
+      };
+      if (!res.ok) {
+        if (res.status === 409 && json.code === "alreadySentNeedsConfirm" && !forceResend) {
+          setResendSmsDialogOpen(true);
+          return;
+        }
+        const msg = json.error ?? `Request failed (${res.status})`;
+        setReqError(msg);
+        setToastSeverity("error");
+        setToastMessage(msg);
+        setToastOpen(true);
+        return;
+      }
+      const sentAt = String(json.result_sms_sent_at ?? "").trim();
+      if (sentAt) {
+        setReqHeader((prev) => (prev ? { ...prev, result_sms_sent_at: sentAt } : prev));
+      }
+      setToastSeverity("success");
+      setToastMessage(forceResend ? "SMS resent to patient." : "SMS sent to patient.");
+      setToastOpen(true);
+    } catch {
+      const msg = "Failed to send SMS.";
+      setReqError(msg);
+      setToastSeverity("error");
+      setToastMessage(msg);
+      setToastOpen(true);
+    } finally {
+      setSendSmsBusy(false);
+    }
   };
 
   const flagOptions = ["Normal", "High", "Low", "Critical", "Abnormal"] as const;
@@ -743,6 +811,30 @@ export default function LabResultsPage() {
           {toastMessage}
         </Alert>
       </Snackbar>
+      <Dialog open={resendSmsDialogOpen} onClose={() => (sendSmsBusy ? null : setResendSmsDialogOpen(false))}>
+        <DialogTitle>Resend SMS?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            A result-ready text message was already sent for this request. Do you want to send another message?
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setResendSmsDialogOpen(false)} disabled={sendSmsBusy}>
+            Cancel
+          </Button>
+          <Button
+            color="secondary"
+            variant="contained"
+            disabled={sendSmsBusy}
+            onClick={() => {
+              setResendSmsDialogOpen(false);
+              void sendResultReadySms(true);
+            }}
+          >
+            {sendSmsBusy ? <CircularProgress size={18} color="inherit" /> : "Resend"}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Typography variant="h5" sx={{ mb: 3 }}>
         Lab Results
@@ -1085,6 +1177,30 @@ export default function LabResultsPage() {
                 >
                   Print Test Checklist
                 </Button>
+                <Tooltip
+                  title={
+                    !reqHeader
+                      ? "Load a lab request first."
+                      : !reqHeader.any_result_saved
+                        ? "Save at least one result first."
+                        : !reqHeader.patient_contact_no
+                          ? "Patient contact number is missing."
+                          : "Send text message to patient."
+                  }
+                >
+                  <span>
+                    <Button
+                      variant="contained"
+                      color="secondary"
+                      size="small"
+                      startIcon={sendSmsBusy ? <CircularProgress size={16} color="inherit" /> : <SmsOutlinedIcon />}
+                      disabled={!canSendResultSms || sendSmsBusy}
+                      onClick={() => void sendResultReadySms(false)}
+                    >
+                      Send text to patient
+                    </Button>
+                  </span>
+                </Tooltip>
               </Stack>
             </Box>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
@@ -1170,6 +1286,18 @@ export default function LabResultsPage() {
                   <Typography variant="body2" sx={{ fontFamily: "monospace" }}>
                     {reqHeader.queue_display ?? selectedTicket?.queue_display ?? "—"}
                   </Typography>
+                </Box>
+                <Box>
+                  <Typography variant="caption" color="text.secondary" fontWeight={700} display="block">
+                    Contact No
+                  </Typography>
+                  <Typography variant="body2">{reqHeader.patient_contact_no ?? "—"}</Typography>
+                </Box>
+                <Box>
+                  <Typography variant="caption" color="text.secondary" fontWeight={700} display="block">
+                    Last result-ready SMS
+                  </Typography>
+                  <Typography variant="body2">{formatSmsSentAt(reqHeader.result_sms_sent_at)}</Typography>
                 </Box>
               </Box>
             ) : null}

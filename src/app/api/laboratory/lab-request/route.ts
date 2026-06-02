@@ -28,6 +28,7 @@ type LabRequestHeader = {
   created_at: string;
   referring_physician: string | null;
   physician_id: number | null;
+  result_sms_sent_at: string | null;
 };
 
 function parseYmdParts(s: string): { y: number; m: number; d: number } | null {
@@ -128,6 +129,8 @@ export type LabRequestHeaderView = LabRequestHeader & {
   requesting_physician: string | null;
   /** Latest `lab_results.updated_at` for any item on this request (ISO). */
   results_released_at: string | null;
+  /** True when at least one row exists in `lab_results` for this request. */
+  any_result_saved: boolean;
 };
 
 export type LabRequestItemView = {
@@ -176,7 +179,7 @@ export async function GET(req: Request) {
   const { data: header, error: hErr } = await admin
     .from("lab_requests")
     .select(
-      "id, encounter_id, patient_id, request_date, request_time, priority, clinical_diagnosis, remarks, created_at, referring_physician, physician_id",
+      "id, encounter_id, patient_id, request_date, request_time, priority, clinical_diagnosis, remarks, created_at, referring_physician, physician_id, result_sms_sent_at",
     )
     .eq("id", id)
     .maybeSingle();
@@ -288,6 +291,7 @@ export async function GET(req: Request) {
     }
   >();
   let results_released_at: string | null = null;
+  let any_result_saved = false;
   if (itemIds.length > 0) {
     const { data: rRows, error: rErr } = await admin
       .from("lab_results")
@@ -304,6 +308,7 @@ export async function GET(req: Request) {
       status: string | null;
       updated_at: string | null;
     }>) {
+      any_result_saved = true;
       resultsByItemId.set(r.lab_request_item_id, {
         result_value: r.result_value,
         result_unit: r.result_unit,
@@ -450,6 +455,7 @@ export async function GET(req: Request) {
     patient_philhealth_no,
     requesting_physician,
     results_released_at,
+    any_result_saved,
   };
 
   return NextResponse.json({

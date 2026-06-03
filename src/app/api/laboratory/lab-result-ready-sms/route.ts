@@ -14,8 +14,6 @@ function buildReadyMessage(patientName: string | null): string {
 
 Your official laboratory results are now ready for pick-up at the clinic.
 
-For your convenience, a digital copy has also been sent to your registered email address.
-
 Thank you for choosing LifeHub MDC!`;
 }
 

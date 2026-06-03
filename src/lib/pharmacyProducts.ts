@@ -8,5 +8,6 @@ export {
   fetchProductsByIds,
   fetchActiveProductsCatalog,
   formatProductOptionLabel,
+  formatMedicationProductOptionDescription,
   searchActiveProducts,
 } from "@/lib/pharmacyPosDb";

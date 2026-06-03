@@ -1,15 +1,22 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Autocomplete, TextField, type TextFieldProps } from "@mui/material";
+import { Autocomplete, Box, TextField, Typography, type TextFieldProps } from "@mui/material";
 import {
+  formatMedicationProductOptionDescription,
   formatProductOptionLabel,
   searchActiveProducts,
   type ProductCatalogRow,
 } from "@/lib/pharmacyProducts";
+import { fetchOnHandQtyByProductIds } from "@/lib/pharmacyPosDb";
 
 const MIN_SEARCH_LEN = 2;
 const SEARCH_DEBOUNCE_MS = 280;
+
+function formatOnHandStock(qty: number | undefined): string {
+  if (qty == null || !Number.isFinite(qty) || qty <= 0) return "0";
+  return Number.isInteger(qty) ? String(qty) : qty.toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
 
 function mergeWithSelected(list: ProductCatalogRow[], selected: ProductCatalogRow | null): ProductCatalogRow[] {
   if (selected == null) return list;
@@ -33,6 +40,7 @@ export default function MedicationProductAutocomplete({
   const [inputValue, setInputValue] = useState(() => (value ? formatProductOptionLabel(value) : ""));
   const [options, setOptions] = useState<ProductCatalogRow[]>(() => mergeWithSelected(previewProducts, value));
   const [searchLoading, setSearchLoading] = useState(false);
+  const [stockQtyByProductId, setStockQtyByProductId] = useState<Record<string, number>>({});
 
   const valueRef = useRef(value);
   valueRef.current = value;
@@ -79,6 +87,23 @@ export default function MedicationProductAutocomplete({
     };
   }, [inputValue]);
 
+  useEffect(() => {
+    const ids = options.map((p) => p.id).filter(Boolean);
+    if (ids.length === 0) {
+      setStockQtyByProductId({});
+      return;
+    }
+    let cancelled = false;
+    void fetchOnHandQtyByProductIds(ids).then((r) => {
+      if (cancelled) return;
+      if (!r.error) setStockQtyByProductId(r.qtyByProductId);
+      else setStockQtyByProductId({});
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [options]);
+
   return (
     <Autocomplete
       size="small"
@@ -97,7 +122,32 @@ export default function MedicationProductAutocomplete({
         setInputValue(p ? formatProductOptionLabel(p) : "");
       }}
       isOptionEqualToValue={(a, b) => a.id === b.id}
-      ListboxProps={{ sx: { maxHeight: 280 } }}
+      renderOption={(props, option) => {
+        const { key, ...optionProps } = props;
+        return (
+          <Box
+            component="li"
+            key={key}
+            {...optionProps}
+            sx={{ display: "flex", alignItems: "flex-start", gap: 1.5, py: 1 }}
+          >
+            <Typography
+              variant="body2"
+              component="div"
+              sx={{ flex: 1, minWidth: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.45 }}
+            >
+              {formatMedicationProductOptionDescription(option)}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0, fontWeight: 600, pt: 0.25 }}>
+              Stock: {formatOnHandStock(stockQtyByProductId[option.id])}
+            </Typography>
+          </Box>
+        );
+      }}
+      slotProps={{
+        paper: { sx: { maxWidth: "none" } },
+        listbox: { sx: { maxHeight: 360 } },
+      }}
       noOptionsText={
         inputValue.trim().length > 0 && inputValue.trim().length < MIN_SEARCH_LEN
           ? `Type ${MIN_SEARCH_LEN}+ letters to search the catalog`

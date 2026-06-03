@@ -22,7 +22,7 @@ export const PHARMACY_STOCK_OUTS_TABLE = "pharmacy_stock_outs" as const;
 export const SUPPLIERS_TABLE = "suppliers" as const;
 
 const PRODUCT_PICKER_SELECT =
-  "id, generic_name, brand_name, strength, unit_of_measure, dosage_form, requires_prescription, is_active" as const;
+  "id, generic_name, brand_name, strength, unit_of_measure, dosage_form, description, requires_prescription, is_active" as const;
 
 /** Extended row for POS register */
 export const PRODUCT_POS_SELECT =
@@ -39,6 +39,7 @@ export type ProductCatalogRow = {
   strength: string | null;
   unit_of_measure: string;
   dosage_form: string | null;
+  description: string | null;
   requires_prescription: boolean | null;
   is_active: boolean | null;
 };
@@ -85,6 +86,14 @@ export function formatProductOptionLabel(p: ProductCatalogRow): string {
   const base = p.brand_name ? `${p.generic_name} (${p.brand_name})` : p.generic_name;
   const extra = [p.strength, p.dosage_form].filter(Boolean).join(" · ");
   return extra ? `${base} — ${extra}` : base;
+}
+
+/** Full product text for medication picker dropdown (name, strength, form, description). */
+export function formatMedicationProductOptionDescription(p: ProductCatalogRow): string {
+  const lines: string[] = [formatProductOptionLabel(p)];
+  const desc = (p.description ?? "").trim();
+  if (desc) lines.push(desc);
+  return lines.join("\n");
 }
 
 function sanitizeSearchToken(raw: string): string {

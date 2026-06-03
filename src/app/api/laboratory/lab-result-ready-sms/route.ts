@@ -8,9 +8,15 @@ type Body = {
   forceResend?: unknown;
 };
 
-function buildReadyMessage(patientName: string | null, labRequestId: string): string {
+function buildReadyMessage(patientName: string | null): string {
   const recipient = (patientName ?? "").trim() || "Patient";
-  return `Good day ${recipient}, your laboratory result is ready. Please proceed to the Lifehub clinic for claiming. Ref: ${labRequestId}`;
+  return `Good day Mr./Ms. ${recipient},
+
+Your official laboratory results are now ready for pick-up at the clinic.
+
+For your convenience, a digital copy has also been sent to your registered email address.
+
+Thank you for choosing LifeHub MDC!`;
 }
 
 export async function POST(req: Request) {
@@ -93,7 +99,7 @@ export async function POST(req: Request) {
 
   const sms = await sendSemaphoreSms({
     number: contactNo,
-    message: buildReadyMessage(patientName, labRequestId),
+    message: buildReadyMessage(patientName),
   });
   if (!sms.ok) {
     return NextResponse.json({ error: sms.error ?? "Failed to send SMS.", code: "providerFailed" }, { status: 502 });

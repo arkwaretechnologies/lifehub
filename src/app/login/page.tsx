@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, FormEvent } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState, FormEvent, useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Image from "next/image";
 import {
   Box,
@@ -55,13 +55,71 @@ const rightPaneEntrance = keyframes`
   }
 `;
 
+const SENSITIVE_LOGIN_PARAM_KEYS = new Set(["password", "input_password", "pwd", "pass"]);
+const USERNAME_LOGIN_PARAM_KEYS = ["username", "identifier"];
+
+function loginUrlHasSensitiveParams(searchParams: URLSearchParams): boolean {
+  for (const key of searchParams.keys()) {
+    if (SENSITIVE_LOGIN_PARAM_KEYS.has(key.toLowerCase())) return true;
+  }
+  return false;
+}
+
+function readUsernamePrefill(searchParams: URLSearchParams): string {
+  for (const name of USERNAME_LOGIN_PARAM_KEYS) {
+    for (const key of searchParams.keys()) {
+      if (key.toLowerCase() !== name) continue;
+      const value = searchParams.get(key)?.trim();
+      if (value) return value;
+    }
+  }
+  return "";
+}
+
 export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <Box
+          sx={{
+            minHeight: "100dvh",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background:
+              "linear-gradient(165deg, #e3f2fd 0%, #e8f6f4 38%, #f5faf9 72%, #ffffff 100%)",
+          }}
+        >
+          <CircularProgress />
+        </Box>
+      }
+    >
+      <LoginPageContent />
+    </Suspense>
+  );
+}
+
+function LoginPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { login } = useAuth();
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (params.toString() === "") return;
+
+    const hasSensitive = loginUrlHasSensitiveParams(params);
+    if (!hasSensitive) {
+      const prefill = readUsernamePrefill(params);
+      if (prefill) setIdentifier(prefill);
+    }
+
+    router.replace("/login");
+  }, [router, searchParams]);
 
   const handleLogin = async (e: FormEvent) => {
     e.preventDefault();

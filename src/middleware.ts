@@ -2,8 +2,48 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { verifySessionToken } from "@/lib/authJwt";
 
+const SENSITIVE_LOGIN_PARAM_KEYS = new Set(["password", "input_password", "pwd", "pass"]);
+const USERNAME_LOGIN_PARAM_KEYS = new Set(["username", "identifier"]);
+
+function loginUrlHadSensitiveParams(url: URL): boolean {
+  for (const key of url.searchParams.keys()) {
+    if (SENSITIVE_LOGIN_PARAM_KEYS.has(key.toLowerCase())) return true;
+  }
+  return false;
+}
+
+function sanitizeLoginUrl(url: URL): URL {
+  const cleaned = new URL(url.toString());
+  let hadSensitive = false;
+
+  for (const key of [...cleaned.searchParams.keys()]) {
+    if (SENSITIVE_LOGIN_PARAM_KEYS.has(key.toLowerCase())) {
+      cleaned.searchParams.delete(key);
+      hadSensitive = true;
+    }
+  }
+
+  if (hadSensitive) {
+    for (const key of [...cleaned.searchParams.keys()]) {
+      if (USERNAME_LOGIN_PARAM_KEYS.has(key.toLowerCase())) {
+        cleaned.searchParams.delete(key);
+      }
+    }
+  }
+
+  return cleaned;
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
+  if (pathname === "/login") {
+    if (loginUrlHadSensitiveParams(request.nextUrl)) {
+      const cleaned = sanitizeLoginUrl(request.nextUrl);
+      return NextResponse.redirect(cleaned, 307);
+    }
+    return NextResponse.next();
+  }
 
   if (!pathname.startsWith("/api/")) {
     return NextResponse.next();
@@ -32,5 +72,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/api/:path*"],
+  matcher: ["/api/:path*", "/login"],
 };

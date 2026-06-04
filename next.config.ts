@@ -6,8 +6,6 @@ import type { NextConfig } from "next";
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 
 const nextConfig: NextConfig = {
-  /** Smaller production image; required for multi-stage Docker deploy. */
-  output: "standalone",
   turbopack: {
     root: projectRoot,
   },

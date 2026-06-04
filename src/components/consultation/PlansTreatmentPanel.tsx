@@ -78,7 +78,7 @@ import {
 import { LabOrderCatalogSections } from "@/components/laboratory/LabOrderCatalogSections";
 import { fetchActiveLabPricesByTestIds } from "@/lib/labServicePrices";
 import { fetchActiveLabPackagesWithTests, type LabPackageWithTests } from "@/lib/labPackages";
-import { openPrescriptionPrintWindow } from "@/lib/prescriptionPrint";
+import { openPlansTreatmentPrintWindow, openPrescriptionPrintWindow } from "@/lib/prescriptionPrint";
 import type { UserProfile } from "@/lib/types";
 import {
   fetchActiveProductsPreview,
@@ -400,6 +400,7 @@ export default function PlansTreatmentPanel({
   const [medToastMessage, setMedToastMessage] = useState("");
   const [medToastSeverity, setMedToastSeverity] = useState<"success" | "error">("success");
   const [printRxLoading, setPrintRxLoading] = useState(false);
+  const [printPlansLoading, setPrintPlansLoading] = useState(false);
   const [medicationLines, setMedicationLines] = useState<MedicationLineDraft[]>([]);
   const productCacheRef = useRef(productCache);
   productCacheRef.current = productCache;
@@ -1084,6 +1085,37 @@ export default function PlansTreatmentPanel({
     }
     return { prescriptionId: j.prescriptionId ?? null, error: null };
   }, [medicationLines, patient.patientId, profile, transId]);
+
+  const printPlansTreatment = useCallback(async () => {
+    const notes = form.plan_notes.trim();
+    if (!notes) {
+      window.alert("Enter plan/treatment notes before printing.");
+      return;
+    }
+    const u = profile as UserProfile | null;
+    const fullname = u?.fullname?.trim() ?? "";
+    const specialty = u?.specialty?.trim() ?? "";
+    const licenseNo = u?.license_no?.trim() ?? "";
+    const ptrNo = u?.ptr_no?.trim() ?? "";
+    const s2No = u?.s2_no?.trim() ?? "";
+
+    setPrintPlansLoading(true);
+    try {
+      const ok = await openPlansTreatmentPrintWindow({
+        patient,
+        physician: { fullname, specialty, licenseNo, ptrNo, s2No },
+        planNotes: form.plan_notes,
+        transId,
+      });
+      if (!ok) {
+        window.alert(
+          "Could not load the prescription PDF template. Ensure templates/RX Template.pdf is present on the server.",
+        );
+      }
+    } finally {
+      setPrintPlansLoading(false);
+    }
+  }, [form.plan_notes, patient, profile, transId]);
 
   const printMedicationPrescription = useCallback(async () => {
     if (medicationRowsMissingQuantity(medicationLines)) {
@@ -2009,6 +2041,23 @@ export default function PlansTreatmentPanel({
               label="REFERRAL"
               sx={consultFormControlLabelSx}
             />
+          </Box>
+
+          <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 1 }}>
+            <Button
+              type="button"
+              variant="outlined"
+              color="secondary"
+              size="small"
+              disabled={loading || printPlansLoading || !form.plan_notes.trim()}
+              onClick={() => void printPlansTreatment()}
+              startIcon={
+                printPlansLoading ? <CircularProgress size={16} color="inherit" /> : <PrintOutlinedIcon />
+              }
+              sx={{ textTransform: "none", fontWeight: 700 }}
+            >
+              {printPlansLoading ? "Preparing…" : "Print Plans/Treatment"}
+            </Button>
           </Box>
 
           <TextField

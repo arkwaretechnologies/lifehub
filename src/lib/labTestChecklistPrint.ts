@@ -110,6 +110,7 @@ export function openLabTestChecklistPrintWindow(args: {
 
   const patientName = (header.patient_name ?? "—").trim() || "—";
   const patientId = header.patient_id != null ? String(header.patient_id) : "—";
+  const patientDob = formatDateMMDDYYYY(header.patient_date_of_birth ?? "") || "—";
   const queueNo = (header.queue_display ?? "—").trim() || "—";
   const requestWhen = formatLabRequestDateTime(header.request_date, header.request_time);
   const physician = (header.requesting_physician ?? "—").trim() || "—";
@@ -124,6 +125,7 @@ export function openLabTestChecklistPrintWindow(args: {
 
   const headerRight = [
     headerField("Patient ID", patientId),
+    headerField("DOB", patientDob),
     headerField("Request Date / Time", requestWhen),
     headerField("Requesting Physician", physician),
   ].join("");

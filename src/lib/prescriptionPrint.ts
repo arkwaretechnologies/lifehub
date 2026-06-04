@@ -1,7 +1,7 @@
 import type { ConsultationPatient } from "@/components/consultation/consultationTypes";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
-import type { PDFFont, PDFPage } from "pdf-lib";
+import type { PDFDocument, PDFFont, PDFPage, RGB } from "pdf-lib";
 
 export type PrescriptionPrintMedicationLine = {
   drugLine: string;
@@ -22,6 +22,18 @@ export type PrescriptionPrintPhysician = {
 const A5_W = 420;
 const A5_H = 595;
 
+type PrescriptionLayout = ReturnType<typeof prescriptionLayout>;
+
+type RxTemplateContext = {
+  doc: PDFDocument;
+  page: PDFPage;
+  font: PDFFont;
+  width: number;
+  height: number;
+  L: PrescriptionLayout;
+  black: RGB;
+};
+
 function formatDobMMDDYYYY(raw: string): string {
   const s = (raw ?? "").trim();
   if (!s) return "";
@@ -31,7 +43,6 @@ function formatDobMMDDYYYY(raw: string): string {
   if (m2) return `${m2[1]}-${m2[2]}-${m2[3]}`;
   const m3 = s.match(/^(\d{2})-(\d{2})-(\d{4})/);
   if (m3) return `${m3[1]}-${m3[2]}-${m3[3]}`;
-  // Fallback: return as-is if unknown format.
   return s;
 }
 
@@ -55,7 +66,6 @@ const RX_UNIT_ALREADY_PLURAL = new Set([
   "puffs",
 ]);
 
-/** Pluralize dispensary unit on printed RX when quantity is greater than 1. */
 function pluralizeRxUnit(unit: string, quantityRaw: string): string {
   const u = unit.trim();
   if (!u) return u;
@@ -67,8 +77,6 @@ function pluralizeRxUnit(unit: string, quantityRaw: string): string {
 
   const lower = u.toLowerCase();
   if (RX_UNIT_ALREADY_PLURAL.has(lower)) return u;
-
-  // Volume/mass abbreviations — do not append "s".
   if (/^(ml|l|mg|g|mcg|iu)$/i.test(lower)) return u;
 
   const irregular: Record<string, string> = {
@@ -105,13 +113,7 @@ function pluralizeRxUnit(unit: string, quantityRaw: string): string {
   return plural;
 }
 
-/**
- * Prescription overlay layout for `templates/RX Template.pdf` (A5).
- * All `fromTop` values are distance from the **top** of the page to the text **baseline** (PDF points).
- */
 function prescriptionLayout(pageWidth: number, pageHeight: number) {
-  // These are tuned to the visible input boxes of the RX Template.
-  // If the page isn't exactly A5, we scale coordinates proportionally.
   const w = pageWidth;
   const h = pageHeight;
   const sx = w / A5_W;
@@ -124,18 +126,14 @@ function prescriptionLayout(pageWidth: number, pageHeight: number) {
 
   return {
     margin: px(24),
-
     specialty: { fromTop: py(92), size: 9 },
-
     patientName: { fromTop: py(127), x: leftX, size: 8.8 },
     dob: { fromTop: py(150), x: leftX, size: 8.6 },
     dateTime: { fromTop: py(150), x: rightX, size: 8.6 },
     ageSex: { fromTop: py(175), x: leftX, size: 8.6 },
     address: { fromTop: py(200), x: leftX, maxWidth: px(200), size: 8.6, lineHeight: 9.5 },
     contactNo: { fromTop: py(175), x: rightX, size: 8.6 },
-
     rxStart: { fromTop: py(275), x: 80, size: 9.2, lineHeight: 11.2 },
-
     sigSpecialty: { fromTop: py(508), x: px(250), size: 7.5 },
     sigBandFromTop: py(470),
     licRow: { fromTop: py(545), x: leftX, size: 7, col2: px(210), col3: px(340) },
@@ -149,10 +147,6 @@ function isRoughlyA5(w: number, h: number): boolean {
   return dw <= 0.03 && dh <= 0.03;
 }
 
-/**
- * Ensures the output PDF page is true A5 so browser print preview shows the actual size.
- * If the template page isn't A5, it is uniformly scaled and centered onto an A5 page.
- */
 function normalizePageToA5(page: PDFPage): void {
   const size = page.getSize();
   const w0 = size.width;
@@ -166,6 +160,82 @@ function normalizePageToA5(page: PDFPage): void {
     page.translateContent(dx, dy);
   }
   page.setSize(A5_W, A5_H);
+}
+
+function pageHeightFromTop(pageHeight: number, fromTop: number): number {
+  return pageHeight - fromTop;
+}
+
+function drawCentered(
+  page: PDFPage,
+  text: string,
+  pageWidth: number,
+  pageHeight: number,
+  fromTop: number,
+  font: PDFFont,
+  size: number,
+  minX: number,
+  black: RGB,
+): void {
+  const t = text.trim();
+  if (!t) return;
+  const w = font.widthOfTextAtSize(t, size);
+  const x = Math.max(minX, (pageWidth - w) / 2);
+  page.drawText(t, { x, y: pageHeightFromTop(pageHeight, fromTop), size, font, color: black });
+}
+
+function drawWrapped(
+  page: PDFPage,
+  text: string,
+  x: number,
+  yStart: number,
+  maxWidth: number,
+  font: PDFFont,
+  size: number,
+  lineHeight: number,
+  black: RGB,
+): number {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  let line = "";
+  let y = yStart;
+
+  const flush = () => {
+    if (line) {
+      page.drawText(line, { x, y, size, font, color: black });
+      y -= lineHeight;
+      line = "";
+    }
+  };
+
+  for (const w of words) {
+    const next = line ? `${line} ${w}` : w;
+    if (font.widthOfTextAtSize(next, size) <= maxWidth) {
+      line = next;
+    } else {
+      flush();
+      if (font.widthOfTextAtSize(w, size) <= maxWidth) {
+        line = w;
+      } else {
+        let rest = w;
+        while (rest.length > 0) {
+          let cut = rest.length;
+          while (
+            cut > 0 &&
+            font.widthOfTextAtSize(rest.slice(0, cut) + (cut < rest.length ? "…" : ""), size) > maxWidth
+          ) {
+            cut -= 1;
+          }
+          if (cut === 0) cut = 1;
+          const piece = cut < rest.length ? `${rest.slice(0, cut)}…` : rest.slice(0, cut);
+          page.drawText(piece, { x, y, size, font, color: black });
+          y -= lineHeight;
+          rest = rest.slice(cut);
+        }
+      }
+    }
+  }
+  flush();
+  return y;
 }
 
 function printPdfBlob(blob: Blob): void {
@@ -194,109 +264,8 @@ function printPdfBlob(blob: Blob): void {
   };
 }
 
-/**
- * Loads `templates/RX Template.pdf` (via `/api/prescription-template`),
- * overlays patient / prescriber / medication text for the template page size (A5), then opens print.
- */
-export async function openPrescriptionPrintWindow(args: {
-  patient: ConsultationPatient;
-  physician: PrescriptionPrintPhysician;
-  medications: PrescriptionPrintMedicationLine[];
-  transId: string;
-}): Promise<boolean> {
-  const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
-  const black = rgb(0, 0, 0);
-  const { patient, physician, medications, transId } = args;
-
-  const pageHeight = (h: number, fromTop: number) => h - fromTop;
-
-  function drawCentered(
-    page: PDFPage,
-    text: string,
-    pageWidth: number,
-    h: number,
-    fromTop: number,
-    font: PDFFont,
-    size: number,
-    minX: number,
-  ): void {
-    const t = text.trim();
-    if (!t) return;
-    const w = font.widthOfTextAtSize(t, size);
-    const x = Math.max(minX, (pageWidth - w) / 2);
-    page.drawText(t, { x, y: pageHeight(h, fromTop), size, font, color: black });
-  }
-
-  function drawWrapped(
-    page: PDFPage,
-    text: string,
-    x: number,
-    yStart: number,
-    maxWidth: number,
-    font: PDFFont,
-    size: number,
-    lineHeight: number,
-  ): number {
-    const words = text.trim().split(/\s+/).filter(Boolean);
-    let line = "";
-    let y = yStart;
-
-    const flush = () => {
-      if (line) {
-        page.drawText(line, { x, y, size, font, color: black });
-        y -= lineHeight;
-        line = "";
-      }
-    };
-
-    for (const w of words) {
-      const next = line ? `${line} ${w}` : w;
-      if (font.widthOfTextAtSize(next, size) <= maxWidth) {
-        line = next;
-      } else {
-        flush();
-        if (font.widthOfTextAtSize(w, size) <= maxWidth) {
-          line = w;
-        } else {
-          let rest = w;
-          while (rest.length > 0) {
-            let cut = rest.length;
-            while (
-              cut > 0 &&
-              font.widthOfTextAtSize(rest.slice(0, cut) + (cut < rest.length ? "…" : ""), size) > maxWidth
-            ) {
-              cut -= 1;
-            }
-            if (cut === 0) cut = 1;
-            const piece = cut < rest.length ? `${rest.slice(0, cut)}…` : rest.slice(0, cut);
-            page.drawText(piece, { x, y, size, font, color: black });
-            y -= lineHeight;
-            rest = rest.slice(cut);
-          }
-        }
-      }
-    }
-    flush();
-    return y;
-  }
-
-  const res = await authenticatedFetch("/api/prescription-template", { cache: "no-store" });
-  if (!res.ok) {
-    return false;
-  }
-
-  const templateBytes = await res.arrayBuffer();
-  const doc = await PDFDocument.load(templateBytes);
-  const page = doc.getPages()[0];
-  normalizePageToA5(page);
-  const { width, height } = page.getSize();
-  const L = prescriptionLayout(width, height);
-
-  // Prefer SF Pro (San Francisco) if you provide the font file.
-  // Put one of these files in `public/fonts/`:
-  // - SF-Pro-Text-Regular.otf (recommended)
-  // - SF-Pro-Display-Regular.otf
-  // If not present, we fall back to Helvetica.
+async function embedRxFont(doc: PDFDocument): Promise<PDFFont> {
+  const { StandardFonts } = await import("pdf-lib");
   let font = await doc.embedFont(StandardFonts.Helvetica);
   try {
     const candidates = [
@@ -315,10 +284,42 @@ export async function openPrescriptionPrintWindow(args: {
       break;
     }
   } catch {
-    // ignore and keep Helvetica
+    // keep Helvetica
   }
+  return font;
+}
 
-  drawCentered(page, physician.specialty.toUpperCase(), width, height, L.specialty.fromTop, font, L.specialty.size, L.margin);
+async function loadRxTemplateContext(): Promise<RxTemplateContext | null> {
+  const { PDFDocument, rgb } = await import("pdf-lib");
+  const res = await authenticatedFetch("/api/prescription-template", { cache: "no-store" });
+  if (!res.ok) return null;
+
+  const templateBytes = await res.arrayBuffer();
+  const doc = await PDFDocument.load(templateBytes);
+  const page = doc.getPages()[0];
+  normalizePageToA5(page);
+  const { width, height } = page.getSize();
+  const font = await embedRxFont(doc);
+
+  return {
+    doc,
+    page,
+    font,
+    width,
+    height,
+    L: prescriptionLayout(width, height),
+    black: rgb(0, 0, 0),
+  };
+}
+
+function drawRxPatientHeader(
+  ctx: RxTemplateContext,
+  patient: ConsultationPatient,
+  physician: PrescriptionPrintPhysician,
+): void {
+  const { page, font, width, height, L, black } = ctx;
+
+  drawCentered(page, physician.specialty.toUpperCase(), width, height, L.specialty.fromTop, font, L.specialty.size, L.margin, black);
 
   const dateStr = formatDateMMDDYYYY(patient.date) || "";
   const dateTimeStr = [dateStr, (patient.time ?? "").trim()].filter(Boolean).join(" ");
@@ -328,25 +329,26 @@ export async function openPrescriptionPrintWindow(args: {
   if (patient.name.trim()) {
     page.drawText(patient.name.trim(), {
       x: L.patientName.x,
-      y: pageHeight(height, L.patientName.fromTop),
+      y: pageHeightFromTop(height, L.patientName.fromTop),
       size: L.patientName.size,
       font,
       color: black,
     });
   }
 
-  const ageBaselineY = pageHeight(height, L.ageSex.fromTop);
-  const dateBaselineY = pageHeight(height, L.dateTime.fromTop);
+  const ageBaselineY = pageHeightFromTop(height, L.ageSex.fromTop);
+  const dateBaselineY = pageHeightFromTop(height, L.dateTime.fromTop);
   if (patient.address.trim()) {
     drawWrapped(
       page,
       patient.address.trim(),
       L.address.x,
-      pageHeight(height, L.address.fromTop),
+      pageHeightFromTop(height, L.address.fromTop),
       L.address.maxWidth,
       font,
       L.address.size,
       L.address.lineHeight,
+      black,
     );
   }
 
@@ -372,7 +374,7 @@ export async function openPrescriptionPrintWindow(args: {
   if (dobStr) {
     page.drawText(dobStr, {
       x: L.dob.x,
-      y: pageHeight(height, L.dob.fromTop),
+      y: pageHeightFromTop(height, L.dob.fromTop),
       size: L.dob.size,
       font,
       color: black,
@@ -381,18 +383,33 @@ export async function openPrescriptionPrintWindow(args: {
   if (contactStr) {
     page.drawText(contactStr, {
       x: L.contactNo.x,
-      y: pageHeight(height, L.contactNo.fromTop),
+      y: pageHeightFromTop(height, L.contactNo.fromTop),
       size: L.contactNo.size,
       font,
       color: black,
     });
   }
+}
 
-  // Start meds at the dedicated Rx area (avoid overlapping the AGE/SEX row).
-  let yRx = pageHeight(height, L.rxStart.fromTop);
-  const maxRxW = width - L.rxStart.x - L.margin;
-  const sigYMin = pageHeight(height, L.sigBandFromTop) + height * 0.04;
+function rxSigYMin(ctx: RxTemplateContext): number {
+  return pageHeightFromTop(ctx.height, ctx.L.sigBandFromTop) + ctx.height * 0.04;
+}
+
+function rxBodyStartY(ctx: RxTemplateContext): number {
+  return pageHeightFromTop(ctx.height, ctx.L.rxStart.fromTop);
+}
+
+function rxBodyMaxWidth(ctx: RxTemplateContext): number {
+  return ctx.width - ctx.L.rxStart.x - ctx.L.margin;
+}
+
+function drawRxMedications(ctx: RxTemplateContext, medications: PrescriptionPrintMedicationLine[]): void {
+  const { page, font, L, black } = ctx;
+  let yRx = rxBodyStartY(ctx);
+  const maxRxW = rxBodyMaxWidth(ctx);
+  const sigYMin = rxSigYMin(ctx);
   let n = 1;
+
   for (const m of medications) {
     if (yRx < sigYMin) break;
     const q = m.quantity.trim();
@@ -401,7 +418,7 @@ export async function openPrescriptionPrintWindow(args: {
     const qtyPart = [q && `#: ${q}`, unitPrinted].filter(Boolean).join(" ");
     const sigPart = (m.notes ?? "").trim();
     const mainLine = `${n}. ${m.drugLine}${qtyPart ? `  ${qtyPart}` : ""}`;
-    yRx = drawWrapped(page, mainLine, L.rxStart.x, yRx, maxRxW, font, L.rxStart.size, L.rxStart.lineHeight);
+    yRx = drawWrapped(page, mainLine, L.rxStart.x, yRx, maxRxW, font, L.rxStart.size, L.rxStart.lineHeight, black);
     if (sigPart) {
       const sigIndent = Math.round(L.rxStart.size * 1.25);
       const sigLine = `Sig: ${sigPart}`;
@@ -414,17 +431,42 @@ export async function openPrescriptionPrintWindow(args: {
         font,
         L.rxStart.size,
         L.rxStart.lineHeight,
+        black,
       );
     }
-    // Extra gap before the next medication so each entry reads as its own block.
     yRx -= Math.round(L.rxStart.lineHeight * 1.35);
     n += 1;
   }
+}
+
+function drawRxBodyText(ctx: RxTemplateContext, bodyText: string): void {
+  const { page, font, L, black } = ctx;
+  let yRx = rxBodyStartY(ctx);
+  const maxRxW = rxBodyMaxWidth(ctx);
+  const sigYMin = rxSigYMin(ctx);
+  const paragraphs = bodyText.replace(/\r\n/g, "\n").split("\n");
+
+  for (let i = 0; i < paragraphs.length; i++) {
+    if (yRx < sigYMin) break;
+    const para = paragraphs[i] ?? "";
+    if (!para.trim()) {
+      yRx -= Math.round(L.rxStart.lineHeight * 0.65);
+      continue;
+    }
+    yRx = drawWrapped(page, para, L.rxStart.x, yRx, maxRxW, font, L.rxStart.size, L.rxStart.lineHeight, black);
+    if (i < paragraphs.length - 1) {
+      yRx -= Math.round(L.rxStart.lineHeight * 0.35);
+    }
+  }
+}
+
+async function drawRxSigFooter(ctx: RxTemplateContext, physician: PrescriptionPrintPhysician, transId: string): Promise<void> {
+  const { doc, page, font, height, L, black } = ctx;
 
   if (physician.specialty.trim()) {
     page.drawText(physician.specialty.trim().toUpperCase(), {
       x: L.sigSpecialty.x,
-      y: pageHeight(height, L.sigSpecialty.fromTop),
+      y: pageHeightFromTop(height, L.sigSpecialty.fromTop),
       size: L.sigSpecialty.size,
       font,
       color: black,
@@ -432,30 +474,66 @@ export async function openPrescriptionPrintWindow(args: {
   }
 
   const tid = String(transId ?? "").trim();
-  if (tid) {
-    const QRCode = (await import("qrcode")).default;
-    const dataUrl = await QRCode.toDataURL(tid, {
-      errorCorrectionLevel: "M",
-      margin: 0,
-      scale: 6,
-      color: { dark: "#000000", light: "#FFFFFF" },
-    });
-    const b64 = dataUrl.split(",")[1] ?? "";
-    if (b64) {
-      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-      const img = await doc.embedPng(bytes);
-      const s = L.qr.size;
-      page.drawImage(img, {
-        x: L.qr.x,
-        y: pageHeight(height, L.qr.fromTop) - s,
-        width: s,
-        height: s,
-      });
-    }
-  }
+  if (!tid) return;
 
-  const out = await doc.save();
+  const QRCode = (await import("qrcode")).default;
+  const dataUrl = await QRCode.toDataURL(tid, {
+    errorCorrectionLevel: "M",
+    margin: 0,
+    scale: 6,
+    color: { dark: "#000000", light: "#FFFFFF" },
+  });
+  const b64 = dataUrl.split(",")[1] ?? "";
+  if (!b64) return;
+
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  const img = await doc.embedPng(bytes);
+  const s = L.qr.size;
+  page.drawImage(img, {
+    x: L.qr.x,
+    y: pageHeightFromTop(height, L.qr.fromTop) - s,
+    width: s,
+    height: s,
+  });
+}
+
+async function finishRxPrint(ctx: RxTemplateContext): Promise<boolean> {
+  const out = await ctx.doc.save();
   const blob = new Blob([out as BlobPart], { type: "application/pdf" });
   printPdfBlob(blob);
   return true;
+}
+
+export async function openPrescriptionPrintWindow(args: {
+  patient: ConsultationPatient;
+  physician: PrescriptionPrintPhysician;
+  medications: PrescriptionPrintMedicationLine[];
+  transId: string;
+}): Promise<boolean> {
+  const ctx = await loadRxTemplateContext();
+  if (!ctx) return false;
+
+  drawRxPatientHeader(ctx, args.patient, args.physician);
+  drawRxMedications(ctx, args.medications);
+  await drawRxSigFooter(ctx, args.physician, args.transId);
+  return finishRxPrint(ctx);
+}
+
+/** Plans/treatment narrative on RX template (no medication lines, no status change). */
+export async function openPlansTreatmentPrintWindow(args: {
+  patient: ConsultationPatient;
+  physician: PrescriptionPrintPhysician;
+  planNotes: string;
+  transId: string;
+}): Promise<boolean> {
+  const notes = args.planNotes.trim();
+  if (!notes) return false;
+
+  const ctx = await loadRxTemplateContext();
+  if (!ctx) return false;
+
+  drawRxPatientHeader(ctx, args.patient, args.physician);
+  drawRxBodyText(ctx, notes);
+  await drawRxSigFooter(ctx, args.physician, args.transId);
+  return finishRxPrint(ctx);
 }

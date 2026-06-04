@@ -477,6 +477,39 @@ export async function patchReceptionQueueTicket(
   return { error: null };
 }
 
+export type RecallQueueTicketResult = {
+  error: string | null;
+};
+
+/** Re-announce queue number (TTS); does not change ticket status. */
+export async function recallQueueTicketAnnounce(ticketId: string): Promise<RecallQueueTicketResult> {
+  const id = ticketId.trim();
+  if (!id) return { error: "Missing ticket id." };
+
+  const res = await authenticatedFetch("/api/reception/queue-ticket", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ticketId: id, action: "recall" }),
+  });
+  const json = (await res.json().catch(() => ({}))) as {
+    error?: string;
+    queueDisplay?: string;
+    patientName?: string | null;
+    counterName?: string | null;
+  };
+  if (!res.ok) {
+    return { error: json.error ?? `Request failed (${res.status})` };
+  }
+
+  const display = (json.queueDisplay ?? "").trim();
+  if (!display) {
+    return { error: "Queue display missing on ticket." };
+  }
+
+  await announceQueueNumber(display, json.counterName ?? null, json.patientName ?? null);
+  return { error: null };
+}
+
 export type CallQueueForEncounterApiResult = {
   error: string | null;
   queueDisplay?: string;

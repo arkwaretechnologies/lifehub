@@ -14,11 +14,12 @@ import {
   type ReceptionTriageRoute,
 } from "@/lib/receptionQueueServer";
 import { normalizeLabRequestPackageIdList } from "@/lib/labRequests";
+import { canRecallQueueTicket } from "@/lib/queueRecall";
 import type { QueueTicketStatus } from "@/lib/queueReception";
 
 type Body = {
   ticketId?: string;
-  action?: "call" | "start" | "complete" | "start_with_triage" | "prepare_lab_checkin";
+  action?: "call" | "start" | "complete" | "start_with_triage" | "prepare_lab_checkin" | "recall";
   complaint?: string | null;
   triageNotes?: string | null;
   route?: ReceptionTriageRoute;
@@ -137,6 +138,51 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ ok: true, ...result });
   }
 
+  if (action === "recall") {
+    const admin = queueAdminClient();
+    if (!admin) {
+      return NextResponse.json({ error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." }, { status: 500 });
+    }
+    const { data: row, error: selErr } = await admin
+      .from("queue_tickets")
+      .select("id, status, queue_display, patient_name, counter_id")
+      .eq("id", ticketId)
+      .maybeSingle();
+    if (selErr) {
+      return NextResponse.json({ error: selErr.message }, { status: 500 });
+    }
+    if (!row) {
+      return NextResponse.json({ error: "Queue ticket not found." }, { status: 404 });
+    }
+    const ticket = row as {
+      status?: QueueTicketStatus;
+      queue_display?: string | null;
+      patient_name?: string | null;
+      counter_id?: string | number | null;
+    };
+    const st = (ticket.status ?? "").trim() as QueueTicketStatus;
+    if (!canRecallQueueTicket(st)) {
+      return NextResponse.json(
+        { error: "Recall is only available for tickets that have already been called." },
+        { status: 409 },
+      );
+    }
+    const queueDisplay = (ticket.queue_display ?? "").trim() || "—";
+    const patientName = ticket.patient_name?.trim() ? ticket.patient_name.trim() : null;
+    let counterName: string | null = null;
+    const counterId = ticket.counter_id;
+    if (counterId != null && counterId !== "") {
+      const { data: ctr } = await admin
+        .from("queue_counters")
+        .select("name, code")
+        .eq("id", counterId)
+        .maybeSingle();
+      const cn = ctr as { name?: string | null; code?: string | null } | null;
+      counterName = (cn?.name ?? cn?.code ?? "").trim() || null;
+    }
+    return NextResponse.json({ ok: true, queueDisplay, patientName, counterName });
+  }
+
   const now = new Date().toISOString();
   let status: QueueTicketStatus;
   let timestamps: { called_at?: string | null; serving_at?: string | null };
@@ -240,7 +286,7 @@ export async function PATCH(req: Request) {
       break;
     default:
       return NextResponse.json(
-        { error: "action must be call, start, complete, start_with_triage, or prepare_lab_checkin." },
+        { error: "action must be call, start, complete, start_with_triage, prepare_lab_checkin, or recall." },
         { status: 400 },
       );
   }

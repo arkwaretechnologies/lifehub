@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
+import ReplayIcon from "@mui/icons-material/Replay";
 import HistoryOutlinedIcon from "@mui/icons-material/HistoryOutlined";
 import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
 import PrintOutlinedIcon from "@mui/icons-material/PrintOutlined";
@@ -63,6 +64,8 @@ import type { LabRequestHeaderView, LabRequestItemView } from "@/app/api/laborat
 import type { PatientPriorLabResultEntry } from "@/app/api/laboratory/patient-lab-history/route";
 import { formatDateMMDDYYYY, formatLabTime, formatQueueTicketWhen } from "@/lib/dateDisplay";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
+import { recallQueueTicketAnnounce } from "@/lib/queueReception";
+import { canRecallQueueTicket, recallQueueButtonTooltip } from "@/lib/queueRecall";
 import { mergeAutoFlagIntoLabResultRow } from "@/lib/labResultAutoFlag";
 import { compareLabTestSortOrder } from "@/lib/labTests";
 import { openLabResultsPrintWindow } from "@/lib/labResultsPrint";
@@ -523,6 +526,24 @@ export default function LabResultsPage() {
     }
   };
 
+  const recallPatient = async (ticketId: string) => {
+    const id = ticketId.trim();
+    if (!id) return;
+    setError("");
+    setActionBusyId(id);
+    try {
+      const res = await recallQueueTicketAnnounce(id);
+      if (res.error) {
+        setError(res.error);
+        return;
+      }
+    } catch {
+      setError("Failed to recall patient.");
+    } finally {
+      setActionBusyId(null);
+    }
+  };
+
   const resultSections = useMemo(() => groupItemsByCategory(reqItems), [reqItems]);
 
   const filteredResultSections = useMemo(
@@ -969,6 +990,30 @@ export default function LabResultsPage() {
                                   sx={{ borderRadius: 999, textTransform: "none", fontWeight: 700 }}
                                 >
                                   Call
+                                </Button>
+                              </span>
+                            </Tooltip>
+                            <Tooltip title={recallQueueButtonTooltip(t.status)}>
+                              <span>
+                                <Button
+                                  variant="outlined"
+                                  color="secondary"
+                                  size="small"
+                                  startIcon={
+                                    actionBusyId === t.id ? (
+                                      <CircularProgress size={16} color="inherit" />
+                                    ) : (
+                                      <ReplayIcon fontSize="small" />
+                                    )
+                                  }
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void recallPatient(t.id);
+                                  }}
+                                  disabled={!canRecallQueueTicket(t.status) || actionBusyId === t.id}
+                                  sx={{ borderRadius: 999, textTransform: "none", fontWeight: 700 }}
+                                >
+                                  Recall
                                 </Button>
                               </span>
                             </Tooltip>

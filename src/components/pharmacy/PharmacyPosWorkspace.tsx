@@ -1210,6 +1210,22 @@ export default function PharmacyPosWorkspace() {
       setCheckoutErr("Amount tendered is less than total.");
       return;
     }
+    const { qtyByProductId, error: stockErr } = await fetchOnHandQtyByProductIds(
+      cart.map((l) => l.product.id),
+    );
+    if (stockErr) {
+      setCheckoutErr(stockErr);
+      return;
+    }
+    for (const line of cart) {
+      const have = qtyByProductId[line.product.id] ?? 0;
+      if (have + 1e-9 < line.qty) {
+        setCheckoutErr(
+          `Insufficient stock for ${cartLineLabel(line)} (need ${line.qty}, have ${have}).`,
+        );
+        return;
+      }
+    }
     const lines = cart.map((l) => ({
       productId: l.product.id,
       quantity: l.qty,
@@ -1282,6 +1298,7 @@ export default function PharmacyPosWorkspace() {
   }, [
     shiftId,
     cart,
+    cartLineLabel,
     paymentMethod,
     amountTendered,
     totals,
@@ -1960,8 +1977,8 @@ export default function PharmacyPosWorkspace() {
               <Paper key={line.key} variant="outlined" sx={{ p: 1, opacity: isPending ? 0.85 : 1 }}>
                 <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
                   <Box sx={{ minWidth: 0 }}>
-                    <Typography variant="body2" fontWeight={600} noWrap>
-                      {line.product.generic_name}
+                    <Typography variant="body2" fontWeight={600} noWrap title={cartLineLabel(line)}>
+                      {cartLineLabel(line)}
                     </Typography>
                     <Typography variant="caption" color="text.secondary" display="block" noWrap>
                       ₱{line.product.unit_price.toFixed(2)} × {line.qty}
@@ -3462,7 +3479,12 @@ export default function PharmacyPosWorkspace() {
           </Typography>
           {waitRequest && (
             <Typography variant="body2" sx={{ mt: 2 }}>
-              <strong>{waitRequest.line_snapshot.generic_name}</strong>
+              <strong>
+                {waitRequest.line_snapshot.generic_name}
+                {waitRequest.line_snapshot.brand_name
+                  ? ` (${waitRequest.line_snapshot.brand_name})`
+                  : ""}
+              </strong>
               {" — "}
               {waitRequest.action === "delete" ? "remove line" : "change quantity"}
             </Typography>

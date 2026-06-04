@@ -31,8 +31,10 @@ import {
   callQueueForEncounterFromApi,
   fetchReceptionQueueStateFromApi,
   patchReceptionQueueTicket,
+  recallQueueTicketAnnounce,
   subscribeQueueTickets,
 } from "@/lib/queueReception";
+import { canRecallQueueTicket, recallQueueButtonTooltip } from "@/lib/queueRecall";
 
 const APPOINTMENTS_ENCOUNTER_LIMIT = 200;
 
@@ -45,6 +47,7 @@ export default function AppointmentsPage() {
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState("");
   const [callingTransId, setCallingTransId] = useState<string | null>(null);
+  const [recallingTicketId, setRecallingTicketId] = useState<string | null>(null);
   const [callError, setCallError] = useState("");
 
   const waitingRows = useMemo(
@@ -136,6 +139,19 @@ export default function AppointmentsPage() {
       if (poll != null) window.clearInterval(poll);
     };
   }, [authLoading, physicianUserId, reloadEncounters]);
+
+  async function handleRecall(row: PhysicianAppointmentRow) {
+    const ticketId = row.calledQueueTicketId?.trim();
+    if (!ticketId || !canRecallQueueTicket(row.calledQueueTicketStatus ?? "Waiting")) return;
+    setCallError("");
+    setRecallingTicketId(ticketId);
+    try {
+      const res = await recallQueueTicketAnnounce(ticketId);
+      if (res.error) setCallError(res.error);
+    } finally {
+      setRecallingTicketId(null);
+    }
+  }
 
   async function handleClickToCall(row: PhysicianAppointmentRow) {
     if (physicianUserId == null) return;
@@ -315,17 +331,37 @@ export default function AppointmentsPage() {
                             />
                           </TableCell>
                           <TableCell align="right">
-                            <Button
-                              component={Link}
-                              href={`/consultation/${encodeURIComponent(row.transId)}`}
-                              prefetch={false}
-                              size="small"
-                              variant="contained"
-                              disabled={callingTransId !== null}
-                              sx={{ textTransform: "none", fontWeight: 700 }}
-                            >
-                              Open visit
-                            </Button>
+                            <Stack direction="row" spacing={1} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
+                              {row.calledQueueTicketId &&
+                              row.calledQueueTicketStatus &&
+                              canRecallQueueTicket(row.calledQueueTicketStatus) ? (
+                                <Tooltip title={recallQueueButtonTooltip(row.calledQueueTicketStatus)}>
+                                  <span>
+                                    <Button
+                                      size="small"
+                                      variant="outlined"
+                                      color="secondary"
+                                      disabled={callingTransId !== null || recallingTicketId !== null}
+                                      onClick={() => void handleRecall(row)}
+                                      sx={{ textTransform: "none", fontWeight: 700 }}
+                                    >
+                                      {recallingTicketId === row.calledQueueTicketId ? "Recalling…" : "Recall"}
+                                    </Button>
+                                  </span>
+                                </Tooltip>
+                              ) : null}
+                              <Button
+                                component={Link}
+                                href={`/consultation/${encodeURIComponent(row.transId)}`}
+                                prefetch={false}
+                                size="small"
+                                variant="contained"
+                                disabled={callingTransId !== null || recallingTicketId !== null}
+                                sx={{ textTransform: "none", fontWeight: 700 }}
+                              >
+                                Open visit
+                              </Button>
+                            </Stack>
                           </TableCell>
                         </TableRow>
                       ))}

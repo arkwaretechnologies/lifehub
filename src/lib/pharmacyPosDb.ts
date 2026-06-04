@@ -82,10 +82,34 @@ function isActiveRow(v: boolean | null | undefined): boolean {
   return v !== false;
 }
 
+/** Generic + optional brand (no strength/form) — cart, stock errors, receipts. */
+export function formatProductGenericBrandLabel(
+  generic_name: string,
+  brand_name: string | null | undefined,
+): string {
+  const g = generic_name.trim();
+  const b = brand_name?.trim();
+  return b ? `${g} (${b})` : g;
+}
+
 export function formatProductOptionLabel(p: ProductCatalogRow): string {
-  const base = p.brand_name ? `${p.generic_name} (${p.brand_name})` : p.generic_name;
+  const base = formatProductGenericBrandLabel(p.generic_name, p.brand_name);
   const extra = [p.strength, p.dosage_form].filter(Boolean).join(" · ");
   return extra ? `${base} — ${extra}` : base;
+}
+
+async function fetchProductDisplayLabel(
+  productId: string,
+  db: SupabaseClient = supabase,
+): Promise<string> {
+  const { data, error } = await db
+    .from(PRODUCTS_TABLE)
+    .select("generic_name, brand_name")
+    .eq("id", productId.trim())
+    .maybeSingle();
+  if (error || !data) return "this product";
+  const row = data as { generic_name: string; brand_name: string | null };
+  return formatProductGenericBrandLabel(row.generic_name, row.brand_name);
 }
 
 /** Full product text for medication picker dropdown (name, strength, form, description). */
@@ -565,9 +589,10 @@ export async function validateStockForCheckout(
     const { qty, error } = await getProductStockOnHand(line.productId, db);
     if (error) return { ok: false, error };
     if (qty + 1e-9 < line.quantity) {
+      const label = await fetchProductDisplayLabel(line.productId, db);
       return {
         ok: false,
-        error: `Insufficient stock for a product (need ${line.quantity}, have ${qty}).`,
+        error: `Insufficient stock for ${label} (need ${line.quantity}, have ${qty}).`,
       };
     }
   }
@@ -1228,7 +1253,11 @@ async function decrementStockFefo(
   }
 
   if (remaining > 0.0001) {
-    return { error: `Insufficient stock for product (short by ${remaining}).` };
+    const label = await fetchProductDisplayLabel(productId, db);
+    const have = qtyNeeded - remaining;
+    return {
+      error: `Insufficient stock for ${label} (need ${qtyNeeded}, have ${have}).`,
+    };
   }
   return { error: null };
 }

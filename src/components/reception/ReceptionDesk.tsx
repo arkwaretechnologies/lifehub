@@ -40,6 +40,7 @@ import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import MeetingRoomOutlinedIcon from "@mui/icons-material/MeetingRoomOutlined";
 import PlayCircleOutlineIcon from "@mui/icons-material/PlayCircleOutline";
+import ReplayIcon from "@mui/icons-material/Replay";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import SearchIcon from "@mui/icons-material/Search";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
@@ -52,6 +53,7 @@ import {
   parseReceptionRouteFromNotes,
   patchReceptionQueueTicket,
   prepareReceptionLabCheckinFromApi,
+  recallQueueTicketAnnounce,
   searchPatientsFromApi,
   subscribeQueueTickets,
   type QueueCounterRow,
@@ -61,6 +63,7 @@ import {
   type QueueTicketStatus,
   type ReceptionTriageRoute,
 } from "@/lib/queueReception";
+import { canRecallQueueTicket, recallQueueButtonTooltip } from "@/lib/queueRecall";
 import PatientAddDialog from "@/components/patient/PatientAddDialog";
 import { LabOrderCatalogSections } from "@/components/laboratory/LabOrderCatalogSections";
 import {
@@ -205,6 +208,7 @@ function CounterQueueCard({
   tickets,
   priorityLabel,
   onCall,
+  onRecall,
   onOpenTriage,
   onComplete,
   busyId,
@@ -214,6 +218,7 @@ function CounterQueueCard({
   tickets: QueueTicketRow[];
   priorityLabel: (priorityId: number) => string;
   onCall: (t: QueueTicketRow) => void;
+  onRecall: (t: QueueTicketRow) => void;
   onOpenTriage: (t: QueueTicketRow) => void;
   onComplete: (t: QueueTicketRow) => void;
   busyId: string | null;
@@ -316,6 +321,23 @@ function CounterQueueCard({
                     <Chip size="small" variant="outlined" label={priorityLabel(t.priority_id)} />
                     <Box sx={{ flex: 1, minWidth: 120 }} />
                     <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                      {canRecallQueueTicket(t.status) ? (
+                        <Tooltip title={recallQueueButtonTooltip(t.status)}>
+                          <span>
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              color="secondary"
+                              startIcon={<ReplayIcon />}
+                              onClick={() => onRecall(t)}
+                              disabled={busyId !== null}
+                              sx={{ textTransform: "none", fontWeight: 700 }}
+                            >
+                              Recall
+                            </Button>
+                          </span>
+                        </Tooltip>
+                      ) : null}
                       {t.status === "Called" ? (
                         <Button
                           size="small"
@@ -665,6 +687,18 @@ export default function ReceptionDesk() {
         const { error } = await patchReceptionQueueTicket(t.id, "call");
         if (error) setLoadError(error);
         await refresh();
+      } finally {
+        setBusyId(null);
+      }
+    })();
+  };
+
+  const handleRecall = (t: QueueTicketRow) => {
+    void (async () => {
+      setBusyId(t.id);
+      try {
+        const { error } = await recallQueueTicketAnnounce(t.id);
+        if (error) setLoadError(error);
       } finally {
         setBusyId(null);
       }
@@ -1616,6 +1650,7 @@ export default function ReceptionDesk() {
             tickets={ticketsByCounter.get(String(entranceCounter.id)) ?? []}
             priorityLabel={priorityLabel}
             onCall={handleCall}
+            onRecall={handleRecall}
             onOpenTriage={openTriage}
             onComplete={handleComplete}
             busyId={busyId}

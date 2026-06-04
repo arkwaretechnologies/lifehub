@@ -161,7 +161,12 @@ export function PaymentModal(props: {
     return pctNum(selectedDiscount?.discount_pct);
   }, [discountTypeId, otherDiscountPct, selectedDiscount?.discount_pct]);
 
-  const showDiscountSection = !isRefund && (discountTypes?.length ?? 0) > 0;
+  const discountableDue = moneyNum(discountableSubtotal ?? totalDue);
+  const discountAppliesToSubset =
+    discountableSubtotal != null && moneyNum(totalDue) > discountableDue + 0.005;
+
+  const showDiscountSection =
+    !isRefund && (discountTypes?.length ?? 0) > 0 && discountableDue > 0.005;
 
   const effectiveDiscountMode = useMemo(() => {
     // If a discount type is selected from DB, it’s always percentage-based.
@@ -190,7 +195,7 @@ export function PaymentModal(props: {
   }, [discountTypeId, selectedDiscount]);
 
   const discountAmount = useMemo(() => {
-    const due = moneyNum(discountableSubtotal ?? totalDue);
+    const due = discountableDue;
     if (due <= 0) return 0;
     if (selectedDiscount || effectiveDiscountMode === "pct") {
       const pct = Number.isFinite(effectiveDiscountPct) ? Math.max(0, effectiveDiscountPct) : 0;
@@ -199,13 +204,12 @@ export function PaymentModal(props: {
     }
     // amount mode
     return Math.min(due, otherDiscountAmount);
-  }, [discountableSubtotal, effectiveDiscountMode, effectiveDiscountPct, otherDiscountAmount, selectedDiscount, totalDue]);
+  }, [discountableDue, effectiveDiscountMode, effectiveDiscountPct, otherDiscountAmount, selectedDiscount]);
 
   const totalAfterDiscount = useMemo(() => {
     if (isRefund) return moneyNum(totalDue);
-    const base = moneyNum(discountableSubtotal ?? totalDue);
-    return Math.max(0, roundMoney2(Math.max(0, base - discountAmount) + moneyNum(fixedAdjustments)));
-  }, [discountAmount, discountableSubtotal, fixedAdjustments, isRefund, totalDue]);
+    return Math.max(0, roundMoney2(moneyNum(totalDue) - discountAmount));
+  }, [discountAmount, isRefund, totalDue]);
 
   const amountTendered = useMemo(() => {
     const t = amountTenderedRaw.trim();
@@ -524,6 +528,12 @@ export function PaymentModal(props: {
               sx={fieldSx}
             />
           </Box>
+        ) : null}
+
+        {showDiscountSection && discountAppliesToSubset ? (
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: -1, mb: 2 }}>
+            Discount applies to laboratory and imaging only (not consultation charges).
+          </Typography>
         ) : null}
 
         {!isRefund && cashMode ? (

@@ -658,6 +658,12 @@ export default function CashierEncounterDetail() {
     [feeTotalDue, labTotalDue, imagingTotalDue],
   );
 
+  /** Cashier discount applies to open laboratory + imaging lines only (not consultation / physician fees). */
+  const diagnosticDiscountableSubtotal = useMemo(
+    () => roundMoney2(labTotalDue + imagingTotalDue),
+    [labTotalDue, imagingTotalDue],
+  );
+
   const amendmentDueTotal = useMemo(() => sumPositiveAmendmentDue(pendingAmendments), [pendingAmendments]);
 
   /** One line per category in Visit totals (open orders + paid-order add-ons, no duplicate rows). */
@@ -862,15 +868,17 @@ export default function CashierEncounterDetail() {
         };
       });
 
-      const grandSubtotal =
-        feeSaleSubtotals.reduce((s, r) => s + r.subtotal, 0) +
+      const diagnosticDiscountBase =
         labSubtotals.reduce((s, r) => s + r.subtotal, 0) +
         imagingSubtotals.reduce((s, r) => s + r.subtotal, 0);
 
       const totalDiscount =
         args.discountMode === "amount"
-          ? Math.min(Math.max(0, args.discountAmount), grandSubtotal)
-          : Math.min(Math.max(0, (grandSubtotal * Math.max(0, args.discountPct)) / 100), grandSubtotal);
+          ? Math.min(Math.max(0, args.discountAmount), diagnosticDiscountBase)
+          : Math.min(
+              Math.max(0, (diagnosticDiscountBase * Math.max(0, args.discountPct)) / 100),
+              diagnosticDiscountBase,
+            );
 
       function allocateDiscount(subtotals: number[], total: number): number[] {
         const safeSubs = subtotals.map((n) => (Number.isFinite(n) && n > 0 ? n : 0));
@@ -889,30 +897,22 @@ export default function CashierEncounterDetail() {
         return cents.map((c, i) => Math.min(c / 100, safeSubs[i]));
       }
 
-      const combinedDiscounts = allocateDiscount(
-        [
-          ...feeSaleSubtotals.map((s) => s.subtotal),
-          ...labSubtotals.map((s) => s.subtotal),
-          ...imagingSubtotals.map((s) => s.subtotal),
-        ],
+      const diagnosticDiscounts = allocateDiscount(
+        [...labSubtotals.map((s) => s.subtotal), ...imagingSubtotals.map((s) => s.subtotal)],
         totalDiscount,
       );
-      const feeDiscounts = combinedDiscounts.slice(0, feeSaleSubtotals.length);
-      const labDiscounts = combinedDiscounts.slice(
-        feeSaleSubtotals.length,
-        feeSaleSubtotals.length + labSubtotals.length,
-      );
-      const imagingDiscounts = combinedDiscounts.slice(feeSaleSubtotals.length + labSubtotals.length);
+      const feeDiscounts = feeSaleSubtotals.map(() => 0);
+      const labDiscounts = diagnosticDiscounts.slice(0, labSubtotals.length);
+      const imagingDiscounts = diagnosticDiscounts.slice(labSubtotals.length);
 
-      // Update physician fee sales with allocated discounts
       if (feeSales.length > 0) {
         const markRes2 = await markPhysicianFeeSalesPaid({
-          sales: feeSaleSubtotals.map((s, idx) => ({ ...s, discountAmount: feeDiscounts[idx] ?? 0 })),
+          sales: feeSaleSubtotals.map((s) => ({ ...s, discountAmount: 0 })),
           orNumber: args.orNumber,
           paymentMethodId: args.paymentMethod.id,
           amountTendered: args.amountTendered,
           changeAmount: args.changeAmount,
-          discountTypeId: args.discountMode === "pct" ? args.discountType?.id ?? null : null,
+          discountTypeId: null,
         });
         if (markRes2.error) throw new Error(markRes2.error);
       }
@@ -1088,7 +1088,16 @@ export default function CashierEncounterDetail() {
         discountAmount: totalDiscount,
         totalDue: isRefundCheckout
           ? checkoutAbs
-          : Math.max(0, grandSubtotal - totalDiscount + freshLabPortion + freshImgPortion - labTotalDue - imagingTotalDue),
+          : Math.max(
+              0,
+              feeTotalDue +
+                diagnosticDiscountBase -
+                totalDiscount +
+                freshLabPortion +
+                freshImgPortion -
+                labTotalDue -
+                imagingTotalDue,
+            ),
         amountTendered: args.amountTendered,
         changeAmount: args.changeAmount,
         openCashDrawer: isCashPaymentMethod(args.paymentMethod),
@@ -1283,7 +1292,7 @@ export default function CashierEncounterDetail() {
         }}
         onClose={() => setPayOpen(false)}
         totalDue={checkoutAbs}
-        discountableSubtotal={unpaidNet > 0.005 ? unpaidNet : undefined}
+        discountableSubtotal={!isRefundCheckout ? diagnosticDiscountableSubtotal : undefined}
         fixedAdjustments={isRefundCheckout ? 0 : unpaidNet > 0.005 ? diagnosticCheckoutPortion : 0}
         summaryRows={checkoutSummaryRows}
         labQueuePrioritySelect={

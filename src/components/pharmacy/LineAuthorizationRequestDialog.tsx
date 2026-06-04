@@ -73,7 +73,7 @@ export default function LineAuthorizationRequestDialog({
             <FormControlLabel
               value="quantity_change"
               control={<Radio />}
-              label="Change quantity (you will enter the new qty after approval)"
+              label="Change quantity (approver confirms; cart updates automatically)"
             />
           </RadioGroup>
         </FormControl>

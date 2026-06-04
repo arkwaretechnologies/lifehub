@@ -15,9 +15,37 @@ export type CartLineSnapshot = {
   generic_name: string;
   brand_name?: string | null;
   unit_price: number;
+  /** Qty on cart when the request was submitted. */
   qty: number;
+  /** Target qty after approval (set quantity / +/-). */
+  requested_qty?: number | null;
   prescription_item_id?: string | null;
 };
+
+/** Quantity to apply when a `quantity_change` request is approved. */
+export function resolveApprovedCartQuantity(row: PharmacyCartLineRequestRow): number | null {
+  if (row.action !== "quantity_change") return null;
+
+  const snap = row.line_snapshot;
+  const fromSnap = snap?.requested_qty;
+  if (typeof fromSnap === "number" && Number.isFinite(fromSnap) && fromSnap >= 1) {
+    return Math.round(fromSnap);
+  }
+
+  const note = row.note ?? "";
+  const setMatch = note.match(/set quantity to\s+(\d+)/i);
+  if (setMatch) {
+    const n = Number.parseInt(setMatch[1] ?? "", 10);
+    if (Number.isFinite(n) && n >= 1) return n;
+  }
+
+  const snapQty = Math.round(Number(snap?.qty) || 0);
+  if (snapQty < 1) return null;
+  if (/increase quantity/i.test(note)) return snapQty + 1;
+  if (/decrease quantity/i.test(note)) return Math.max(1, snapQty - 1);
+
+  return null;
+}
 
 export type PharmacyCartLineRequestRow = {
   id: string;
@@ -41,6 +69,8 @@ export type NotificationRow = {
   payload: { requestId?: string; queueTicketId?: string; labRequestId?: string; href?: string };
   read_at: string | null;
   created_at: string;
+  /** Set by GET /api/notifications for pharmacy line requests (pending → show Approve/Reject). */
+  cartLineRequestStatus?: CartLineRequestStatus | null;
 };
 
 export const NOTIFICATION_TYPE_PHARMACY_CART_LINE = "pharmacy_cart_line_request" as const;

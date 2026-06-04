@@ -16,11 +16,13 @@ import {
 } from "@mui/material";
 import { verifySupervisorApi } from "@/lib/pharmacyCartLineRequests";
 
-export type SupervisorCartAction = "increment" | "decrement" | "delete";
+export type SupervisorCartAction = "increment" | "decrement" | "delete" | "set_quantity";
 
 type Props = {
   open: boolean;
   action: SupervisorCartAction;
+  /** When action is `set_quantity`, shown in the authorization prompt. */
+  targetQty?: number;
   productLabel: string;
   onClose: () => void;
   onVerified: (displayName: string) => void;
@@ -31,11 +33,19 @@ type Props = {
   container?: () => HTMLElement | null;
 };
 
-const ACTION_LABEL: Record<SupervisorCartAction, string> = {
+const ACTION_LABEL: Record<Exclude<SupervisorCartAction, "set_quantity">, string> = {
   increment: "increase quantity",
   decrement: "decrease quantity",
   delete: "remove this line",
 };
+
+function describeSupervisorAction(action: SupervisorCartAction, targetQty?: number): string {
+  if (action === "set_quantity" && targetQty != null && targetQty >= 1) {
+    return `set quantity to ${targetQty}`;
+  }
+  if (action === "set_quantity") return "change quantity";
+  return ACTION_LABEL[action];
+}
 
 /** Outlined fields: stable label + vertically centered input (matches product management forms). */
 const SUPERVISOR_FIELD_SX = {
@@ -62,6 +72,7 @@ const SUPERVISOR_FIELD_SX = {
 export default function SupervisorPasswordDialog({
   open,
   action,
+  targetQty,
   productLabel,
   onClose,
   onVerified,
@@ -109,7 +120,7 @@ export default function SupervisorPasswordDialog({
       <DialogTitle>Supervisor authorization</DialogTitle>
       <DialogContent sx={{ pt: 1 }}>
         <Alert severity="info" sx={{ mb: 2 }}>
-          To {ACTION_LABEL[action]} for <strong>{productLabel}</strong>, have a supervisor sign in here
+          To {describeSupervisorAction(action, targetQty)} for <strong>{productLabel}</strong>, have a supervisor sign in here
           or send a line authorization request to an approver.
         </Alert>
         {err && (

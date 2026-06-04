@@ -31,7 +31,9 @@ function isValidSnapshot(s: unknown): s is CartLineSnapshot {
     Number.isFinite(o.unit_price) &&
     typeof o.qty === "number" &&
     Number.isFinite(o.qty) &&
-    o.qty >= 1
+    o.qty >= 1 &&
+    (o.requested_qty == null ||
+      (typeof o.requested_qty === "number" && Number.isFinite(o.requested_qty) && o.requested_qty >= 1))
   );
 }
 

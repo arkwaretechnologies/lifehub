@@ -7,6 +7,7 @@ import {
   parseActiveDeptFromNotes,
 } from "@/lib/queueActiveDept";
 import {
+  adminBumpTicketCalledAt,
   adminCompleteConsultationCheckin,
   adminPrepareLaboratoryCheckin,
   adminUpdateTicketStatus,
@@ -179,6 +180,10 @@ export async function PATCH(req: Request) {
         .maybeSingle();
       const cn = ctr as { name?: string | null; code?: string | null } | null;
       counterName = (cn?.name ?? cn?.code ?? "").trim() || null;
+    }
+    const bump = await adminBumpTicketCalledAt(ticketId);
+    if (bump.error) {
+      return NextResponse.json({ error: bump.error }, { status: 500 });
     }
     return NextResponse.json({ ok: true, queueDisplay, patientName, counterName });
   }

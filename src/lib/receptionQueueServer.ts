@@ -260,6 +260,20 @@ export async function adminUpdateTicketStatus(
   return { error: error?.message ?? null };
 }
 
+/** Recall: refresh `called_at` so queue TV apps re-announce without changing status. */
+export async function adminBumpTicketCalledAt(ticketId: string): Promise<{ error: string | null }> {
+  const admin = queueAdminClient();
+  if (!admin) {
+    return { error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." };
+  }
+  const now = new Date().toISOString();
+  const { error } = await admin
+    .from("queue_tickets")
+    .update({ called_at: now, updated_at: now })
+    .eq("id", ticketId);
+  return { error: error?.message ?? null };
+}
+
 export type CallQueueForEncounterResult = {
   error: string | null;
   queueDisplay?: string;

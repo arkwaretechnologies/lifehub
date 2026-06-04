@@ -93,17 +93,25 @@ export async function rejectCartLineRequestApi(
   return { request: json.request, error: null };
 }
 
-export function cartLineToSnapshot(line: {
-  product: { id: string; generic_name: string; brand_name?: string | null; unit_price: number };
-  qty: number;
-  prescriptionItemId?: string | null;
-}): CartLineSnapshot {
+export function cartLineToSnapshot(
+  line: {
+    product: { id: string; generic_name: string; brand_name?: string | null; unit_price: number };
+    qty: number;
+    prescriptionItemId?: string | null;
+  },
+  requestedQty?: number,
+): CartLineSnapshot {
+  const requested_qty =
+    requestedQty != null && Number.isFinite(requestedQty) && requestedQty >= 1
+      ? Math.round(requestedQty)
+      : undefined;
   return {
     product_id: line.product.id,
     generic_name: line.product.generic_name,
     brand_name: line.product.brand_name ?? null,
     unit_price: line.product.unit_price,
     qty: line.qty,
+    requested_qty,
     prescription_item_id: line.prescriptionItemId ?? null,
   };
 }

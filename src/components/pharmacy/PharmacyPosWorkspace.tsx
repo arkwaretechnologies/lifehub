@@ -108,7 +108,10 @@ import {
   subscribeCartLineRequestsForUser,
   type PharmacyCartLineRequestRow,
 } from "@/lib/pharmacyCartLineRequests";
-import type { CartLineRequestAction } from "@/lib/pharmacyLineRequestServer";
+import {
+  resolveApprovedCartQuantity,
+  type CartLineRequestAction,
+} from "@/lib/pharmacyLineRequestServer";
 
 type CartLine = {
   key: string;
@@ -363,6 +366,7 @@ export default function PharmacyPosWorkspace() {
   const [supervisorDialog, setSupervisorDialog] = useState<{
     action: SupervisorCartAction;
     line: CartLine;
+    targetQty?: number;
   } | null>(null);
   const [supervisorRequestBusy, setSupervisorRequestBusy] = useState(false);
   const [supervisorRequestErr, setSupervisorRequestErr] = useState<string | null>(null);
@@ -375,9 +379,12 @@ export default function PharmacyPosWorkspace() {
     Record<string, { requestId: string; action: CartLineRequestAction }>
   >({});
   const [waitRequest, setWaitRequest] = useState<PharmacyCartLineRequestRow | null>(null);
-  const [approvedQtyLineKey, setApprovedQtyLineKey] = useState<string | null>(null);
-  const [approvedQtyDraft, setApprovedQtyDraft] = useState("1");
-  const [approvedQtyErr, setApprovedQtyErr] = useState<string | null>(null);
+  /** Tap cart qty to edit with numpad (then supervisor gate if changed). */
+  const [editCartQtyLine, setEditCartQtyLine] = useState<CartLine | null>(null);
+  const [editCartQtyDraft, setEditCartQtyDraft] = useState("1");
+  const [editCartQtyErr, setEditCartQtyErr] = useState<string | null>(null);
+  const editCartQtyInputRef = useRef<HTMLInputElement | null>(null);
+  const editCartQtyFreshRef = useRef(true);
 
   const searchRef = useRef<HTMLInputElement>(null);
   const posRootRef = useRef<HTMLDivElement>(null);
@@ -670,10 +677,17 @@ export default function PharmacyPosWorkspace() {
   }, []);
 
   const applySupervisorCartAction = useCallback(
-    (line: CartLine, action: SupervisorCartAction) => {
+    (line: CartLine, action: SupervisorCartAction, targetQty?: number) => {
       if (action === "delete") {
         setCart((c) => c.filter((x) => x.key !== line.key));
         setPosInfo(`Removed ${cartLineLabel(line)} from cart.`);
+        return;
+      }
+      if (action === "set_quantity" && targetQty != null && targetQty >= 1) {
+        setCart((c) =>
+          c.map((x) => (x.key === line.key ? { ...x, qty: targetQty } : x)),
+        );
+        setPosInfo(`Quantity set to ${targetQty} for ${cartLineLabel(line)}.`);
         return;
       }
       if (action === "increment") {
@@ -692,10 +706,10 @@ export default function PharmacyPosWorkspace() {
   );
 
   const openSupervisorForCart = useCallback(
-    (line: CartLine, action: SupervisorCartAction) => {
+    (line: CartLine, action: SupervisorCartAction, targetQty?: number) => {
       if (pendingByLineKey[line.key]) return;
       setSupervisorRequestErr(null);
-      setSupervisorDialog({ action, line });
+      setSupervisorDialog({ action, line, targetQty });
     },
     [pendingByLineKey],
   );
@@ -711,11 +725,12 @@ export default function PharmacyPosWorkspace() {
       line: CartLine,
       action: CartLineRequestAction,
       note?: string,
+      requestedQty?: number,
     ): Promise<{ ok: boolean; error?: string }> => {
       const { request, error } = await createCartLineRequestApi({
         action,
         cart_line_key: line.key,
-        line_snapshot: cartLineToSnapshot(line),
+        line_snapshot: cartLineToSnapshot(line, requestedQty),
         note: note || undefined,
       });
       if (error || !request) {
@@ -734,10 +749,10 @@ export default function PharmacyPosWorkspace() {
 
   const handleSupervisorVerified = useCallback(() => {
     if (!supervisorDialog) return;
-    const { line, action } = supervisorDialog;
+    const { line, action, targetQty } = supervisorDialog;
     setSupervisorDialog(null);
     setSupervisorRequestErr(null);
-    applySupervisorCartAction(line, action);
+    applySupervisorCartAction(line, action, targetQty);
   }, [supervisorDialog, applySupervisorCartAction]);
 
   const handleSupervisorRequestApproval = useCallback(async () => {
@@ -747,12 +762,22 @@ export default function PharmacyPosWorkspace() {
     setSupervisorRequestErr(null);
     const requestAction = supervisorActionToRequestAction(action);
     const intentNote =
-      action === "increment"
-        ? "Requested: increase quantity"
-        : action === "decrement"
-          ? "Requested: decrease quantity"
-          : "Requested: remove line";
-    const { ok, error } = await submitCartLineRequest(line, requestAction, intentNote);
+      action === "set_quantity" && supervisorDialog.targetQty != null
+        ? `Requested: set quantity to ${supervisorDialog.targetQty}`
+        : action === "increment"
+          ? "Requested: increase quantity"
+          : action === "decrement"
+            ? "Requested: decrease quantity"
+            : "Requested: remove line";
+    const requestedQty =
+      action === "set_quantity" && supervisorDialog.targetQty != null
+        ? supervisorDialog.targetQty
+        : action === "increment"
+          ? line.qty + 1
+          : action === "decrement"
+            ? Math.max(1, line.qty - 1)
+            : undefined;
+    const { ok, error } = await submitCartLineRequest(line, requestAction, intentNote, requestedQty);
     setSupervisorRequestBusy(false);
     if (!ok) {
       setSupervisorRequestErr(error ?? "Failed to submit request.");
@@ -805,15 +830,15 @@ export default function PharmacyPosWorkspace() {
       return;
     }
 
-    const snapQty = row.line_snapshot?.qty;
-    const seedQty =
-      typeof snapQty === "number" && Number.isFinite(snapQty) && snapQty >= 1
-        ? Math.round(snapQty)
-        : 1;
-    setApprovedQtyLineKey(key);
-    setApprovedQtyDraft(String(seedQty));
-    setApprovedQtyErr(null);
-    setPosInfo("Line authorization approved — enter the new quantity.");
+    const newQty = resolveApprovedCartQuantity(row);
+    if (newQty == null) {
+      setCheckoutErr("Line authorization approved but quantity could not be determined — adjust the line manually.");
+      return;
+    }
+    setCart((c) =>
+      c.map((x) => (x.key === key ? { ...x, qty: newQty } : x)),
+    );
+    setPosInfo(`Line authorization approved — quantity set to ${newQty}.`);
   }, []);
 
   const sessionUserId =
@@ -847,22 +872,6 @@ export default function PharmacyPosWorkspace() {
       clearInterval(timer);
     };
   }, [waitRequest?.id, handleResolvedRequest]);
-
-  const confirmApprovedNewQty = useCallback(() => {
-    if (!approvedQtyLineKey) return;
-    const raw = approvedQtyDraft.trim().replace(/\D/g, "");
-    const n = Math.round(Number.parseInt(raw || "0", 10));
-    if (!Number.isFinite(n) || n < 1) {
-      setApprovedQtyErr("Enter a quantity of 1 or more.");
-      return;
-    }
-    setCart((c) =>
-      c.map((x) => (x.key === approvedQtyLineKey ? { ...x, qty: n } : x)),
-    );
-    setApprovedQtyLineKey(null);
-    setApprovedQtyErr(null);
-    setPosInfo(`Quantity updated to ${n}.`);
-  }, [approvedQtyLineKey, approvedQtyDraft]);
 
   const payChangeDue = useMemo(() => {
     const tendered = parseMoneyAmount(amountTendered);
@@ -1024,6 +1033,88 @@ export default function PharmacyPosWorkspace() {
       }
     });
   }, []);
+
+  const openEditCartQty = useCallback((line: CartLine) => {
+    if (pendingByLineKey[line.key]) return;
+    setEditCartQtyErr(null);
+    setEditCartQtyLine(line);
+    setEditCartQtyDraft(String(line.qty));
+    editCartQtyFreshRef.current = true;
+  }, [pendingByLineKey]);
+
+  const closeEditCartQty = useCallback(() => {
+    setEditCartQtyLine(null);
+    setEditCartQtyErr(null);
+  }, []);
+
+  useEffect(() => {
+    if (!editCartQtyLine) return;
+    const id = window.requestAnimationFrame(() => {
+      editCartQtyInputRef.current?.select();
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [editCartQtyLine]);
+
+  const editCartQtyNumpadDigit = useCallback((digit: string) => {
+    if (!/^\d$/.test(digit)) return;
+    setEditCartQtyErr(null);
+    setEditCartQtyDraft((prev) => {
+      if (editCartQtyFreshRef.current) {
+        editCartQtyFreshRef.current = false;
+        return digit;
+      }
+      const concat = `${prev}${digit}`.replace(/\D/g, "").slice(0, 6);
+      if (concat === "") return "1";
+      const n = Number.parseInt(concat, 10);
+      if (!Number.isFinite(n) || n < 1) return prev;
+      return String(Math.min(n, 999_999));
+    });
+  }, []);
+
+  const editCartQtyNumpadBackspace = useCallback(() => {
+    setEditCartQtyErr(null);
+    setEditCartQtyDraft((prev) => {
+      if (prev.length <= 1) {
+        editCartQtyFreshRef.current = true;
+        return "1";
+      }
+      const next = prev.slice(0, -1).replace(/\D/g, "");
+      if (next === "") {
+        editCartQtyFreshRef.current = true;
+        return "1";
+      }
+      const n = Number.parseInt(next, 10);
+      if (!Number.isFinite(n) || n < 1) {
+        editCartQtyFreshRef.current = true;
+        return "1";
+      }
+      return String(n);
+    });
+  }, []);
+
+  const editCartQtyNumpadClear = useCallback(() => {
+    setEditCartQtyErr(null);
+    editCartQtyFreshRef.current = true;
+    setEditCartQtyDraft("1");
+    window.requestAnimationFrame(() => editCartQtyInputRef.current?.select());
+  }, []);
+
+  const confirmEditCartQty = useCallback(() => {
+    setEditCartQtyErr(null);
+    if (!editCartQtyLine) return;
+    const n = Math.round(Number.parseInt(editCartQtyDraft.replace(/\D/g, ""), 10));
+    if (!Number.isFinite(n) || n < 1) {
+      setEditCartQtyErr("Enter a whole number of at least 1.");
+      return;
+    }
+    if (n === editCartQtyLine.qty) {
+      closeEditCartQty();
+      return;
+    }
+    const line = editCartQtyLine;
+    closeEditCartQty();
+    openSupervisorForCart(line, "set_quantity", n);
+  }, [editCartQtyLine, editCartQtyDraft, closeEditCartQty, openSupervisorForCart]);
 
   const confirmAddLineFromModal = useCallback(() => {
     setAddLineQtyErr(null);
@@ -1998,9 +2089,25 @@ export default function PharmacyPosWorkspace() {
                     >
                       <RemoveIcon fontSize="small" />
                     </IconButton>
-                    <Typography variant="body2" sx={{ minWidth: 28, textAlign: "center" }}>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      disabled={isPending}
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        openEditCartQty(line);
+                      }}
+                      sx={{
+                        minWidth: 40,
+                        px: 1,
+                        fontWeight: 800,
+                        fontVariantNumeric: "tabular-nums",
+                        lineHeight: 1.2,
+                      }}
+                      aria-label={`Edit quantity for ${cartLineLabel(line)}`}
+                    >
                       {line.qty}
-                    </Typography>
+                    </Button>
                     <IconButton
                       size="small"
                       disabled={isPending}
@@ -3434,9 +3541,142 @@ export default function PharmacyPosWorkspace() {
         </DialogActions>
       </Dialog>
 
+      <Dialog
+        container={posDialogContainer}
+        open={editCartQtyLine != null}
+        onClose={closeEditCartQty}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Edit quantity</DialogTitle>
+        <DialogContent>
+          {editCartQtyLine && (
+            <Stack spacing={2.5} sx={{ mt: 0.5 }}>
+              <Typography variant="body2" fontWeight={700}>
+                {cartLineLabel(editCartQtyLine)}
+              </Typography>
+              <TextField
+                inputRef={editCartQtyInputRef}
+                label="Quantity"
+                value={editCartQtyDraft}
+                onChange={(e) => {
+                  setEditCartQtyErr(null);
+                  editCartQtyFreshRef.current = false;
+                  const raw = e.target.value.replace(/\D/g, "").slice(0, 6);
+                  if (raw === "") {
+                    setEditCartQtyDraft("");
+                    return;
+                  }
+                  const parsed = Number.parseInt(raw, 10);
+                  if (!Number.isFinite(parsed) || parsed < 1) {
+                    setEditCartQtyDraft("");
+                    return;
+                  }
+                  setEditCartQtyDraft(String(Math.min(parsed, 999_999)));
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    confirmEditCartQty();
+                  }
+                }}
+                onClick={() => {
+                  editCartQtyFreshRef.current = false;
+                }}
+                fullWidth
+                autoFocus
+                inputProps={{ inputMode: "numeric", min: 1, "aria-label": "Cart line quantity" }}
+                error={Boolean(editCartQtyErr)}
+                helperText={editCartQtyErr ?? "Type a number or use the keypad — first key replaces the current qty."}
+                InputLabelProps={{ shrink: true }}
+                sx={{
+                  maxWidth: 360,
+                  alignSelf: "center",
+                  width: "100%",
+                  "& .MuiOutlinedInput-root": { borderRadius: 2 },
+                  "& .MuiOutlinedInput-input": {
+                    fontSize: "1.5rem",
+                    fontWeight: 800,
+                    textAlign: "center",
+                    py: 1.25,
+                  },
+                }}
+              />
+              <Box
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                  gap: 1,
+                  maxWidth: 360,
+                  width: "100%",
+                  alignSelf: "center",
+                }}
+              >
+                {(["7", "8", "9", "4", "5", "6", "1", "2", "3"] as const).map((d) => (
+                  <Button
+                    key={d}
+                    variant="outlined"
+                    size="large"
+                    onClick={() => editCartQtyNumpadDigit(d)}
+                    sx={{
+                      minHeight: 52,
+                      fontSize: "1.35rem",
+                      fontWeight: 800,
+                      borderRadius: 2,
+                      bgcolor: "background.paper",
+                    }}
+                  >
+                    {d}
+                  </Button>
+                ))}
+                <Button
+                  variant="outlined"
+                  color="warning"
+                  size="large"
+                  onClick={editCartQtyNumpadClear}
+                  sx={{ minHeight: 52, fontWeight: 800, borderRadius: 2, bgcolor: "background.paper" }}
+                >
+                  Clear
+                </Button>
+                <Button
+                  variant="outlined"
+                  size="large"
+                  onClick={() => editCartQtyNumpadDigit("0")}
+                  sx={{
+                    minHeight: 52,
+                    fontSize: "1.35rem",
+                    fontWeight: 800,
+                    borderRadius: 2,
+                    bgcolor: "background.paper",
+                  }}
+                >
+                  0
+                </Button>
+                <Button
+                  variant="outlined"
+                  size="large"
+                  aria-label="Backspace quantity"
+                  onClick={editCartQtyNumpadBackspace}
+                  sx={{ minHeight: 52, borderRadius: 2, bgcolor: "background.paper" }}
+                >
+                  <BackspaceOutlinedIcon />
+                </Button>
+              </Box>
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2, pt: 0 }}>
+          <Button onClick={closeEditCartQty}>Cancel</Button>
+          <Button variant="contained" size="large" onClick={confirmEditCartQty}>
+            Apply
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <SupervisorPasswordDialog
         open={supervisorDialog != null}
         action={supervisorDialog?.action ?? "delete"}
+        targetQty={supervisorDialog?.targetQty}
         productLabel={supervisorDialog ? cartLineLabel(supervisorDialog.line) : ""}
         onClose={() => {
           setSupervisorDialog(null);
@@ -3492,44 +3732,6 @@ export default function PharmacyPosWorkspace() {
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        container={posDialogContainer}
-        open={approvedQtyLineKey != null}
-        maxWidth="xs"
-        fullWidth
-        onClose={() => setApprovedQtyLineKey(null)}
-      >
-        <DialogTitle>New quantity</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Authorization approved. Enter the new quantity for this line.
-          </Typography>
-          {approvedQtyErr && (
-            <Alert severity="error" sx={{ mb: 2 }}>
-              {approvedQtyErr}
-            </Alert>
-          )}
-          <TextField
-            label="Quantity"
-            fullWidth
-            value={approvedQtyDraft}
-            onChange={(e) => {
-              setApprovedQtyErr(null);
-              setApprovedQtyDraft(e.target.value.replace(/\D/g, "").slice(0, 6));
-            }}
-            inputProps={{ inputMode: "numeric" }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") confirmApprovedNewQty();
-            }}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setApprovedQtyLineKey(null)}>Cancel</Button>
-          <Button variant="contained" onClick={confirmApprovedNewQty}>
-            Apply
-          </Button>
-        </DialogActions>
-      </Dialog>
     </Box>
   );
 }

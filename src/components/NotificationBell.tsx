@@ -56,7 +56,7 @@ export default function NotificationBell() {
   /** null = first fetch (no chime); then tracks unread ids we've already announced. */
   const seenUnreadIdsRef = useRef<Set<string> | null>(null);
 
-  const markAllRead = useCallback(async () => {
+  const markNotificationsSeen = useCallback(async () => {
     if (!canView || userId == null) return;
     await authenticatedFetch("/api/notifications/read-all", { method: "PATCH" });
   }, [canView, userId]);
@@ -167,7 +167,7 @@ export default function NotificationBell() {
           void resumeNotificationAudio();
           setAnchorEl(e.currentTarget);
           void (async () => {
-            await markAllRead();
+            await markNotificationsSeen();
             await load();
           })();
         }}
@@ -216,16 +216,28 @@ export default function NotificationBell() {
         ) : (
           <List dense disablePadding sx={{ overflow: "auto", maxHeight: 400 }}>
             {notifications.map((n) => {
-              const pharmacyRequestId =
-                n.type === NOTIFICATION_TYPE_PHARMACY_CART_LINE
-                  ? (n.payload?.requestId as string | undefined)
+              const pharmacyPayload =
+                n.type === NOTIFICATION_TYPE_PHARMACY_CART_LINE ? n.payload : undefined;
+              const pharmacyRequestIdRaw =
+                pharmacyPayload != null && typeof pharmacyPayload === "object"
+                  ? (pharmacyPayload as { requestId?: string; request_id?: string }).requestId ??
+                    (pharmacyPayload as { request_id?: string }).request_id
                   : undefined;
+              const pharmacyRequestId =
+                typeof pharmacyRequestIdRaw === "string" && pharmacyRequestIdRaw.trim().length > 0
+                  ? pharmacyRequestIdRaw.trim()
+                  : null;
               const labHref =
                 n.type === NOTIFICATION_TYPE_LAB_QUEUE_NEW
                   ? String((n.payload as { href?: string } | undefined)?.href ?? "/laboratory").trim() ||
                     "/laboratory"
                   : null;
               const busy = actionBusyId === n.id;
+              const pharmacyPending =
+                pharmacyRequestId != null &&
+                n.type === NOTIFICATION_TYPE_PHARMACY_CART_LINE &&
+                n.cartLineRequestStatus !== "approved" &&
+                n.cartLineRequestStatus !== "rejected";
               return (
                 <ListItem
                   key={n.id}
@@ -243,10 +255,7 @@ export default function NotificationBell() {
                     primaryTypographyProps={{ variant: "body2", fontWeight: 600 }}
                     secondaryTypographyProps={{ variant: "caption" }}
                   />
-                  {pharmacyRequestId &&
-                    n.type === NOTIFICATION_TYPE_PHARMACY_CART_LINE &&
-                    !n.read_at &&
-                    canPharmacy && (
+                  {pharmacyRequestId != null && pharmacyPending && canPharmacy && (
                     <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
                       <Button
                         size="small"

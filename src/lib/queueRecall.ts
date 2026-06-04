@@ -7,7 +7,7 @@ export function canRecallQueueTicket(status: QueueTicketStatus): boolean {
 }
 
 export function recallQueueButtonTooltip(status: QueueTicketStatus): string {
-  if (canRecallQueueTicket(status)) return "Re-announce queue number (no status change)";
+  if (canRecallQueueTicket(status)) return "Re-announce on queue displays (no status change)";
   if (status === "Waiting") return "Call the patient first";
   if (status === "Completed") return "Visit completed";
   return "Recall is only available after the patient has been called";

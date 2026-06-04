@@ -273,8 +273,7 @@ export type CompleteQueueForEncounterResult = {
 };
 
 /**
- * Appointments / physician: set today's Waiting doctor-queue ticket for this encounter to Called.
- * Authorizes via `encounters.physician_id`. Prefers tickets on counters whose `user_id` matches the physician.
+ * Appointments: set today's Waiting ticket to Called on a counter assigned to the user (`queue_counters.user_id`).
  */
 export async function adminCallQueueTicketForPhysicianEncounter(
   encounterTransIdRaw: string,
@@ -293,23 +292,6 @@ export async function adminCallQueueTicketForPhysicianEncounter(
     return { error: "Missing encounter id." };
   }
 
-  const { data: enc, error: encErr } = await admin
-    .from("encounters")
-    .select("trans_id, physician_id")
-    .eq("trans_id", encounterTransId)
-    .maybeSingle();
-
-  if (encErr) {
-    return { error: encErr.message };
-  }
-  if (!enc) {
-    return { error: "Encounter not found." };
-  }
-  const encPhysician = numericIdFromUnknown((enc as { physician_id?: unknown }).physician_id);
-  if (encPhysician !== physicianUserId) {
-    return { error: "This encounter is not assigned to your user account." };
-  }
-
   const today = queueTicketTodayIsoDate();
 
   const { data: counterRows, error: cErr } = await admin.from("queue_counters").select("id, user_id").eq("is_active", true);
@@ -325,6 +307,23 @@ export async function adminCallQueueTicketForPhysicianEncounter(
     }
   }
 
+  if (myCounterIds.length === 0) {
+    return { error: "No queue counter is assigned to your user account." };
+  }
+
+  const { data: enc, error: encErr } = await admin
+    .from("encounters")
+    .select("trans_id")
+    .eq("trans_id", encounterTransId)
+    .maybeSingle();
+
+  if (encErr) {
+    return { error: encErr.message };
+  }
+  if (!enc) {
+    return { error: "Encounter not found." };
+  }
+
   type TicketPick = {
     id: string;
     queue_display: string;
@@ -332,47 +331,24 @@ export async function adminCallQueueTicketForPhysicianEncounter(
     counter_id: string | number;
   };
 
-  let ticket: TicketPick | null = null;
+  const { data, error } = await admin
+    .from("queue_tickets")
+    .select("id, queue_display, patient_name, counter_id")
+    .eq("encounter_id", encounterTransId)
+    .eq("ticket_date", today)
+    .eq("status", "Waiting")
+    .in("counter_id", myCounterIds)
+    .order("issued_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
 
-  if (myCounterIds.length > 0) {
-    const { data, error } = await admin
-      .from("queue_tickets")
-      .select("id, queue_display, patient_name, counter_id")
-      .eq("encounter_id", encounterTransId)
-      .eq("ticket_date", today)
-      .eq("status", "Waiting")
-      .in("counter_id", myCounterIds)
-      .order("issued_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-    if (error) {
-      return { error: error.message };
-    }
-    if (data) {
-      ticket = data as TicketPick;
-    }
+  if (error) {
+    return { error: error.message };
   }
 
+  const ticket = data as TicketPick | null;
   if (!ticket) {
-    const { data, error } = await admin
-      .from("queue_tickets")
-      .select("id, queue_display, patient_name, counter_id")
-      .eq("encounter_id", encounterTransId)
-      .eq("ticket_date", today)
-      .eq("status", "Waiting")
-      .order("issued_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
-    if (error) {
-      return { error: error.message };
-    }
-    if (data) {
-      ticket = data as TicketPick;
-    }
-  }
-
-  if (!ticket) {
-    return { error: "No waiting queue ticket for this visit today." };
+    return { error: "No waiting queue ticket on your assigned counter for this visit today." };
   }
 
   const now = new Date().toISOString();

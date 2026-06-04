@@ -25,8 +25,12 @@ import {
 import Link from "next/link";
 import { useAuth } from "@/components/AuthProvider";
 import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
-import { numericSessionUserId } from "@/lib/sessionUserId";
-import { fetchEncountersForPhysician, type PhysicianAppointmentRow } from "@/lib/consultationData";
+import { numericIdFromUnknown, numericSessionUserId } from "@/lib/sessionUserId";
+import {
+  appointmentListRowKey,
+  fetchEncountersForPhysician,
+  type PhysicianAppointmentRow,
+} from "@/lib/consultationData";
 import {
   callQueueForEncounterFromApi,
   fetchReceptionQueueStateFromApi,
@@ -46,6 +50,7 @@ export default function AppointmentsPage() {
   const [listError, setListError] = useState("");
   const [callingTransId, setCallingTransId] = useState<string | null>(null);
   const [callError, setCallError] = useState("");
+  const [noAssignedCounter, setNoAssignedCounter] = useState(false);
 
   const waitingRows = useMemo(
     () => appointmentRows.filter((r) => r.hasWaitingQueueToday),
@@ -69,6 +74,7 @@ export default function AppointmentsPage() {
   const reloadEncounters = useCallback(async (): Promise<PhysicianAppointmentRow[]> => {
     if (physicianUserId == null) return [];
     const res = await fetchEncountersForPhysician(physicianUserId, { limit: APPOINTMENTS_ENCOUNTER_LIMIT });
+    setNoAssignedCounter(res.noAssignedCounter === true);
     if (!res.error) {
       setAppointmentRows(res.rows);
       return res.rows;
@@ -82,6 +88,7 @@ export default function AppointmentsPage() {
       setListLoading(false);
       setAppointmentRows([]);
       setListError("");
+      setNoAssignedCounter(false);
       return;
     }
     let cancelled = false;
@@ -90,11 +97,13 @@ export default function AppointmentsPage() {
     void fetchEncountersForPhysician(physicianUserId, { limit: APPOINTMENTS_ENCOUNTER_LIMIT }).then((res) => {
       if (cancelled) return;
       setListLoading(false);
+      setNoAssignedCounter(res.noAssignedCounter === true);
       if (res.error) {
         setListError(res.error);
         setAppointmentRows([]);
         return;
       }
+      setListError("");
       setAppointmentRows(res.rows);
     });
     return () => {
@@ -114,9 +123,11 @@ export default function AppointmentsPage() {
       if (cancelled) return;
       const idSet = new Set<string>();
       for (const c of data.counters) {
-        idSet.add(String(c.id));
+        if (numericIdFromUnknown(c.user_id) === physicianUserId) {
+          idSet.add(String(c.id));
+        }
       }
-      if (data.entranceCounter) {
+      if (data.entranceCounter && numericIdFromUnknown(data.entranceCounter.user_id) === physicianUserId) {
         idSet.add(String(data.entranceCounter.id));
       }
       const idList = [...idSet];
@@ -140,7 +151,8 @@ export default function AppointmentsPage() {
   async function handleClickToCall(row: PhysicianAppointmentRow) {
     if (physicianUserId == null) return;
     setCallError("");
-    setCallingTransId(row.transId);
+    const rowKey = appointmentListRowKey(row);
+    setCallingTransId(rowKey);
     try {
       if (row.waitingQueueTicketId) {
         const { error } = await patchReceptionQueueTicket(row.waitingQueueTicketId, "call");
@@ -148,16 +160,21 @@ export default function AppointmentsPage() {
           setCallError(error);
           return;
         }
-      } else {
+      } else if (row.transId) {
         const res = await callQueueForEncounterFromApi(row.transId, physicianUserId);
         if (res.error) {
           setCallError(res.error);
           return;
         }
+      } else {
+        setCallError("No queue ticket to call.");
+        return;
       }
 
       await reloadEncounters();
-      router.push(`/consultation/${encodeURIComponent(row.transId)}`);
+      if (row.transId) {
+        router.push(`/consultation/${encodeURIComponent(row.transId)}`);
+      }
     } finally {
       setCallingTransId(null);
     }
@@ -176,6 +193,13 @@ export default function AppointmentsPage() {
       {noUserId && (
         <Alert severity="warning" sx={{ mb: 2 }}>
           Unable to determine your user account. Encounters cannot be loaded.
+        </Alert>
+      )}
+
+      {noAssignedCounter && !noUserId && !listError && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          No queue counter is assigned to your user account. Set <strong>queue_counters.user_id</strong> in Supabase
+          to show today&apos;s appointments here.
         </Alert>
       )}
 
@@ -251,7 +275,7 @@ export default function AppointmentsPage() {
                               onClick={() => void handleClickToCall(row)}
                               sx={{ textTransform: "none", fontWeight: 700 }}
                             >
-                              {callingTransId === row.transId ? "Calling…" : "Click to Call"}
+                              {callingTransId === appointmentListRowKey(row) ? "Calling…" : "Click to Call"}
                             </Button>
                           </TableCell>
                         </TableRow>
@@ -292,7 +316,7 @@ export default function AppointmentsPage() {
                     </TableHead>
                     <TableBody>
                       {calledRows.map((row) => (
-                        <TableRow key={row.transId}>
+                        <TableRow key={appointmentListRowKey(row)}>
                           <TableCell>{row.patientName}</TableCell>
                           <TableCell>{formatDateMMDDYYYY(row.encounterDate) || "—"}</TableCell>
                           <TableCell>{row.encounterTime || "—"}</TableCell>
@@ -315,17 +339,27 @@ export default function AppointmentsPage() {
                             />
                           </TableCell>
                           <TableCell align="right">
-                            <Button
-                              component={Link}
-                              href={`/consultation/${encodeURIComponent(row.transId)}`}
-                              prefetch={false}
-                              size="small"
-                              variant="contained"
-                              disabled={callingTransId !== null}
-                              sx={{ textTransform: "none", fontWeight: 700 }}
-                            >
-                              Open visit
-                            </Button>
+                            {row.transId ? (
+                              <Button
+                                component={Link}
+                                href={`/consultation/${encodeURIComponent(row.transId)}`}
+                                prefetch={false}
+                                size="small"
+                                variant="contained"
+                                disabled={callingTransId !== null}
+                                sx={{ textTransform: "none", fontWeight: 700 }}
+                              >
+                                Open visit
+                              </Button>
+                            ) : (
+                              <Tooltip title="No visit linked yet — complete reception check-in or link an encounter.">
+                                <span>
+                                  <Button size="small" variant="contained" disabled sx={{ textTransform: "none", fontWeight: 700 }}>
+                                    Open visit
+                                  </Button>
+                                </span>
+                              </Tooltip>
+                            )}
                           </TableCell>
                         </TableRow>
                       ))}
@@ -342,7 +376,8 @@ export default function AppointmentsPage() {
                 Other assigned visits
               </Typography>
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 2 }}>
-                Encounters assigned to you with a <strong>today</strong> queue ticket in <strong>Called</strong>.
+                Encounters with a <strong>today</strong> queue ticket in <strong>Called</strong> on your assigned
+                counter(s).
               </Typography>
               {otherRows.length === 0 ? (
                 <Typography variant="body2" color="text.secondary">
@@ -363,7 +398,7 @@ export default function AppointmentsPage() {
                     </TableHead>
                     <TableBody>
                       {otherRows.map((row) => (
-                        <TableRow key={row.transId}>
+                        <TableRow key={appointmentListRowKey(row)}>
                           <TableCell>{row.patientName}</TableCell>
                           <TableCell>{formatDateMMDDYYYY(row.encounterDate) || "—"}</TableCell>
                           <TableCell>{row.encounterTime || "—"}</TableCell>
@@ -377,17 +412,27 @@ export default function AppointmentsPage() {
                             />
                           </TableCell>
                           <TableCell align="right">
-                            <Button
-                              component={Link}
-                              href={`/consultation/${encodeURIComponent(row.transId)}`}
-                              prefetch={false}
-                              size="small"
-                              variant="outlined"
-                              disabled={callingTransId !== null}
-                              sx={{ textTransform: "none", fontWeight: 700 }}
-                            >
-                              Open visit
-                            </Button>
+                            {row.transId ? (
+                              <Button
+                                component={Link}
+                                href={`/consultation/${encodeURIComponent(row.transId)}`}
+                                prefetch={false}
+                                size="small"
+                                variant="outlined"
+                                disabled={callingTransId !== null}
+                                sx={{ textTransform: "none", fontWeight: 700 }}
+                              >
+                                Open visit
+                              </Button>
+                            ) : (
+                              <Tooltip title="No visit linked yet.">
+                                <span>
+                                  <Button size="small" variant="outlined" disabled sx={{ textTransform: "none", fontWeight: 700 }}>
+                                    Open visit
+                                  </Button>
+                                </span>
+                              </Tooltip>
+                            )}
                           </TableCell>
                         </TableRow>
                       ))}

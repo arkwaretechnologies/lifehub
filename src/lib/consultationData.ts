@@ -13,6 +13,7 @@ import {
 import { buildPatientSearchOrFilter, PATIENT_DIRECTORY_SELECT, sanitizePatientSearchQuery } from "@/lib/patientsCatalog";
 import { supabase } from "@/lib/supabaseClient";
 import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
+import { numericIdFromUnknown } from "@/lib/sessionUserId";
 
 const ENCOUNTERS_TABLE = "encounters";
 const PATIENTS_TABLE = "patients";
@@ -336,6 +337,7 @@ async function fetchEncountersWithPatients(options: {
   limit: number;
   patientIds?: number[];
   transIdEq?: string;
+  transIdsIn?: string[];
   physicianIdEq?: number;
   /** Defaults to {@link ENCOUNTER_SELECT}. */
   select?: string;
@@ -354,6 +356,9 @@ async function fetchEncountersWithPatients(options: {
   if (options.transIdEq) {
     q = q.eq("trans_id", options.transIdEq);
   }
+  if (options.transIdsIn && options.transIdsIn.length > 0) {
+    q = q.in("trans_id", options.transIdsIn);
+  }
   if (options.physicianIdEq != null && Number.isFinite(options.physicianIdEq)) {
     q = q.eq("physician_id", options.physicianIdEq);
   }
@@ -363,9 +368,131 @@ async function fetchEncountersWithPatients(options: {
   return { rows: (data ?? []) as unknown as EncounterWithPatient[], error: null };
 }
 
+function sortEncountersByDateTimeDesc(rows: EncounterWithPatient[]): EncounterWithPatient[] {
+  return [...rows].sort((a, b) => {
+    const d = (b.encounter_date ?? "").localeCompare(a.encounter_date ?? "");
+    if (d !== 0) return d;
+    return (b.encounter_time ?? "").localeCompare(a.encounter_time ?? "");
+  });
+}
+
+/** Active `queue_counters` assigned to this app user (`user_id`). */
+async function fetchActiveCounterIdsForUser(userId: number): Promise<{ ids: string[]; error: string | null }> {
+  const { data, error } = await supabase.from("queue_counters").select("id, user_id").eq("is_active", true);
+  if (error) return { ids: [], error: error.message };
+  const ids: string[] = [];
+  for (const row of data ?? []) {
+    const r = row as { id: string | number; user_id?: unknown };
+    if (numericIdFromUnknown(r.user_id) === userId) {
+      ids.push(String(r.id));
+    }
+  }
+  return { ids, error: null };
+}
+
+type AppointmentQueueTicketRow = {
+  id: string;
+  encounter_id: string | null;
+  patient_id: number | null;
+  patient_name: string | null;
+  queue_display: string;
+  status: string;
+  issued_at: string;
+  ticket_date: string;
+  counter_id: string | number;
+  reason: string | null;
+};
+
+function timeFromIssuedAt(issuedAt: string): string {
+  const issued = issuedAt.trim();
+  if (!issued) return "";
+  const dt = new Date(issued);
+  if (Number.isNaN(dt.getTime())) return "";
+  return dt.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+/** Today's Waiting / Called / Serving tickets on the given counters (includes tickets without `encounter_id`). */
+async function fetchTodayAppointmentTicketsOnCounters(
+  counterIds: string[],
+): Promise<{ tickets: AppointmentQueueTicketRow[]; error: string | null }> {
+  if (counterIds.length === 0) return { tickets: [], error: null };
+  const ticketDate = queueTicketTodayIsoDate();
+  const { data, error } = await supabase
+    .from(QUEUE_TICKETS_TABLE)
+    .select(
+      "id, encounter_id, patient_id, patient_name, queue_display, status, issued_at, ticket_date, counter_id, reason",
+    )
+    .eq("ticket_date", ticketDate)
+    .in("counter_id", counterIds)
+    .in("status", ["Waiting", "Called", "Serving"]);
+  if (error) return { tickets: [], error: error.message };
+  return { tickets: (data ?? []) as AppointmentQueueTicketRow[], error: null };
+}
+
+function pickBestWaitingTicket(tickets: AppointmentQueueTicketRow[]): AppointmentQueueTicketRow | null {
+  let best: AppointmentQueueTicketRow | null = null;
+  for (const t of tickets) {
+    if ((t.status ?? "").trim() !== "Waiting") continue;
+    if (!best || (t.issued_at ?? "").localeCompare(best.issued_at ?? "") < 0) {
+      best = t;
+    }
+  }
+  return best;
+}
+
+function pickBestCalledTicket(tickets: AppointmentQueueTicketRow[]): AppointmentQueueTicketRow | null {
+  let best: AppointmentQueueTicketRow | null = null;
+  const rank = (s: string) => (s === "Serving" ? 2 : s === "Called" ? 1 : 0);
+  for (const t of tickets) {
+    const st = (t.status ?? "").trim();
+    if (st !== "Called" && st !== "Serving") continue;
+    if (!best) {
+      best = t;
+      continue;
+    }
+    const cmp = rank(st) - rank((best.status ?? "").trim());
+    if (cmp > 0 || (cmp === 0 && (t.issued_at ?? "").localeCompare(best.issued_at ?? "") >= 0)) {
+      best = t;
+    }
+  }
+  return best;
+}
+
+function ticketToWaitingPick(
+  t: AppointmentQueueTicketRow,
+  counterNameById: Map<string, string>,
+): WaitingQueueTicketPick {
+  const cid = t.counter_id != null && t.counter_id !== "" ? String(t.counter_id) : "";
+  return {
+    ticketId: String(t.id),
+    queueDisplay: (t.queue_display ?? "").trim() || "—",
+    patientName: t.patient_name?.trim() ? t.patient_name.trim() : null,
+    counterName: cid ? (counterNameById.get(cid) ?? null) : null,
+  };
+}
+
+function ticketToCalledPick(
+  t: AppointmentQueueTicketRow,
+  counterNameById: Map<string, string>,
+): CalledQueueTicketPick {
+  const st = (t.status ?? "").trim();
+  return {
+    ...ticketToWaitingPick(t, counterNameById),
+    status: (st === "Serving" ? "Serving" : "Called") as "Called" | "Serving",
+  };
+}
+
 export type PhysicianAppointmentStatusChipColor = "default" | "success" | "info";
 
 export type PhysicianAppointmentRow = {
+  /** Stable React key: encounter `trans_id` or `ticket:{uuid}`. */
+  rowKey: string;
+  /** Waiting ticket with no `encounter_id` yet (reception routed, check-in pending). */
+  queueOnly: boolean;
   transId: string;
   patientId: string;
   patientName: string;
@@ -390,6 +517,10 @@ export type PhysicianAppointmentRow = {
   calledQueueCounterName: string | null;
   calledQueueTicketPatientName: string | null;
 };
+
+export function appointmentListRowKey(row: PhysicianAppointmentRow): string {
+  return row.rowKey;
+}
 
 /**
  * Derives appointment list status from `encounters.disposition` / `clinical_diagnosis` (no queue join).
@@ -458,9 +589,19 @@ async function resolveCounterNamesForTickets(
   return counterNameById;
 }
 
+function ticketCounterAllowed(
+  counterId: string | number | null | undefined,
+  counterIdFilter: Set<string> | undefined,
+): boolean {
+  if (!counterIdFilter || counterIdFilter.size === 0) return true;
+  if (counterId == null || counterId === "") return false;
+  return counterIdFilter.has(String(counterId));
+}
+
 /** One Waiting ticket per encounter (earliest `issued_at`) for today, with fields used by reception call + announce. */
 async function fetchWaitingQueueTicketsTodayByEncounterIds(
   encounterTransIds: string[],
+  counterIdFilter?: Set<string>,
 ): Promise<{ map: Map<string, WaitingQueueTicketPick>; error: string | null }> {
   const originalsOrdered = encounterOriginalIdsOrdered(encounterTransIds);
   if (originalsOrdered.length === 0) {
@@ -489,6 +630,7 @@ async function fetchWaitingQueueTicketsTodayByEncounterIds(
       return { map: new Map(), error: error.message };
     }
     for (const row of (data ?? []) as Raw[]) {
+      if (!ticketCounterAllowed(row.counter_id, counterIdFilter)) continue;
       const eid = row.encounter_id?.trim().toLowerCase();
       if (!eid) continue;
       const prev = bestByEncounter.get(eid);
@@ -518,6 +660,7 @@ async function fetchWaitingQueueTicketsTodayByEncounterIds(
 /** Latest Called or Serving ticket per encounter for today (open visit). */
 async function fetchCalledOrServingQueueTicketsTodayByEncounterIds(
   encounterTransIds: string[],
+  counterIdFilter?: Set<string>,
 ): Promise<{ map: Map<string, CalledQueueTicketPick>; error: string | null }> {
   const originalsOrdered = encounterOriginalIdsOrdered(encounterTransIds);
   if (originalsOrdered.length === 0) {
@@ -548,6 +691,7 @@ async function fetchCalledOrServingQueueTicketsTodayByEncounterIds(
       return { map: new Map(), error: error.message };
     }
     for (const row of (data ?? []) as Raw[]) {
+      if (!ticketCounterAllowed(row.counter_id, counterIdFilter)) continue;
       const eid = row.encounter_id?.trim().toLowerCase();
       if (!eid) continue;
       const st = (row.status ?? "").trim();
@@ -587,77 +731,168 @@ async function fetchCalledOrServingQueueTicketsTodayByEncounterIds(
 }
 
 /**
- * Recent encounters assigned to this app user (`encounters.physician_id` = `users.user_id`).
- * - With `queueWaitingOnly: true`, only encounters with a **today** **Waiting** queue ticket.
- * - With `queueCalledOrServingOnly: true`, only encounters with a **today** **Called** or **Serving** ticket (and no Waiting).
+ * Appointments list for an app user (any role): only when `queue_counters.user_id` = user.
+ * Loads **today** queue tickets on those counters (with or without `encounter_id`).
  */
 export async function fetchEncountersForPhysician(
   physicianUserId: number,
   options?: { limit?: number; queueWaitingOnly?: boolean; queueCalledOrServingOnly?: boolean },
-): Promise<{ rows: PhysicianAppointmentRow[]; error: string | null }> {
+): Promise<{ rows: PhysicianAppointmentRow[]; error: string | null; noAssignedCounter?: boolean }> {
   if (!Number.isFinite(physicianUserId) || physicianUserId <= 0) {
     return { rows: [], error: null };
   }
   const limit = options?.limit ?? DEFAULT_PHYSICIAN_ENCOUNTER_LIMIT;
-  const { rows, error } = await fetchEncountersWithPatients({
-    limit,
-    physicianIdEq: physicianUserId,
-    select: PHYSICIAN_APPOINTMENTS_SELECT,
-  });
-  if (error) return { rows: [], error };
 
-  const transIds = rows.map((r) => encounterToSummary(r as EncounterRow).id);
-  const { map: waitingByEncounter, error: wErr } = await fetchWaitingQueueTicketsTodayByEncounterIds(transIds);
-  if (wErr) {
-    return { rows: [], error: wErr };
+  const { ids: myCounterIds, error: counterErr } = await fetchActiveCounterIdsForUser(physicianUserId);
+  if (counterErr) return { rows: [], error: counterErr };
+  if (myCounterIds.length === 0) {
+    return { rows: [], error: null, noAssignedCounter: true };
   }
-  const { map: calledByEncounter, error: cErr } = await fetchCalledOrServingQueueTicketsTodayByEncounterIds(transIds);
-  if (cErr) {
-    return { rows: [], error: cErr };
+
+  const { tickets, error: tErr } = await fetchTodayAppointmentTicketsOnCounters(myCounterIds);
+  if (tErr) return { rows: [], error: tErr };
+  if (tickets.length === 0) {
+    return { rows: [], error: null };
+  }
+
+  const counterNameById = await resolveCounterNamesForTickets(tickets);
+
+  const ticketsByEncounter = new Map<string, AppointmentQueueTicketRow[]>();
+  const ticketOnly: AppointmentQueueTicketRow[] = [];
+  const encounterTransIds: string[] = [];
+  const seenEncounter = new Set<string>();
+
+  for (const t of tickets) {
+    const eid = t.encounter_id?.trim();
+    if (eid) {
+      const key = eid.toLowerCase();
+      const list = ticketsByEncounter.get(key) ?? [];
+      list.push(t);
+      ticketsByEncounter.set(key, list);
+      if (!seenEncounter.has(key)) {
+        seenEncounter.add(key);
+        encounterTransIds.push(eid);
+      }
+    } else {
+      ticketOnly.push(t);
+    }
+  }
+
+  const encounterByTransLower = new Map<string, EncounterWithPatient>();
+  const CHUNK = 100;
+  for (let i = 0; i < encounterTransIds.length; i += CHUNK) {
+    const chunk = encounterTransIds.slice(i, i + CHUNK);
+    const { rows: chunkRows, error } = await fetchEncountersWithPatients({
+      limit: chunk.length,
+      transIdsIn: chunk,
+      select: PHYSICIAN_APPOINTMENTS_SELECT,
+    });
+    if (error) return { rows: [], error };
+    for (const r of chunkRows) {
+      const tid = encounterToSummary(r as EncounterRow).id.trim().toLowerCase();
+      if (tid) encounterByTransLower.set(tid, r);
+    }
   }
 
   const queueWaitingOnly = options?.queueWaitingOnly === true;
   const queueCalledOnly = options?.queueCalledOrServingOnly === true;
-  const out: PhysicianAppointmentRow[] = [];
-  for (const r of rows) {
-    const p = unwrapPatient(r.patients);
-    const summary = encounterToSummary(r);
-    const tid = summary.id.trim().toLowerCase();
-    const waiting = waitingByEncounter.get(tid);
-    const hasWaitingQueueToday = waiting != null;
-    const calledPick = !hasWaitingQueueToday ? calledByEncounter.get(tid) : undefined;
-    const hasCalledOrServingQueueToday = calledPick != null;
-    if (queueWaitingOnly && !hasWaitingQueueToday) {
-      continue;
-    }
-    if (queueCalledOnly && !hasCalledOrServingQueueToday) {
-      continue;
-    }
-    const status = physicianAppointmentStatusFromEncounter(r.disposition, r.clinical_diagnosis);
-    out.push({
-      transId: summary.id,
-      patientId: summary.patientId,
-      patientName: (p?.name ?? "").trim() || "—",
-      encounterDate: summary.date,
-      encounterTime: summary.time,
-      queueNo: summary.queueNo,
-      chiefComplaint: summary.chiefComplaint,
-      statusLabel: status.label,
-      statusChipColor: status.statusChipColor,
-      hasWaitingQueueToday,
-      waitingQueueTicketId: waiting?.ticketId ?? null,
-      waitingQueueDisplay: waiting?.queueDisplay ?? null,
-      waitingQueueCounterName: waiting?.counterName ?? null,
-      waitingQueueTicketPatientName: waiting?.patientName ?? null,
-      hasCalledOrServingQueueToday,
-      calledQueueTicketStatus: calledPick?.status ?? null,
-      calledQueueTicketId: calledPick?.ticketId ?? null,
-      calledQueueDisplay: calledPick?.queueDisplay ?? null,
-      calledQueueCounterName: calledPick?.counterName ?? null,
-      calledQueueTicketPatientName: calledPick?.patientName ?? null,
+  const built: { row: PhysicianAppointmentRow; sortAt: string }[] = [];
+
+  for (const [eidLower, encTickets] of ticketsByEncounter) {
+    const enc = encounterByTransLower.get(eidLower);
+    if (!enc) continue;
+
+    const waitingT = pickBestWaitingTicket(encTickets);
+    const calledT = waitingT ? null : pickBestCalledTicket(encTickets);
+    const hasWaitingQueueToday = waitingT != null;
+    const hasCalledOrServingQueueToday = calledT != null;
+    if (queueWaitingOnly && !hasWaitingQueueToday) continue;
+    if (queueCalledOnly && !hasCalledOrServingQueueToday) continue;
+
+    const waiting = waitingT ? ticketToWaitingPick(waitingT, counterNameById) : null;
+    const calledPick = calledT ? ticketToCalledPick(calledT, counterNameById) : null;
+    const p = unwrapPatient(enc.patients);
+    const summary = encounterToSummary(enc);
+    const status = physicianAppointmentStatusFromEncounter(enc.disposition, enc.clinical_diagnosis);
+    const sortIssuedAt = (waitingT ?? calledT)?.issued_at ?? "";
+
+    built.push({
+      sortAt: sortIssuedAt,
+      row: {
+        rowKey: summary.id,
+        queueOnly: false,
+        transId: summary.id,
+        patientId: summary.patientId,
+        patientName: (p?.name ?? "").trim() || "—",
+        encounterDate: summary.date,
+        encounterTime: summary.time,
+        queueNo: summary.queueNo,
+        chiefComplaint: summary.chiefComplaint,
+        statusLabel: status.label,
+        statusChipColor: status.statusChipColor,
+        hasWaitingQueueToday,
+        waitingQueueTicketId: waiting?.ticketId ?? null,
+        waitingQueueDisplay: waiting?.queueDisplay ?? null,
+        waitingQueueCounterName: waiting?.counterName ?? null,
+        waitingQueueTicketPatientName: waiting?.patientName ?? null,
+        hasCalledOrServingQueueToday,
+        calledQueueTicketStatus: calledPick?.status ?? null,
+        calledQueueTicketId: calledPick?.ticketId ?? null,
+        calledQueueDisplay: calledPick?.queueDisplay ?? null,
+        calledQueueCounterName: calledPick?.counterName ?? null,
+        calledQueueTicketPatientName: calledPick?.patientName ?? null,
+      },
     });
   }
-  return { rows: out, error: null };
+
+  for (const t of ticketOnly) {
+    const st = (t.status ?? "").trim();
+    const hasWaitingQueueToday = st === "Waiting";
+    const hasCalledOrServingQueueToday = st === "Called" || st === "Serving";
+    if (queueWaitingOnly && !hasWaitingQueueToday) continue;
+    if (queueCalledOnly && !hasCalledOrServingQueueToday) continue;
+
+    const waiting = hasWaitingQueueToday ? ticketToWaitingPick(t, counterNameById) : null;
+    const calledPick = hasCalledOrServingQueueToday ? ticketToCalledPick(t, counterNameById) : null;
+    const queueStatus = hasWaitingQueueToday
+      ? { label: "Queued", statusChipColor: "info" as const }
+      : physicianAppointmentStatusFromEncounter(null, null);
+
+    built.push({
+      sortAt: t.issued_at,
+      row: {
+        rowKey: `ticket:${t.id}`,
+        queueOnly: true,
+        transId: "",
+        patientId: t.patient_id != null ? String(t.patient_id) : "",
+        patientName: (t.patient_name ?? "").trim() || "—",
+        encounterDate: (t.ticket_date ?? "").trim(),
+        encounterTime: timeFromIssuedAt(t.issued_at),
+        queueNo: (t.queue_display ?? "").trim() || undefined,
+        chiefComplaint: (t.reason ?? "").trim() || undefined,
+        statusLabel: queueStatus.label,
+        statusChipColor: queueStatus.statusChipColor,
+        hasWaitingQueueToday,
+        waitingQueueTicketId: waiting?.ticketId ?? null,
+        waitingQueueDisplay: waiting?.queueDisplay ?? null,
+        waitingQueueCounterName: waiting?.counterName ?? null,
+        waitingQueueTicketPatientName: waiting?.patientName ?? null,
+        hasCalledOrServingQueueToday,
+        calledQueueTicketStatus: calledPick?.status ?? null,
+        calledQueueTicketId: calledPick?.ticketId ?? null,
+        calledQueueDisplay: calledPick?.queueDisplay ?? null,
+        calledQueueCounterName: calledPick?.counterName ?? null,
+        calledQueueTicketPatientName: calledPick?.patientName ?? null,
+      },
+    });
+  }
+
+  const sorted = built
+    .sort((a, b) => b.sortAt.localeCompare(a.sortAt))
+    .slice(0, limit)
+    .map((x) => x.row);
+
+  return { rows: sorted, error: null };
 }
 
 async function fetchUserLabels(userIds: Iterable<number | null | undefined>): Promise<Map<string, string>> {

@@ -43,6 +43,7 @@ import { useAuth } from "@/components/AuthProvider";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import type { ConsultationPatient } from "@/components/consultation/consultationTypes";
 import MedicationProductAutocomplete from "@/components/consultation/MedicationProductAutocomplete";
+import MedicationSigField from "@/components/consultation/MedicationSigField";
 import { consultFormControlLabelSx } from "@/components/consultation/ConsultationSectionTitle";
 import { useConsultationSave } from "@/components/consultation/consultationSaveContext";
 import {
@@ -2825,23 +2826,20 @@ export default function PlansTreatmentPanel({
                         />
                       </Grid>
                       <Grid size={{ xs: 12, sm: 4 }} sx={{ mt: { xs: 1, sm: 0 } }}>
-                        <TextField
-                          size="small"
-                          fullWidth
+                        <MedicationSigField
                           label="Sig"
                           placeholder=" "
                           value={line.notes}
-                          onChange={(e) =>
+                          onChange={(notes) =>
                             setMedicationLines((rows) =>
-                              rows.map((r) => (r.key === line.key ? { ...r, notes: e.target.value } : r)),
+                              rows.map((r) => (r.key === line.key ? { ...r, notes } : r)),
                             )
                           }
-                          sx={medicationOutlinedFieldSx}
                         />
                       </Grid>
                       <Grid
                         size={{ xs: 12, sm: 1 }}
-                        sx={{ display: "flex", alignItems: "center", justifyContent: { xs: "flex-end", sm: "center" }, pt: { xs: 0.5, sm: 1 } }}
+                        sx={{ display: "flex", alignItems: "center", justifyContent: { xs: "flex-end", sm: "center" }, pt: { xs: 0.5, sm: 0 } }}
                       >
                         <IconButton
                           aria-label="Remove medication line"

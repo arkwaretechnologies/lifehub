@@ -22,6 +22,9 @@ export type PrescriptionPrintPhysician = {
 const A5_W = 420;
 const A5_H = 595;
 
+/** Max medication entries per RX template page (Print RX). */
+const RX_MEDS_PER_PAGE = 5;
+
 type PrescriptionLayout = ReturnType<typeof prescriptionLayout>;
 
 type RxTemplateContext = {
@@ -33,6 +36,15 @@ type RxTemplateContext = {
   L: PrescriptionLayout;
   black: RGB;
 };
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  if (items.length === 0) return [[]];
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    out.push(items.slice(i, i + size));
+  }
+  return out;
+}
 
 function formatDobMMDDYYYY(raw: string): string {
   const s = (raw ?? "").trim();
@@ -289,18 +301,28 @@ async function embedRxFont(doc: PDFDocument): Promise<PDFFont> {
   return font;
 }
 
-async function loadRxTemplateContext(): Promise<RxTemplateContext | null> {
-  const { PDFDocument, rgb } = await import("pdf-lib");
+async function loadRxTemplateBytes(): Promise<ArrayBuffer | null> {
   const res = await authenticatedFetch("/api/prescription-template", { cache: "no-store" });
   if (!res.ok) return null;
+  return res.arrayBuffer();
+}
 
-  const templateBytes = await res.arrayBuffer();
-  const doc = await PDFDocument.load(templateBytes);
-  const page = doc.getPages()[0];
+async function addRxTemplatePage(doc: PDFDocument, templateBytes: ArrayBuffer): Promise<PDFPage> {
+  const { PDFDocument } = await import("pdf-lib");
+  const templateDoc = await PDFDocument.load(templateBytes);
+  const [copied] = await doc.copyPages(templateDoc, [0]);
+  const page = doc.addPage(copied);
   normalizePageToA5(page);
-  const { width, height } = page.getSize();
-  const font = await embedRxFont(doc);
+  return page;
+}
 
+function buildRxTemplateContext(
+  doc: PDFDocument,
+  page: PDFPage,
+  font: PDFFont,
+  black: RGB,
+): RxTemplateContext {
+  const { width, height } = page.getSize();
   return {
     doc,
     page,
@@ -308,8 +330,20 @@ async function loadRxTemplateContext(): Promise<RxTemplateContext | null> {
     width,
     height,
     L: prescriptionLayout(width, height),
-    black: rgb(0, 0, 0),
+    black,
   };
+}
+
+async function loadRxTemplateContext(): Promise<RxTemplateContext | null> {
+  const { PDFDocument, rgb } = await import("pdf-lib");
+  const templateBytes = await loadRxTemplateBytes();
+  if (!templateBytes) return null;
+
+  const doc = await PDFDocument.load(templateBytes);
+  const page = doc.getPages()[0];
+  normalizePageToA5(page);
+  const font = await embedRxFont(doc);
+  return buildRxTemplateContext(doc, page, font, rgb(0, 0, 0));
 }
 
 function drawRxPatientHeader(
@@ -403,12 +437,16 @@ function rxBodyMaxWidth(ctx: RxTemplateContext): number {
   return ctx.width - ctx.L.rxStart.x - ctx.L.margin;
 }
 
-function drawRxMedications(ctx: RxTemplateContext, medications: PrescriptionPrintMedicationLine[]): void {
+function drawRxMedications(
+  ctx: RxTemplateContext,
+  medications: PrescriptionPrintMedicationLine[],
+  options?: { startNumber?: number },
+): void {
   const { page, font, L, black } = ctx;
   let yRx = rxBodyStartY(ctx);
   const maxRxW = rxBodyMaxWidth(ctx);
   const sigYMin = rxSigYMin(ctx);
-  let n = 1;
+  let n = options?.startNumber ?? 1;
 
   for (const m of medications) {
     if (yRx < sigYMin) break;
@@ -497,8 +535,8 @@ async function drawRxSigFooter(ctx: RxTemplateContext, physician: PrescriptionPr
   });
 }
 
-async function finishRxPrint(ctx: RxTemplateContext): Promise<boolean> {
-  const out = await ctx.doc.save();
+async function finishRxPrint(doc: PDFDocument): Promise<boolean> {
+  const out = await doc.save();
   const blob = new Blob([out as BlobPart], { type: "application/pdf" });
   printPdfBlob(blob);
   return true;
@@ -510,13 +548,24 @@ export async function openPrescriptionPrintWindow(args: {
   medications: PrescriptionPrintMedicationLine[];
   transId: string;
 }): Promise<boolean> {
-  const ctx = await loadRxTemplateContext();
-  if (!ctx) return false;
+  const { PDFDocument, rgb } = await import("pdf-lib");
+  const templateBytes = await loadRxTemplateBytes();
+  if (!templateBytes) return false;
 
-  drawRxPatientHeader(ctx, args.patient, args.physician);
-  drawRxMedications(ctx, args.medications);
-  await drawRxSigFooter(ctx, args.physician, args.transId);
-  return finishRxPrint(ctx);
+  const chunks = chunkArray(args.medications, RX_MEDS_PER_PAGE);
+  const doc = await PDFDocument.create();
+  const font = await embedRxFont(doc);
+  const black = rgb(0, 0, 0);
+
+  for (let i = 0; i < chunks.length; i++) {
+    const page = await addRxTemplatePage(doc, templateBytes);
+    const ctx = buildRxTemplateContext(doc, page, font, black);
+    drawRxPatientHeader(ctx, args.patient, args.physician);
+    drawRxMedications(ctx, chunks[i], { startNumber: i * RX_MEDS_PER_PAGE + 1 });
+    await drawRxSigFooter(ctx, args.physician, args.transId);
+  }
+
+  return finishRxPrint(doc);
 }
 
 /** Plans/treatment narrative on RX template (no medication lines, no status change). */
@@ -535,5 +584,5 @@ export async function openPlansTreatmentPrintWindow(args: {
   drawRxPatientHeader(ctx, args.patient, args.physician);
   drawRxBodyText(ctx, notes);
   await drawRxSigFooter(ctx, args.physician, args.transId);
-  return finishRxPrint(ctx);
+  return finishRxPrint(ctx.doc);
 }

@@ -12,6 +12,8 @@ export type LabResultPrintPosition = {
   refFromTop: number;
   fontSize?: number;
   maxWidth?: number;
+  /** Line spacing when result text wraps (reference points; scaled at print). */
+  lineHeight?: number;
   /** 0-based page within that template PDF (default 0). */
   pageIndex?: number;
 };
@@ -48,13 +50,33 @@ function parseOnePosition(o: unknown): LabResultPrintPosition | null {
     const mw = Number(rec.maxWidth);
     if (Number.isFinite(mw) && mw > 0) maxWidth = mw;
   }
+  let lineHeight: number | undefined;
+  if (rec.lineHeight != null) {
+    const lh = Number(rec.lineHeight);
+    if (Number.isFinite(lh) && lh > 0) lineHeight = lh;
+  }
   let pageIndex: number | undefined;
   if (rec.pageIndex != null) {
     const pi = Number(rec.pageIndex);
     if (Number.isFinite(pi) && pi >= 0 && Number.isInteger(pi)) pageIndex = pi;
   }
 
-  return { refX, refFromTop, fontSize, maxWidth, pageIndex };
+  return { refX, refFromTop, fontSize, maxWidth, lineHeight, pageIndex };
+}
+
+/** Default wrapped-line spacing from font size when layout omits lineHeight. */
+export function defaultPrintLineHeight(fontSize: number): number {
+  const fs = Number.isFinite(fontSize) && fontSize > 0 ? fontSize : 8;
+  return Math.round(fs * 1.15 * 10) / 10;
+}
+
+export function effectivePrintLineHeight(
+  pos: { fontSize?: number; lineHeight?: number } | null | undefined,
+  fallbackFontSize = 8,
+): number {
+  const lh = pos?.lineHeight;
+  if (lh != null && Number.isFinite(lh) && lh > 0) return lh;
+  return defaultPrintLineHeight(pos?.fontSize ?? fallbackFontSize);
 }
 
 /** Parse `lab_tests.results_print_layout` as a single object (legacy). */
@@ -105,6 +127,7 @@ export type PrintLayoutFormFields = {
   print_ref_from_top: string;
   print_font_size: string;
   print_max_width: string;
+  print_line_height: string;
   print_page_index: string;
 };
 
@@ -114,6 +137,7 @@ export function emptyPrintLayoutFormFields(): PrintLayoutFormFields {
     print_ref_from_top: "",
     print_font_size: "",
     print_max_width: "",
+    print_line_height: "",
     print_page_index: "",
   };
 }
@@ -127,6 +151,7 @@ export function printLayoutFormFieldsFromDb(rawLayout: unknown): PrintLayoutForm
     print_ref_from_top: String(pos.refFromTop),
     print_font_size: pos.fontSize != null ? String(pos.fontSize) : "",
     print_max_width: pos.maxWidth != null ? String(pos.maxWidth) : "",
+    print_line_height: pos.lineHeight != null ? String(pos.lineHeight) : "",
     print_page_index: pos.pageIndex != null ? String(pos.pageIndex) : "",
   };
 }
@@ -154,6 +179,7 @@ export function buildPrintLayoutJsonFromFormFields(
     fields.print_ref_from_top,
     fields.print_font_size,
     fields.print_max_width,
+    fields.print_line_height,
     fields.print_page_index,
   ].some((s) => s.trim() !== "");
 
@@ -176,6 +202,10 @@ export function buildPrintLayoutJsonFromFormFields(
   if (fields.print_max_width.trim() !== "" && maxWidth === undefined) {
     return { ok: false, error: "Max width must be a positive number or empty." };
   }
+  const lineHeight = parseOptionalPositiveNumber(fields.print_line_height);
+  if (fields.print_line_height.trim() !== "" && lineHeight === undefined) {
+    return { ok: false, error: "Line height must be a positive number or empty." };
+  }
   const pageIndex = parseOptionalNonNegativeInt(fields.print_page_index);
   if (fields.print_page_index.trim() !== "" && pageIndex === undefined) {
     return { ok: false, error: "Page index must be a whole number ≥ 0 or empty." };
@@ -184,6 +214,7 @@ export function buildPrintLayoutJsonFromFormFields(
   const value: LabResultPrintPosition = { refX, refFromTop };
   if (fontSize != null) value.fontSize = fontSize;
   if (maxWidth != null) value.maxWidth = maxWidth;
+  if (lineHeight != null) value.lineHeight = lineHeight;
   if (pageIndex != null) value.pageIndex = pageIndex;
   return { ok: true, value };
 }
@@ -209,6 +240,14 @@ export const LAB_PRINT_FALLBACK = {
   firstFromTop: 268,
   rowStep: 13.5,
   fontSize: 8,
+  lineHeight: 9.2,
   maxWidth: 500,
   maxLines: 34,
+} as const;
+
+/** Summary page for tests without a dedicated results template. */
+export const LAB_PRINT_SUMMARY = {
+  fontSize: 8.5,
+  lineHeight: 9.5,
+  lineStep: 11,
 } as const;

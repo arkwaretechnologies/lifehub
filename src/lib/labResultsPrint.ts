@@ -11,7 +11,12 @@ import {
   splitAllowlistedResultsTemplateCodes,
 } from "@/lib/labResultTemplates";
 import type { LabResultPrintPosition } from "@/lib/labResultsPrintLayout";
-import { getPrintLayoutForTemplateCode, LAB_PRINT_FALLBACK } from "@/lib/labResultsPrintLayout";
+import {
+  effectivePrintLineHeight,
+  getPrintLayoutForTemplateCode,
+  LAB_PRINT_FALLBACK,
+  LAB_PRINT_SUMMARY,
+} from "@/lib/labResultsPrintLayout";
 import type { PDFDocument } from "pdf-lib";
 import { rgb } from "pdf-lib";
 
@@ -286,6 +291,7 @@ function drawGroupResultsForTemplate(
       const fs = pos.fontSize ?? 8;
       drawAtTopRef(page, line, pos.refX, pos.refFromTop, fs, font, {
         maxWidth: pos.maxWidth,
+        lineHeight: effectivePrintLineHeight(pos, fs),
         color: printTextColorForResult(it, patientSex),
       });
     } else {
@@ -302,6 +308,7 @@ function drawGroupResultsForTemplate(
     const line = formatPrintedResultValue(it);
     drawAtTopRef(page0, line, LAB_PRINT_FALLBACK.refX, fromTop, LAB_PRINT_FALLBACK.fontSize, font, {
       maxWidth: LAB_PRINT_FALLBACK.maxWidth,
+      lineHeight: LAB_PRINT_FALLBACK.lineHeight,
       color: printTextColorForResult(it, patientSex),
     });
     fromTop += LAB_PRINT_FALLBACK.rowStep;
@@ -401,7 +408,7 @@ export async function openLabResultsPrintWindow(args: {
       drawAtTopRef(page, title, 48, 232, 10, font);
 
       let fromTop = 256;
-      const lineStep = 11;
+      const lineStep = LAB_PRINT_SUMMARY.lineStep;
       const maxFromTop = REF_H - 48;
       for (const it of sorted) {
         const wrapped: string[] = [];
@@ -413,7 +420,8 @@ export async function openLabResultsPrintWindow(args: {
             drawAtTopRef(page, "(continued)", 48, 232, 9, font);
             fromTop = 256;
           }
-          drawAtTopRef(page, line, 48, fromTop, 8.5, mono, {
+          drawAtTopRef(page, line, 48, fromTop, LAB_PRINT_SUMMARY.fontSize, mono, {
+            lineHeight: LAB_PRINT_SUMMARY.lineHeight,
             color: printTextColorForResult(it, header.patient_sex),
           });
           fromTop += lineStep;

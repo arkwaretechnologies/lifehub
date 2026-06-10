@@ -77,6 +77,7 @@ type TestForm = {
   print_ref_from_top: string;
   print_font_size: string;
   print_max_width: string;
+  print_line_height: string;
   print_page_index: string;
 };
 
@@ -100,6 +101,7 @@ const emptyForm = (): TestForm => ({
   print_ref_from_top: "",
   print_font_size: "",
   print_max_width: "",
+  print_line_height: "",
   print_page_index: "",
 });
 
@@ -484,6 +486,7 @@ export default function SettingsLabTestsPage() {
       print_ref_from_top: f.print_ref_from_top,
       print_font_size: f.print_font_size,
       print_max_width: f.print_max_width,
+      print_line_height: f.print_line_height,
       print_page_index: f.print_page_index,
     });
     if (!layoutBuilt.ok) {
@@ -738,6 +741,15 @@ export default function SettingsLabTestsPage() {
           inputProps={{ step: "1" }}
           value={form.print_max_width}
           onChange={(e) => setForm((f) => ({ ...f, print_max_width: e.target.value }))}
+          {...fieldSx}
+        />
+        <TextField
+          label="Line height (optional)"
+          type="number"
+          inputProps={{ step: "0.5" }}
+          value={form.print_line_height}
+          onChange={(e) => setForm((f) => ({ ...f, print_line_height: e.target.value }))}
+          helperText="Wrapped result line spacing; default ≈ 1.15× font size"
           {...fieldSx}
         />
         <TextField

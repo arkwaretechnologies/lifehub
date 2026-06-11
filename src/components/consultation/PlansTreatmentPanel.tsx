@@ -88,6 +88,9 @@ import {
   searchActiveProducts,
   type ProductCatalogRow,
 } from "@/lib/pharmacyProducts";
+import type { PrescriptionCartLine } from "@/lib/pharmacyPosDb";
+import { fetchPrescriptionCartByEncounterAuth } from "@/lib/pharmacyPrescriptionCart";
+import { fetchPaidPhysicianLineStatusForEncounter } from "@/lib/physicianFeeSales";
 import { supabase } from "@/lib/supabaseClient";
 import {
   fetchCurrentMedicationsForEncounter,
@@ -192,11 +195,19 @@ function isValidMedicationQuantity(q: string): boolean {
 }
 
 function medicationRowsMissingQuantity(lines: MedicationLineDraft[]): boolean {
-  return lines.some((l) => isMedicationLineFilled(l) && !isValidMedicationQuantity(l.quantity));
+  return lines.some(
+    (l) => !l.dispensedLocked && isMedicationLineFilled(l) && !isValidMedicationQuantity(l.quantity),
+  );
 }
 
 function medicationRowsMissingManualName(lines: MedicationLineDraft[]): boolean {
-  return lines.some((l) => l.manualEntry && l.manualName.trim() === "" && l.productId.trim() === "");
+  return lines.some(
+    (l) =>
+      !l.dispensedLocked &&
+      l.manualEntry &&
+      l.manualName.trim() === "" &&
+      l.productId.trim() === "",
+  );
 }
 
 function medicationLineDisplayName(
@@ -234,7 +245,66 @@ type MedicationLineDraft = {
   unit: string;
   frequency: string;
   notes: string;
+  prescriptionItemId?: string;
+  /** Dispensed at pharmacy POS — read-only in consultation. */
+  dispensedLocked?: boolean;
 };
+
+function applyDispensedPrescriptionFlags(
+  lines: MedicationLineDraft[],
+  rxLines: PrescriptionCartLine[],
+): MedicationLineDraft[] {
+  const dispensedRx = rxLines.filter((rx) => rx.dispensed === true);
+  if (dispensedRx.length === 0) {
+    return lines.map((l) => ({ ...l, dispensedLocked: false }));
+  }
+
+  const usedItemIds = new Set<string>();
+  const flagged = lines.map((line) => {
+    if (line.prescriptionItemId) {
+      const rx = dispensedRx.find((r) => r.pharmacy_prescription_item_id === line.prescriptionItemId);
+      if (rx) {
+        usedItemIds.add(rx.pharmacy_prescription_item_id);
+        return { ...line, dispensedLocked: true, prescriptionItemId: rx.pharmacy_prescription_item_id };
+      }
+    }
+    if (line.productId.trim()) {
+      const rx = dispensedRx.find(
+        (r) => r.product_id === line.productId.trim() && !usedItemIds.has(r.pharmacy_prescription_item_id),
+      );
+      if (rx) {
+        usedItemIds.add(rx.pharmacy_prescription_item_id);
+        return {
+          ...line,
+          dispensedLocked: true,
+          prescriptionItemId: rx.pharmacy_prescription_item_id,
+        };
+      }
+    }
+    return { ...line, dispensedLocked: false };
+  });
+
+  const extras: MedicationLineDraft[] = [];
+  for (const rx of dispensedRx) {
+    if (usedItemIds.has(rx.pharmacy_prescription_item_id)) continue;
+    usedItemIds.add(rx.pharmacy_prescription_item_id);
+    const label = [rx.generic_name, rx.brand_name ? `(${rx.brand_name})` : ""].filter(Boolean).join(" ").trim();
+    extras.push({
+      key: crypto.randomUUID(),
+      productId: rx.product_id ?? "",
+      manualName: rx.product_id ? "" : label || "Medication",
+      manualEntry: !rx.product_id,
+      quantity: String(rx.quantity_prescribed ?? ""),
+      unit: "",
+      frequency: "",
+      notes: rx.sig ?? "",
+      prescriptionItemId: rx.pharmacy_prescription_item_id,
+      dispensedLocked: true,
+    });
+  }
+
+  return extras.length > 0 ? [...flagged, ...extras] : flagged;
+}
 
 function newMedicationLine(): MedicationLineDraft {
   return {
@@ -397,6 +467,7 @@ export default function PlansTreatmentPanel({
   const [medProductsLoading, setMedProductsLoading] = useState(false);
   const [medProductsError, setMedProductsError] = useState("");
   const [medSaveLoading, setMedSaveLoading] = useState(false);
+  const [medVisitSettledHint, setMedVisitSettledHint] = useState(false);
   const [medToastOpen, setMedToastOpen] = useState(false);
   const [medToastMessage, setMedToastMessage] = useState("");
   const [medToastSeverity, setMedToastSeverity] = useState<"success" | "error">("success");
@@ -503,18 +574,33 @@ export default function PlansTreatmentPanel({
     if (!medicationsModalOpen) return;
     let cancelled = false;
     void (async () => {
-      const r = await fetchCurrentMedicationsForEncounter(transId);
+      const [r, rxCart, paidRes] = await Promise.all([
+        fetchCurrentMedicationsForEncounter(transId),
+        fetchPrescriptionCartByEncounterAuth(transId),
+        fetchPaidPhysicianLineStatusForEncounter(transId),
+      ]);
       if (cancelled) return;
+
+      const hasPhysicianPaid =
+        !paidRes.error &&
+        (paidRes.status.exactKeys.size > 0 || paidRes.status.feesByServiceId.size > 0);
+      setMedVisitSettledHint(
+        hasPhysicianPaid || paidLabRequestIds.size > 0 || paidImagingRequestIds.size > 0,
+      );
+
+      const finishHydrate = (nextMedLines: MedicationLineDraft[]) => {
+        const withDispensed = applyDispensedPrescriptionFlags(nextMedLines, rxCart.lines);
+        const finalLines = withDispensed.length > 0 ? withDispensed : [newMedicationLine()];
+        setMedicationLines(finalLines);
+        medsBaselineStrRef.current = medicationLinesSnapshot(finalLines);
+        medsBaselineReadyRef.current = true;
+      };
+
       if (r.error) {
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
             if (cancelled || !medicationsModalOpen) return;
-            setMedicationLines((prev) => {
-              const next = prev.length > 0 ? prev : [newMedicationLine()];
-              medsBaselineStrRef.current = medicationLinesSnapshot(next);
-              medsBaselineReadyRef.current = true;
-              return next;
-            });
+            finishHydrate([newMedicationLine()]);
           });
         });
         return;
@@ -523,12 +609,7 @@ export default function PlansTreatmentPanel({
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
             if (cancelled || !medicationsModalOpen) return;
-            setMedicationLines((prev) => {
-              const next = prev.length > 0 ? prev : [newMedicationLine()];
-              medsBaselineStrRef.current = medicationLinesSnapshot(next);
-              medsBaselineReadyRef.current = true;
-              return next;
-            });
+            finishHydrate([]);
           });
         });
         return;
@@ -635,14 +716,12 @@ export default function PlansTreatmentPanel({
       if (cancelled) return;
 
       const nextMedLines = resolved.length === 0 ? [newMedicationLine()] : resolved;
-      setMedicationLines(nextMedLines);
-      medsBaselineStrRef.current = medicationLinesSnapshot(nextMedLines);
-      medsBaselineReadyRef.current = true;
+      finishHydrate(nextMedLines);
     })();
     return () => {
       cancelled = true;
     };
-  }, [medicationsModalOpen, transId]);
+  }, [medicationsModalOpen, transId, paidLabRequestIds, paidImagingRequestIds]);
 
   useEffect(() => {
     if (!medicationsModalOpen) return;
@@ -1050,7 +1129,9 @@ export default function PlansTreatmentPanel({
   );
 
   const syncStructuredPrescription = useCallback(async () => {
-    const withProducts = medicationLines.filter((l) => l.productId.trim() !== "");
+    const withProducts = medicationLines.filter(
+      (l) => l.productId.trim() !== "" && !l.dispensedLocked,
+    );
     if (withProducts.length === 0) {
       return { prescriptionId: null as string | null, error: null as string | null };
     }
@@ -2714,6 +2795,16 @@ export default function PlansTreatmentPanel({
           ) : null}
           {!medProductsLoading && !medProductsError ? (
             <>
+              {medicationLines.some((l) => l.dispensedLocked) ? (
+                <Alert severity="info" sx={{ mb: 2 }}>
+                  Dispensed items cannot be changed. You can add new medications below.
+                </Alert>
+              ) : null}
+              {medVisitSettledHint && !medicationLines.some((l) => l.dispensedLocked) ? (
+                <Alert severity="info" sx={{ mb: 2 }}>
+                  Visit charges may already be settled; new medications are sent to pharmacy separately.
+                </Alert>
+              ) : null}
               <Grid container spacing={1.5} sx={{ mb: 1.5, display: { xs: "none", sm: "flex" } }}>
                 <Grid size={{ sm: 5 }}>
                   <Typography variant="caption" fontWeight={700} color="info.main" sx={{ letterSpacing: "0.06em" }}>
@@ -2725,27 +2816,42 @@ export default function PlansTreatmentPanel({
                     QTY
                   </Typography>
                 </Grid>
-                <Grid size={{ sm: 4 }}>
+                <Grid size={{ sm: 3 }}>
                   <Typography variant="caption" fontWeight={700} color="info.main" sx={{ letterSpacing: "0.06em" }}>
                     SIG
                   </Typography>
                 </Grid>
-                <Grid size={{ sm: 1 }} sx={{ minWidth: 40 }} />
+                <Grid size={{ sm: 2 }} sx={{ minWidth: 92 }} />
               </Grid>
               {medicationLines.map((line, idx) => {
                 const selected = line.productId ? (productCache[line.productId] ?? null) : null;
                 const lineFilled = isMedicationLineFilled(line);
+                const rowLocked = line.dispensedLocked === true;
                 return (
                   <Box key={line.key} sx={{ mb: 1.75 }}>
                     <Grid container spacing={1.5} alignItems="flex-start">
                       <Grid size={{ xs: 12, sm: 5 }}>
-                        {line.manualEntry ? (
+                        {rowLocked ? (
+                          <TextField
+                            size="small"
+                            fullWidth
+                            label="Product"
+                            value={
+                              selected
+                                ? formatProductOptionLabel(selected)
+                                : line.manualName.trim() || line.productId
+                            }
+                            disabled
+                            sx={medicationOutlinedFieldSx}
+                          />
+                        ) : line.manualEntry ? (
                           <TextField
                             size="small"
                             fullWidth
                             label="Product name"
                             placeholder="Enter medication name"
                             value={line.manualName}
+                            disabled={rowLocked}
                             onChange={(e) =>
                               setMedicationLines((rows) =>
                                 rows.map((r) => (r.key === line.key ? { ...r, manualName: e.target.value } : r)),
@@ -2760,6 +2866,7 @@ export default function PlansTreatmentPanel({
                             value={selected}
                             textFieldSx={medicationOutlinedFieldSx}
                             onChange={(p) => {
+                              if (rowLocked) return;
                               if (p) mergeIntoProductCache([p]);
                               setMedicationLines((rows) =>
                                 rows.map((r) =>
@@ -2777,6 +2884,7 @@ export default function PlansTreatmentPanel({
                             }}
                           />
                         )}
+                        {!rowLocked ? (
                         <Link
                           component="button"
                           type="button"
@@ -2806,6 +2914,7 @@ export default function PlansTreatmentPanel({
                         >
                           {line.manualEntry ? "Search catalog" : "Enter product manually"}
                         </Link>
+                        ) : null}
                       </Grid>
                       <Grid size={{ xs: 6, sm: 2 }}>
                         <TextField
@@ -2816,7 +2925,8 @@ export default function PlansTreatmentPanel({
                           type="number"
                           inputProps={{ min: 0, step: "any" }}
                           value={line.quantity}
-                          error={lineFilled && !isValidMedicationQuantity(line.quantity)}
+                          disabled={rowLocked}
+                          error={lineFilled && !rowLocked && !isValidMedicationQuantity(line.quantity)}
                           onChange={(e) =>
                             setMedicationLines((rows) =>
                               rows.map((r) => (r.key === line.key ? { ...r, quantity: e.target.value } : r)),
@@ -2825,11 +2935,12 @@ export default function PlansTreatmentPanel({
                           sx={medicationOutlinedFieldSx}
                         />
                       </Grid>
-                      <Grid size={{ xs: 12, sm: 4 }} sx={{ mt: { xs: 1, sm: 0 } }}>
+                      <Grid size={{ xs: 12, sm: 3 }} sx={{ mt: { xs: 1, sm: 0 } }}>
                         <MedicationSigField
                           label="Sig"
                           placeholder=" "
                           value={line.notes}
+                          disabled={rowLocked}
                           onChange={(notes) =>
                             setMedicationLines((rows) =>
                               rows.map((r) => (r.key === line.key ? { ...r, notes } : r)),
@@ -2838,21 +2949,42 @@ export default function PlansTreatmentPanel({
                         />
                       </Grid>
                       <Grid
-                        size={{ xs: 12, sm: 1 }}
-                        sx={{ display: "flex", alignItems: "center", justifyContent: { xs: "flex-end", sm: "center" }, pt: { xs: 0.5, sm: 0 } }}
+                        size={{ xs: 12, sm: 2 }}
+                        sx={{
+                          display: "flex",
+                          alignItems: "flex-start",
+                          justifyContent: { xs: "flex-end", sm: "flex-start" },
+                          pt: { xs: rowLocked ? 0 : 0.5, sm: 1.75 },
+                          minWidth: { sm: 92 },
+                          flexShrink: 0,
+                        }}
                       >
-                        <IconButton
-                          aria-label="Remove medication line"
-                          size="small"
-                          onClick={() => {
-                            setMedicationLines((prev) => {
-                              const next = prev.filter((l) => l.key !== line.key);
-                              return next.length === 0 ? [newMedicationLine()] : next;
-                            });
-                          }}
-                        >
-                          <DeleteOutlineIcon fontSize="small" />
-                        </IconButton>
+                        {rowLocked ? (
+                          <Chip
+                            label="Dispensed"
+                            size="small"
+                            color="success"
+                            sx={{
+                              fontWeight: 700,
+                              flexShrink: 0,
+                              maxWidth: "none",
+                              "& .MuiChip-label": { overflow: "visible", whiteSpace: "nowrap", px: 1 },
+                            }}
+                          />
+                        ) : (
+                          <IconButton
+                            aria-label="Remove medication line"
+                            size="small"
+                            onClick={() => {
+                              setMedicationLines((prev) => {
+                                const next = prev.filter((l) => l.key !== line.key);
+                                return next.length === 0 ? [newMedicationLine()] : next;
+                              });
+                            }}
+                          >
+                            <DeleteOutlineIcon fontSize="small" />
+                          </IconButton>
+                        )}
                       </Grid>
                     </Grid>
                     {idx < medicationLines.length - 1 ? <Divider sx={{ mt: 2 }} /> : null}

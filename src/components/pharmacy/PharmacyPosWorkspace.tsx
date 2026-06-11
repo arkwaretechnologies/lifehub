@@ -70,11 +70,11 @@ import {
   selectionFromDbType,
   type PosDiscountSelection,
 } from "@/lib/pharmacyPosDiscount";
+import { fetchPrescriptionCartByEncounterAuth } from "@/lib/pharmacyPrescriptionCart";
 import {
   aggregateShiftSales,
   closeShiftWithZ,
   fetchOpenShiftForUser,
-  fetchPrescriptionCartByEncounter,
   fetchPosProductById,
   fetchProductByBarcode,
   fetchStockLotsForProduct,
@@ -1137,7 +1137,7 @@ export default function PharmacyPosWorkspace() {
       const tid = transId.trim();
       if (!tid) return;
       setPosInfo(null);
-      const res = await fetchPrescriptionCartByEncounter(tid);
+      const res = await fetchPrescriptionCartByEncounterAuth(tid);
       if (res.error) {
         setCheckoutErr(res.error);
         return;
@@ -1149,23 +1149,49 @@ export default function PharmacyPosWorkspace() {
         setPatientName(null);
         return;
       }
+
+      const pendingLines = res.lines.filter((ln) => !ln.dispensed && ln.product_id);
+      const dispensedCount = res.lines.filter((ln) => ln.dispensed).length;
+
       setCheckoutErr(null);
       setPrescriptionId(res.prescriptionId);
       setPatientId(res.patientId);
       setPatientName(res.patientName);
-      setCart([]);
-      for (const ln of res.lines) {
-        const pid = ln.product_id;
-        if (!pid) continue;
+      if (pendingLines.length === 0) {
+        setCart([]);
+        setPosInfo(
+          dispensedCount > 0
+            ? `All prescription items for ${res.patientName ?? "this patient"} have already been dispensed.`
+            : "No billable products on this prescription.",
+        );
+        return;
+      }
+
+      const nextCart: CartLine[] = [];
+      for (const ln of pendingLines) {
+        const pid = ln.product_id!;
         const { product } = await fetchPosProductById(pid);
         if (!product) continue;
         const price = ln.unit_price ?? product.unit_price;
         const merged: ProductPosRow = { ...product, unit_price: price };
-        addProductToCart(merged, Math.max(1, Math.round(Number(ln.quantity_prescribed))), ln.pharmacy_prescription_item_id);
+        nextCart.push({
+          key: crypto.randomUUID(),
+          product: merged,
+          qty: Math.max(1, Math.round(Number(ln.quantity_prescribed))),
+          prescriptionItemId: ln.pharmacy_prescription_item_id,
+        });
       }
-      setPosInfo(`Loaded prescription for ${res.patientName ?? "patient"}.`);
+      setCart(nextCart);
+
+      if (dispensedCount > 0) {
+        setPosInfo(
+          `Loaded ${pendingLines.length} item(s) for ${res.patientName ?? "patient"}. ${dispensedCount} already-dispensed item(s) were excluded.`,
+        );
+      } else {
+        setPosInfo(`Loaded prescription for ${res.patientName ?? "patient"}.`);
+      }
     },
-    [addProductToCart],
+    [],
   );
 
   /** One field: type to search, scan barcode, or scan/paste encounter UUID — Enter commits. */

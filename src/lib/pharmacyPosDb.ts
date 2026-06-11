@@ -1271,19 +1271,109 @@ export type PrescriptionCartLine = {
   quantity_prescribed: number;
   sig: string | null;
   unit_price?: number | null;
+  /** True when linked to a completed pharmacy POS sale. */
+  dispensed?: boolean;
 };
 
-export async function fetchPrescriptionCartByEncounter(transId: string): Promise<{
+type PrescriptionItemRow = {
+  id: string;
+  product_id: string | null;
+  generic_name: string;
+  brand_name: string | null;
+  strength: string | null;
+  quantity_prescribed: number;
+  sig: string | null;
+};
+
+/** Prescription item ids referenced by completed pharmacy sales (dispensed / paid at POS). */
+export async function fetchDispensedPrescriptionItemIds(
+  client: SupabaseClient,
+  prescriptionId: string,
+): Promise<{ ids: Set<string>; error: string | null }> {
+  const pid = prescriptionId.trim();
+  if (!pid) return { ids: new Set(), error: null };
+
+  const { data: sales, error: sErr } = await client
+    .from(PHARMACY_SALES_TABLE)
+    .select("id")
+    .eq("prescription_id", pid)
+    .eq("status", "Completed");
+  if (sErr) return { ids: new Set(), error: sErr.message };
+
+  const saleIds = (sales ?? []).map((s) => String((s as { id?: string }).id ?? "").trim()).filter(Boolean);
+  if (saleIds.length === 0) return { ids: new Set(), error: null };
+
+  const { data: saleItems, error: iErr } = await client
+    .from(PHARMACY_SALE_ITEMS_TABLE)
+    .select("pharmacy_prescription_item_id")
+    .in("pharmacy_sale_id", saleIds);
+  if (iErr) return { ids: new Set(), error: iErr.message };
+
+  const ids = new Set<string>();
+  for (const row of saleItems ?? []) {
+    const itemId = String((row as { pharmacy_prescription_item_id?: string | null }).pharmacy_prescription_item_id ?? "").trim();
+    if (itemId) ids.add(itemId);
+  }
+  return { ids, error: null };
+}
+
+export type UpsertRxLineInput = {
+  productId: string;
+  quantityPrescribed: number;
+  sig: string | null;
+};
+
+async function loadProductMapForRx(
+  client: SupabaseClient,
+  productIds: string[],
+): Promise<{ map: Map<string, Record<string, unknown>>; error: string | null }> {
+  if (productIds.length === 0) return { map: new Map(), error: null };
+  const { data: products, error: prErr } = await client
+    .from(PRODUCTS_TABLE)
+    .select("id, generic_name, brand_name, strength, dosage_form")
+    .in("id", productIds);
+  if (prErr) return { map: new Map(), error: prErr.message };
+  return {
+    map: new Map((products ?? []).map((p) => [(p as { id: string }).id, p as Record<string, unknown>])),
+    error: null,
+  };
+}
+
+function buildPrescriptionItemInsertRow(
+  prescriptionId: string,
+  line: UpsertRxLineInput,
+  pmap: Map<string, Record<string, unknown>>,
+) {
+  const p = pmap.get(line.productId);
+  return {
+    prescription_id: prescriptionId,
+    product_id: line.productId,
+    generic_name: String(p?.generic_name ?? ""),
+    brand_name: (p?.brand_name as string | null) ?? null,
+    strength: (p?.strength as string | null) ?? null,
+    dosage_form: (p?.dosage_form as string | null) ?? null,
+    quantity_prescribed: line.quantityPrescribed,
+    sig: line.sig,
+  };
+}
+
+export type PrescriptionCartByEncounterResult = {
   prescriptionId: string | null;
   patientId: number | null;
   patientName: string | null;
   lines: PrescriptionCartLine[];
   error: string | null;
-}> {
+};
+
+/** Requires a client that can read completed pharmacy sales (service role or API route). */
+export async function fetchPrescriptionCartByEncounterWithClient(
+  client: SupabaseClient,
+  transId: string,
+): Promise<PrescriptionCartByEncounterResult> {
   const tid = transId.trim();
   if (!tid) return { prescriptionId: null, patientId: null, patientName: null, lines: [], error: null };
 
-  const { data: presc, error: pErr } = await supabase
+  const { data: presc, error: pErr } = await client
     .from(PRESCRIPTIONS_TABLE)
     .select("id, patient_id")
     .eq("encounter_id", tid)
@@ -1301,31 +1391,25 @@ export async function fetchPrescriptionCartByEncounter(transId: string): Promise
 
   let patientName: string | null = null;
   if (patientId != null) {
-    const { data: pat } = await supabase.from("patients").select("name").eq("id", patientId).maybeSingle();
+    const { data: pat } = await client.from("patients").select("name").eq("id", patientId).maybeSingle();
     patientName = (pat as { name: string | null } | null)?.name ?? null;
   }
 
-  const { data: items, error: iErr } = await supabase
+  const { data: items, error: iErr } = await client
     .from(PHARMACY_PRESCRIPTION_ITEMS_TABLE)
     .select("id, product_id, generic_name, brand_name, strength, quantity_prescribed, sig")
     .eq("prescription_id", prescriptionId);
 
   if (iErr) return { prescriptionId, patientId, patientName, lines: [], error: iErr.message };
 
+  const { ids: dispensedIds } = await fetchDispensedPrescriptionItemIds(client, prescriptionId);
+
   const lines: PrescriptionCartLine[] = [];
   for (const raw of items ?? []) {
-    const row = raw as {
-      id: string;
-      product_id: string | null;
-      generic_name: string;
-      brand_name: string | null;
-      strength: string | null;
-      quantity_prescribed: number;
-      sig: string | null;
-    };
+    const row = raw as PrescriptionItemRow;
     let unit_price: number | null = null;
     if (row.product_id) {
-      const { data: pr } = await supabase
+      const { data: pr } = await client
         .from(PRODUCTS_TABLE)
         .select("unit_price")
         .eq("id", row.product_id)
@@ -1341,17 +1425,19 @@ export async function fetchPrescriptionCartByEncounter(transId: string): Promise
       quantity_prescribed: row.quantity_prescribed,
       sig: row.sig,
       unit_price,
+      dispensed: dispensedIds.has(row.id),
     });
   }
 
   return { prescriptionId, patientId, patientName, lines, error: null };
 }
 
-export type UpsertRxLineInput = {
-  productId: string;
-  quantityPrescribed: number;
-  sig: string | null;
-};
+/** Browser client cannot read pharmacy sales under RLS — use {@link fetchPrescriptionCartByEncounterAuth} from the app. */
+export async function fetchPrescriptionCartByEncounter(
+  transId: string,
+): Promise<PrescriptionCartByEncounterResult> {
+  return fetchPrescriptionCartByEncounterWithClient(supabase, transId);
+}
 
 export async function upsertPrescriptionForEncounterWithClient(
   client: SupabaseClient,
@@ -1374,20 +1460,11 @@ export async function upsertPrescriptionForEncounterWithClient(
   if (exErr) return { prescriptionId: null, error: exErr.message };
 
   let prescriptionId: string;
+  let isNewPrescription = false;
   if (existing) {
     prescriptionId = (existing as { id: string }).id;
-    const { error: uErr } = await client
-      .from(PRESCRIPTIONS_TABLE)
-      .update({
-        patient_id: args.patientId,
-        physician_id: args.physicianUserId,
-        prescribed_date: today,
-        updated_at: now,
-        status: "Pending",
-      })
-      .eq("id", prescriptionId);
-    if (uErr) return { prescriptionId: null, error: uErr.message };
   } else {
+    isNewPrescription = true;
     const { data: ins, error: iErr } = await client
       .from(PRESCRIPTIONS_TABLE)
       .insert({
@@ -1406,38 +1483,100 @@ export async function upsertPrescriptionForEncounterWithClient(
     prescriptionId = (ins as { id: string }).id;
   }
 
-  const { error: delErr } = await client
-    .from(PHARMACY_PRESCRIPTION_ITEMS_TABLE)
-    .delete()
-    .eq("prescription_id", prescriptionId);
-  if (delErr) return { prescriptionId: null, error: delErr.message };
+  const normalizedLines = args.rxLines
+    .filter((l) => l && typeof l.productId === "string" && l.productId.trim() !== "")
+    .map((l) => ({
+      productId: l.productId.trim(),
+      quantityPrescribed: Math.max(1, Math.round(Number(l.quantityPrescribed) || 0)),
+      sig: typeof l.sig === "string" && l.sig.trim() ? l.sig.trim() : null,
+    }));
 
-  const productIds = args.rxLines.map((l) => l.productId).filter(Boolean);
-  const { data: products, error: prErr } = await client
-    .from(PRODUCTS_TABLE)
-    .select("id, generic_name, brand_name, strength, dosage_form")
-    .in("id", productIds);
-  if (prErr) return { prescriptionId: null, error: prErr.message };
-  const pmap = new Map((products ?? []).map((p) => [(p as { id: string }).id, p as Record<string, unknown>]));
-
-  const itemRows = args.rxLines.map((line) => {
-    const p = pmap.get(line.productId);
-    return {
-      prescription_id: prescriptionId,
-      product_id: line.productId,
-      generic_name: String(p?.generic_name ?? ""),
-      brand_name: (p?.brand_name as string | null) ?? null,
-      strength: (p?.strength as string | null) ?? null,
-      dosage_form: (p?.dosage_form as string | null) ?? null,
-      quantity_prescribed: line.quantityPrescribed,
-      sig: line.sig,
-    };
-  });
-
-  if (itemRows.length > 0) {
-    const { error: insErr } = await client.from(PHARMACY_PRESCRIPTION_ITEMS_TABLE).insert(itemRows);
-    if (insErr) return { prescriptionId: null, error: insErr.message };
+  if (isNewPrescription) {
+    const seenProductIds = new Set<string>();
+    const uniqueLines = normalizedLines.filter((l) => {
+      if (seenProductIds.has(l.productId)) return false;
+      seenProductIds.add(l.productId);
+      return true;
+    });
+    const productIds = [...new Set(uniqueLines.map((l) => l.productId))];
+    const { map: pmap, error: prErr } = await loadProductMapForRx(client, productIds);
+    if (prErr) return { prescriptionId: null, error: prErr };
+    const itemRows = uniqueLines.map((line) => buildPrescriptionItemInsertRow(prescriptionId, line, pmap));
+    if (itemRows.length > 0) {
+      const { error: insErr } = await client.from(PHARMACY_PRESCRIPTION_ITEMS_TABLE).insert(itemRows);
+      if (insErr) return { prescriptionId: null, error: insErr.message };
+    }
+    return { prescriptionId, error: null };
   }
+
+  const { data: existingItems, error: itemsErr } = await client
+    .from(PHARMACY_PRESCRIPTION_ITEMS_TABLE)
+    .select("id, product_id, generic_name, brand_name, strength, quantity_prescribed, sig")
+    .eq("prescription_id", prescriptionId);
+  if (itemsErr) return { prescriptionId: null, error: itemsErr.message };
+
+  const { ids: dispensedIds, error: dispErr } = await fetchDispensedPrescriptionItemIds(client, prescriptionId);
+  if (dispErr) return { prescriptionId: null, error: dispErr };
+
+  const existingRows = (existingItems ?? []) as PrescriptionItemRow[];
+  const payloadQueue = [...normalizedLines];
+  let insertedNew = false;
+
+  for (const row of existingRows) {
+    if (dispensedIds.has(row.id)) {
+      // Drop payload lines for products already dispensed — otherwise they are re-inserted as duplicates.
+      if (row.product_id) {
+        const dupIdx = payloadQueue.findIndex((p) => p.productId === row.product_id);
+        if (dupIdx >= 0) payloadQueue.splice(dupIdx, 1);
+      }
+      continue;
+    }
+
+    const matchIdx = row.product_id
+      ? payloadQueue.findIndex((p) => p.productId === row.product_id)
+      : -1;
+    if (matchIdx >= 0) {
+      const line = payloadQueue.splice(matchIdx, 1)[0]!;
+      const { error: upErr } = await client
+        .from(PHARMACY_PRESCRIPTION_ITEMS_TABLE)
+        .update({
+          quantity_prescribed: line.quantityPrescribed,
+          sig: line.sig,
+        })
+        .eq("id", row.id);
+      if (upErr) return { prescriptionId: null, error: upErr.message };
+    } else {
+      const { error: delErr } = await client.from(PHARMACY_PRESCRIPTION_ITEMS_TABLE).delete().eq("id", row.id);
+      if (delErr) return { prescriptionId: null, error: delErr.message };
+    }
+  }
+
+  if (payloadQueue.length > 0) {
+    const occupiedProductIds = new Set(
+      existingRows.map((r) => r.product_id).filter((id): id is string => typeof id === "string" && id.trim() !== ""),
+    );
+    const newLines = payloadQueue.filter((p) => !occupiedProductIds.has(p.productId));
+    if (newLines.length > 0) {
+      const productIds = [...new Set(newLines.map((l) => l.productId))];
+      const { map: pmap, error: prErr } = await loadProductMapForRx(client, productIds);
+      if (prErr) return { prescriptionId: null, error: prErr };
+      const itemRows = newLines.map((line) => buildPrescriptionItemInsertRow(prescriptionId, line, pmap));
+      const { error: insErr } = await client.from(PHARMACY_PRESCRIPTION_ITEMS_TABLE).insert(itemRows);
+      if (insErr) return { prescriptionId: null, error: insErr.message };
+      insertedNew = true;
+    }
+  }
+
+  const headerUpdate: Record<string, unknown> = {
+    patient_id: args.patientId,
+    physician_id: args.physicianUserId,
+    prescribed_date: today,
+    updated_at: now,
+  };
+  if (insertedNew) headerUpdate.status = "Pending";
+
+  const { error: uErr } = await client.from(PRESCRIPTIONS_TABLE).update(headerUpdate).eq("id", prescriptionId);
+  if (uErr) return { prescriptionId: null, error: uErr.message };
 
   return { prescriptionId, error: null };
 }

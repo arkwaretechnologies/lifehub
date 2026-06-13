@@ -41,7 +41,7 @@ import {
   templateSignatureLayoutFormFieldsFromDb,
   type TemplateSignatureLayoutFormFields,
 } from "@/lib/labResultTemplates";
-import type { PrintLayoutFormFields } from "@/lib/labResultsPrintLayout";
+import type { PrintLayoutFormFields, ImageLayoutFormFields } from "@/lib/labResultsPrintLayout";
 
 type ResultTemplateRow = LabResultTemplateRow & { has_file?: boolean };
 
@@ -131,6 +131,63 @@ function SignatureSlotFields({
           value={fields.print_max_width}
           onChange={(e) => onChange({ ...fields, print_max_width: e.target.value })}
           {...fieldSx}
+        />
+      </Stack>
+    </Box>
+  );
+}
+
+function ImageSignatureSlotFields({
+  title,
+  fields,
+  onChange,
+}: {
+  title: string;
+  fields: ImageLayoutFormFields;
+  onChange: (next: ImageLayoutFormFields) => void;
+}) {
+  return (
+    <Box sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, p: 1.5 }}>
+      <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
+        {title}
+      </Typography>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+        <TextField
+          label="X (refX)"
+          type="number"
+          value={fields.print_ref_x}
+          onChange={(e) => onChange({ ...fields, print_ref_x: e.target.value })}
+          {...fieldSx}
+        />
+        <TextField
+          label="Y from top"
+          type="number"
+          value={fields.print_ref_from_top}
+          onChange={(e) => onChange({ ...fields, print_ref_from_top: e.target.value })}
+          {...fieldSx}
+        />
+        <TextField
+          label="Width"
+          type="number"
+          value={fields.print_ref_width}
+          onChange={(e) => onChange({ ...fields, print_ref_width: e.target.value })}
+          {...fieldSx}
+        />
+        <TextField
+          label="Height"
+          type="number"
+          value={fields.print_ref_height}
+          onChange={(e) => onChange({ ...fields, print_ref_height: e.target.value })}
+          {...fieldSx}
+        />
+      </Stack>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mt: 1.5 }}>
+        <TextField
+          label="Page index"
+          type="number"
+          value={fields.print_page_index}
+          onChange={(e) => onChange({ ...fields, print_page_index: e.target.value })}
+          sx={[fieldSx.sx, { width: { xs: "100%", sm: "25%" } }]}
         />
       </Stack>
     </Box>
@@ -377,6 +434,13 @@ export default function SettingsLabResultTemplatesPage() {
         fields={form.signature.medtech_license}
         onChange={(medtech_license) => setForm({ ...form, signature: { ...form.signature, medtech_license } })}
       />
+      <ImageSignatureSlotFields
+        title="Medical Technologist — signature image"
+        fields={form.signature.medtech_signature}
+        onChange={(medtech_signature) =>
+          setForm({ ...form, signature: { ...form.signature, medtech_signature } })
+        }
+      />
       <SignatureSlotFields
         title="Pathologist — name"
         fields={form.signature.pathologist_name}
@@ -389,6 +453,13 @@ export default function SettingsLabResultTemplatesPage() {
         fields={form.signature.pathologist_license}
         onChange={(pathologist_license) =>
           setForm({ ...form, signature: { ...form.signature, pathologist_license } })
+        }
+      />
+      <ImageSignatureSlotFields
+        title="Pathologist — signature image"
+        fields={form.signature.pathologist_signature}
+        onChange={(pathologist_signature) =>
+          setForm({ ...form, signature: { ...form.signature, pathologist_signature } })
         }
       />
     </Stack>

@@ -15,6 +15,8 @@ import {
 } from "@mui/material";
 import SaveOutlinedIcon from "@mui/icons-material/SaveOutlined";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
+import SignatureUploadField from "@/components/SignatureUploadField";
+import { useAppToast } from "@/hooks/useAppToast";
 import type { LabResultSignatoriesMap } from "@/lib/labResultSignatories";
 
 type SignatoryForm = {
@@ -49,6 +51,27 @@ export default function SettingsLabSignatoriesPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
+  const [sigPreview, setSigPreview] = useState<{ medtech: string | null; pathologist: string | null }>({
+    medtech: null,
+    pathologist: null,
+  });
+  const [sigHas, setSigHas] = useState<{ medtech: boolean; pathologist: boolean }>({
+    medtech: false,
+    pathologist: false,
+  });
+  const [sigUploading, setSigUploading] = useState<"medtech" | "pathologist" | null>(null);
+
+  const loadSignaturePreview = useCallback(async (role: "medtech" | "pathologist") => {
+    const res = await authenticatedFetch(`/api/settings/laboratory/signatories/${role}/signature`);
+    const json = (await res.json().catch(() => null)) as { url?: string | null; storagePath?: string | null; error?: string } | null;
+    if (!res.ok || json?.error) return;
+    setSigPreview((prev) => ({ ...prev, [role]: json?.url ?? null }));
+    setSigHas((prev) => ({ ...prev, [role]: Boolean(json?.storagePath) }));
+  }, []);
+
+  const loadAllSignaturePreviews = useCallback(async () => {
+    await Promise.all([loadSignaturePreview("medtech"), loadSignaturePreview("pathologist")]);
+  }, [loadSignaturePreview]);
 
   const load = useCallback(async () => {
     setError("");
@@ -64,16 +87,67 @@ export default function SettingsLabSignatoriesPage() {
         return;
       }
       if (json?.signatories) setForm(mapToForm(json.signatories));
+      await loadAllSignaturePreviews();
     } catch {
       setError("Failed to load signatories.");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadAllSignaturePreviews]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  const { showToast, Toast } = useAppToast();
+
+  const uploadSignature = async (role: "medtech" | "pathologist", file: File) => {
+    setError("");
+    setSigUploading(role);
+    showToast("Uploading signature…", "info");
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const res = await authenticatedFetch(`/api/settings/laboratory/signatories/${role}/signature`, {
+        method: "POST",
+        body,
+      });
+      const json = (await res.json().catch(() => null)) as { error?: string } | null;
+      if (!res.ok || json?.error) {
+        showToast(json?.error ?? "Could not upload signature.", "error");
+        return;
+      }
+      await loadSignaturePreview(role);
+      showToast("Signature uploaded.", "success");
+    } catch {
+      showToast("Could not upload signature.", "error");
+    } finally {
+      setSigUploading(null);
+    }
+  };
+
+  const removeSignature = async (role: "medtech" | "pathologist") => {
+    setError("");
+    setSigUploading(role);
+    showToast("Removing signature…", "info");
+    try {
+      const res = await authenticatedFetch(`/api/settings/laboratory/signatories/${role}/signature`, {
+        method: "DELETE",
+      });
+      const json = (await res.json().catch(() => null)) as { error?: string } | null;
+      if (!res.ok || json?.error) {
+        showToast(json?.error ?? "Could not remove signature.", "error");
+        return;
+      }
+      setSigPreview((prev) => ({ ...prev, [role]: null }));
+      setSigHas((prev) => ({ ...prev, [role]: false }));
+      showToast("Signature removed.", "success");
+    } catch {
+      showToast("Could not remove signature.", "error");
+    } finally {
+      setSigUploading(null);
+    }
+  };
 
   const handleSave = async () => {
     setError("");
@@ -103,6 +177,7 @@ export default function SettingsLabSignatoriesPage() {
         return;
       }
       if (json?.signatories) setForm(mapToForm(json.signatories));
+      await loadAllSignaturePreviews();
       setSuccess(true);
     } catch {
       setError("Could not save signatories.");
@@ -142,17 +217,27 @@ export default function SettingsLabSignatoriesPage() {
           }
           {...fieldSx}
         />
+        <SignatureUploadField
+          label="Signature image"
+          previewUrl={sigPreview[key]}
+          hasSignature={sigHas[key]}
+          uploading={sigUploading === key}
+          onUpload={(file) => void uploadSignature(key, file)}
+          onRemove={() => void removeSignature(key)}
+        />
       </Stack>
     </Box>
   );
 
   return (
-    <Box sx={{ p: { xs: 2, md: 3 }, maxWidth: 720, mx: "auto" }}>
+    <>
+      <Toast />
+      <Box sx={{ p: { xs: 2, md: 3 }, maxWidth: 720, mx: "auto" }}>
       <Typography variant="h5" fontWeight={800} sx={{ mb: 1 }}>
         Lab result signatories
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Names and license numbers printed on laboratory result forms. Position on each PDF is configured
+        Names, license numbers, and signature images printed on laboratory result forms. Text position on each PDF is configured
         under Settings → Laboratory → Result templates.
       </Typography>
 
@@ -193,5 +278,6 @@ export default function SettingsLabSignatoriesPage() {
         </CardContent>
       </Card>
     </Box>
+    </>
   );
 }

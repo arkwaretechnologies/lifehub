@@ -1,13 +1,18 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import path from "path";
 import { LAB_RESULTS_TEMPLATES_RELATIVE_DIR, labResultsTemplatePdfFileName } from "@/lib/labTests";
-import type { LabResultPrintPosition } from "@/lib/labResultsPrintLayout";
+import type { LabResultPrintPosition, LabResultImagePosition } from "@/lib/labResultsPrintLayout";
 import {
   buildPrintLayoutJsonFromFormFields,
+  buildImageLayoutJsonFromFormFields,
   emptyPrintLayoutFormFields,
+  emptyImageLayoutFormFields,
   parseResultsPrintLayout,
+  parseResultsImageLayout,
   printLayoutFormFieldsFromDb,
+  imageLayoutFormFieldsFromDb,
   type PrintLayoutFormFields,
+  type ImageLayoutFormFields,
 } from "@/lib/labResultsPrintLayout";
 
 export const LAB_RESULT_TEMPLATES_TABLE = "lab_result_templates" as const;
@@ -15,6 +20,7 @@ export const LAB_RESULT_TEMPLATES_TABLE = "lab_result_templates" as const;
 export type LabResultTemplateSignatureSlot = {
   name: LabResultPrintPosition | null;
   license: LabResultPrintPosition | null;
+  signature: LabResultImagePosition | null;
 };
 
 export type LabResultTemplateSignatureLayout = {
@@ -38,12 +44,13 @@ const TEMPLATE_SELECT =
   "id, code, name, file_name, sort_order, is_active, signature_layout, created_at, updated_at";
 
 function parseSignatureSlot(raw: unknown): LabResultTemplateSignatureSlot {
-  const empty: LabResultTemplateSignatureSlot = { name: null, license: null };
+  const empty: LabResultTemplateSignatureSlot = { name: null, license: null, signature: null };
   if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return empty;
   const rec = raw as Record<string, unknown>;
   const name = parseResultsPrintLayout(rec.name);
   const license = parseResultsPrintLayout(rec.license);
-  return { name, license };
+  const signature = parseResultsImageLayout(rec.signature);
+  return { name, license, signature };
 }
 
 /** Parse `lab_result_templates.signature_layout` jsonb. */
@@ -55,8 +62,10 @@ export function parseTemplateSignatureLayout(raw: unknown): LabResultTemplateSig
   const hasAny =
     medtech.name != null ||
     medtech.license != null ||
+    medtech.signature != null ||
     pathologist.name != null ||
-    pathologist.license != null;
+    pathologist.license != null ||
+    pathologist.signature != null;
   if (!hasAny) return null;
   return { medtech, pathologist };
 }
@@ -192,18 +201,22 @@ export async function fetchLabResultTemplateByCode(
 export function buildSignatureLayoutJsonFromForm(
   medtechName: LabResultPrintPosition | null,
   medtechLicense: LabResultPrintPosition | null,
+  medtechSignature: LabResultImagePosition | null,
   pathologistName: LabResultPrintPosition | null,
   pathologistLicense: LabResultPrintPosition | null,
+  pathologistSignature: LabResultImagePosition | null,
 ): LabResultTemplateSignatureLayout | null {
   const layout: LabResultTemplateSignatureLayout = {
-    medtech: { name: medtechName, license: medtechLicense },
-    pathologist: { name: pathologistName, license: pathologistLicense },
+    medtech: { name: medtechName, license: medtechLicense, signature: medtechSignature },
+    pathologist: { name: pathologistName, license: pathologistLicense, signature: pathologistSignature },
   };
   const hasAny =
     medtechName != null ||
     medtechLicense != null ||
+    medtechSignature != null ||
     pathologistName != null ||
-    pathologistLicense != null;
+    pathologistLicense != null ||
+    pathologistSignature != null;
   return hasAny ? layout : null;
 }
 
@@ -228,20 +241,24 @@ export function parseTemplateSignatureLayoutInput(
       ? {
           name: parsePositionField((medRaw as Record<string, unknown>).name),
           license: parsePositionField((medRaw as Record<string, unknown>).license),
+          signature: parseResultsImageLayout((medRaw as Record<string, unknown>).signature),
         }
-      : { name: null, license: null };
+      : { name: null, license: null, signature: null };
   const pathologist =
     pathRaw != null && typeof pathRaw === "object" && !Array.isArray(pathRaw)
       ? {
           name: parsePositionField((pathRaw as Record<string, unknown>).name),
           license: parsePositionField((pathRaw as Record<string, unknown>).license),
+          signature: parseResultsImageLayout((pathRaw as Record<string, unknown>).signature),
         }
-      : { name: null, license: null };
+      : { name: null, license: null, signature: null };
   const value = buildSignatureLayoutJsonFromForm(
     medtech.name,
     medtech.license,
+    medtech.signature,
     pathologist.name,
     pathologist.license,
+    pathologist.signature,
   );
   return { ok: true, value };
 }
@@ -251,16 +268,20 @@ export const LAB_RESULT_TEMPLATE_PDF_MAX_BYTES = 15 * 1024 * 1024;
 export type TemplateSignatureLayoutFormFields = {
   medtech_name: PrintLayoutFormFields;
   medtech_license: PrintLayoutFormFields;
+  medtech_signature: ImageLayoutFormFields;
   pathologist_name: PrintLayoutFormFields;
   pathologist_license: PrintLayoutFormFields;
+  pathologist_signature: ImageLayoutFormFields;
 };
 
 export function emptyTemplateSignatureLayoutFormFields(): TemplateSignatureLayoutFormFields {
   return {
     medtech_name: emptyPrintLayoutFormFields(),
     medtech_license: emptyPrintLayoutFormFields(),
+    medtech_signature: emptyImageLayoutFormFields(),
     pathologist_name: emptyPrintLayoutFormFields(),
     pathologist_license: emptyPrintLayoutFormFields(),
+    pathologist_signature: emptyImageLayoutFormFields(),
   };
 }
 
@@ -272,8 +293,10 @@ export function templateSignatureLayoutFormFieldsFromDb(
   return {
     medtech_name: printLayoutFormFieldsFromDb(layout.medtech.name),
     medtech_license: printLayoutFormFieldsFromDb(layout.medtech.license),
+    medtech_signature: imageLayoutFormFieldsFromDb(layout.medtech.signature),
     pathologist_name: printLayoutFormFieldsFromDb(layout.pathologist.name),
     pathologist_license: printLayoutFormFieldsFromDb(layout.pathologist.license),
+    pathologist_signature: imageLayoutFormFieldsFromDb(layout.pathologist.signature),
   };
 }
 
@@ -283,6 +306,12 @@ function parseSlotFromFormFields(
   return buildPrintLayoutJsonFromFormFields(fields);
 }
 
+function parseImageSlotFromFormFields(
+  fields: ImageLayoutFormFields,
+): { ok: true; value: LabResultImagePosition | null } | { ok: false; error: string } {
+  return buildImageLayoutJsonFromFormFields(fields);
+}
+
 export function buildTemplateSignatureLayoutFromFormFields(
   fields: TemplateSignatureLayoutFormFields,
 ): { ok: true; value: LabResultTemplateSignatureLayout | null } | { ok: false; error: string } {
@@ -290,15 +319,21 @@ export function buildTemplateSignatureLayoutFromFormFields(
   if (!medName.ok) return medName;
   const medLic = parseSlotFromFormFields(fields.medtech_license);
   if (!medLic.ok) return medLic;
+  const medSig = parseImageSlotFromFormFields(fields.medtech_signature);
+  if (!medSig.ok) return medSig;
   const pathName = parseSlotFromFormFields(fields.pathologist_name);
   if (!pathName.ok) return pathName;
   const pathLic = parseSlotFromFormFields(fields.pathologist_license);
   if (!pathLic.ok) return pathLic;
+  const pathSig = parseImageSlotFromFormFields(fields.pathologist_signature);
+  if (!pathSig.ok) return pathSig;
   const value = buildSignatureLayoutJsonFromForm(
     medName.value,
     medLic.value,
+    medSig.value,
     pathName.value,
     pathLic.value,
+    pathSig.value,
   );
   return { ok: true, value };
 }

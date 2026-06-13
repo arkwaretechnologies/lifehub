@@ -10,10 +10,14 @@ import type { ReviewOfSystemsForm } from "@/lib/reviewOfSystems";
 import type { SocialHistoryForm } from "@/lib/socialHistory";
 import type { SurgicalHistoryForm } from "@/lib/surgicalHistory";
 import type { PDFFont, PDFPage } from "pdf-lib";
+import { drawSignatureImageAtRef, embedSignatureBytes } from "@/lib/signaturePdfEmbed";
+import { fetchPhysicianSignaturePrintLayout } from "@/lib/clinicalPrintLayoutFetch";
 
 type ConsultationPrintPhysician = {
   fullname: string;
   licenseNo: string;
+  signatureBytes?: Uint8Array | null;
+  signatureContentType?: string | null;
 };
 
 type ConsultationPrintDetails = {
@@ -390,10 +394,13 @@ export async function openConsultationPrintWindow(args: {
 }): Promise<boolean> {
   const { patient, physician, details } = args;
   const { PDFDocument, StandardFonts } = await import("pdf-lib");
-  const res = await authenticatedFetch("/api/consultation-template", { cache: "no-store" });
-  if (!res.ok) return false;
+  const [templateRes, signatureSlot] = await Promise.all([
+    authenticatedFetch("/api/consultation-template", { cache: "no-store" }),
+    fetchPhysicianSignaturePrintLayout("consultation"),
+  ]);
+  if (!templateRes.ok) return false;
 
-  const templateBytes = await res.arrayBuffer();
+  const templateBytes = await templateRes.arrayBuffer();
   const doc = await PDFDocument.load(templateBytes);
   const font = await doc.embedFont(StandardFonts.Helvetica);
 
@@ -669,6 +676,17 @@ export async function openConsultationPrintWindow(args: {
     }
 
     drawAtTop(p3, details.disposition, 37, 288, 8.7, font);
+    if (physician.signatureBytes?.length) {
+      const sigImg = await embedSignatureBytes(doc, physician.signatureBytes, physician.signatureContentType);
+      if (sigImg) {
+        const pages = doc.getPages();
+        const pageIndex = signatureSlot.position.pageIndex ?? 2;
+        const sigPage = pages[pageIndex] ?? p3;
+        if (sigPage) {
+          drawSignatureImageAtRef(sigPage, sigImg, signatureSlot.position, signatureSlot.refW, signatureSlot.refH);
+        }
+      }
+    }
     drawAtTop(p3, physician.fullname, 123, 623, 9, font);
     drawAtTop(p3, physician.licenseNo, 112, 366, 9, font);
   }

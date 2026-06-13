@@ -32,6 +32,9 @@ import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/components/AuthProvider";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { isLabSignatureRole } from "@/lib/labResultSignatures";
+import { userRoleCanHaveSignature } from "@/lib/signatureImageShared";
+import SignatureUploadField from "@/components/SignatureUploadField";
+import { useAppToast } from "@/hooks/useAppToast";
 
 type AppUserRow = {
   user_id: number | string;
@@ -46,6 +49,7 @@ type AppUserRow = {
   license_no: string | null;
   s2_no: string | null;
   ptr_no: string | null;
+  signature_storage_path?: string | null;
   created_at: string | null;
   updated_at: string | null;
 };
@@ -149,6 +153,7 @@ function formToUpdatePayload(f: UserForm) {
 export default function UsersPage() {
   const { profile } = useAuth();
   const myUserId = profile?.user_id;
+  const { showToast, Toast } = useAppToast();
 
   const [users, setUsers] = useState<AppUserRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -167,6 +172,9 @@ export default function UsersPage() {
   const [editForm, setEditForm] = useState<UserForm>(emptyForm);
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState("");
+  const [editSigPreview, setEditSigPreview] = useState<string | null>(null);
+  const [editSigHas, setEditSigHas] = useState(false);
+  const [editSigUploading, setEditSigUploading] = useState(false);
 
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<AppUserRow | null>(null);
@@ -266,8 +274,70 @@ export default function UsersPage() {
     setEditingId(row.user_id);
     setEditForm(rowToForm(row));
     setEditError("");
+    setEditSigPreview(null);
+    setEditSigHas(Boolean((row.signature_storage_path ?? "").trim()));
     void loadRolesForSelect();
     setEditOpen(true);
+    if (userRoleCanHaveSignature(row.role ?? "") && row.user_id != null) {
+      void (async () => {
+        const res = await authenticatedFetch(`/api/users/${row.user_id}/signature`);
+        const json = (await res.json().catch(() => null)) as { url?: string | null; storagePath?: string | null } | null;
+        if (res.ok && json) {
+          setEditSigPreview(json.url ?? null);
+          setEditSigHas(Boolean(json.storagePath));
+        }
+      })();
+    }
+  };
+
+  const uploadEditSignature = async (file: File) => {
+    if (editingId == null) return;
+    setEditSigUploading(true);
+    setEditError("");
+    showToast("Uploading signature…", "info");
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const res = await authenticatedFetch(`/api/users/${editingId}/signature`, { method: "POST", body });
+      const json = (await res.json().catch(() => null)) as { error?: string } | null;
+      if (!res.ok || json?.error) {
+        showToast(json?.error ?? "Could not upload signature.", "error");
+        return;
+      }
+      const urlRes = await authenticatedFetch(`/api/users/${editingId}/signature`);
+      const urlJson = (await urlRes.json().catch(() => null)) as { url?: string | null; storagePath?: string | null } | null;
+      if (urlRes.ok && urlJson) {
+        setEditSigPreview(urlJson.url ?? null);
+        setEditSigHas(Boolean(urlJson.storagePath));
+      }
+      showToast("Signature uploaded.", "success");
+    } catch {
+      showToast("Could not upload signature.", "error");
+    } finally {
+      setEditSigUploading(false);
+    }
+  };
+
+  const removeEditSignature = async () => {
+    if (editingId == null) return;
+    setEditSigUploading(true);
+    setEditError("");
+    showToast("Removing signature…", "info");
+    try {
+      const res = await authenticatedFetch(`/api/users/${editingId}/signature`, { method: "DELETE" });
+      const json = (await res.json().catch(() => null)) as { error?: string } | null;
+      if (!res.ok || json?.error) {
+        showToast(json?.error ?? "Could not remove signature.", "error");
+        return;
+      }
+      setEditSigPreview(null);
+      setEditSigHas(false);
+      showToast("Signature removed.", "success");
+    } catch {
+      showToast("Could not remove signature.", "error");
+    } finally {
+      setEditSigUploading(false);
+    }
   };
 
   const handleEditSave = async () => {
@@ -278,6 +348,15 @@ export default function UsersPage() {
     }
     setEditSaving(true);
     setEditError("");
+    const prevRow = users.find((u) => String(u.user_id) === String(editingId));
+    if (
+      prevRow &&
+      userRoleCanHaveSignature(String(prevRow.role ?? "")) &&
+      !userRoleCanHaveSignature(editForm.role) &&
+      (prevRow.signature_storage_path ?? "").trim()
+    ) {
+      await authenticatedFetch(`/api/users/${editingId}/signature`, { method: "DELETE" });
+    }
     const payload = formToUpdatePayload(editForm);
     const { error } = await supabase.from("users").update(payload).eq("user_id", editingId);
     if (error) {
@@ -337,6 +416,7 @@ export default function UsersPage() {
 
   return (
     <>
+      <Toast />
       <Box
         sx={{
           mb: 3,
@@ -759,8 +839,9 @@ export default function UsersPage() {
                   </Grid>
                 </Grid>
               ) : null}
-              {isPhysicianRole(editForm.role) ? (
+              {userRoleCanHaveSignature(editForm.role) ? (
                 <Grid size={{ xs: 12 }}>
+                  {isPhysicianRole(editForm.role) ? (
                   <Grid container spacing={2}>
                     <Grid size={{ xs: 12, sm: 6 }}>
                       <Typography variant="caption" color="text.secondary" fontWeight={600} display="block" sx={{ mb: 0.75 }}>
@@ -783,6 +864,18 @@ export default function UsersPage() {
                       />
                     </Grid>
                   </Grid>
+                  ) : null}
+                  <Box sx={{ mt: isPhysicianRole(editForm.role) ? 2 : 0 }}>
+                    <SignatureUploadField
+                      label="Signature (consultation & RX print)"
+                      helperText="Image position is configured under Settings → Clinical → Print layouts."
+                      previewUrl={editSigPreview}
+                      hasSignature={editSigHas}
+                      uploading={editSigUploading}
+                      onUpload={(file) => void uploadEditSignature(file)}
+                      onRemove={() => void removeEditSignature()}
+                    />
+                  </Box>
                 </Grid>
               ) : null}
             </Grid>

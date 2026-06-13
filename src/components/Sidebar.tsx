@@ -317,6 +317,20 @@ const menuSections: MenuSection[] = [
         children: [
           {
             kind: "subgroup",
+            id: "settings-clinical",
+            label: "Clinical",
+            icon: <AssignmentOutlinedIcon />,
+            children: [
+              {
+                label: "Print layouts",
+                icon: <AssignmentOutlinedIcon />,
+                href: "/settings/clinical/print-layouts",
+                pageKey: "settings/clinical/print-layouts",
+              },
+            ],
+          },
+          {
+            kind: "subgroup",
             id: "settings-laboratory",
             label: "Laboratory",
             icon: <ScienceOutlinedIcon />,

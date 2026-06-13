@@ -234,6 +234,100 @@ export function parseResultsPrintLayoutInput(
   return { ok: true, value: pos };
 }
 
+export type LabResultImagePosition = {
+  refX: number;
+  refFromTop: number;
+  refWidth: number;
+  refHeight: number;
+  pageIndex?: number;
+};
+
+export type ImageLayoutFormFields = {
+  print_ref_x: string;
+  print_ref_from_top: string;
+  print_ref_width: string;
+  print_ref_height: string;
+  print_page_index: string;
+};
+
+export function emptyImageLayoutFormFields(): ImageLayoutFormFields {
+  return {
+    print_ref_x: "",
+    print_ref_from_top: "",
+    print_ref_width: "",
+    print_ref_height: "",
+    print_page_index: "",
+  };
+}
+
+function parseOneImagePosition(o: unknown): LabResultImagePosition | null {
+  if (o == null || typeof o !== "object" || Array.isArray(o)) return null;
+  const rec = o as Record<string, unknown>;
+  const refX = Number(rec.refX);
+  const refFromTop = Number(rec.refFromTop);
+  const refWidth = Number(rec.refWidth);
+  const refHeight = Number(rec.refHeight);
+  if (!Number.isFinite(refX) || !Number.isFinite(refFromTop)) return null;
+  if (!Number.isFinite(refWidth) || !Number.isFinite(refHeight) || refWidth <= 0 || refHeight <= 0) {
+    return null;
+  }
+  let pageIndex: number | undefined;
+  if (rec.pageIndex != null) {
+    const pi = Number(rec.pageIndex);
+    if (Number.isFinite(pi) && pi >= 0 && Number.isInteger(pi)) pageIndex = pi;
+  }
+  return { refX, refFromTop, refWidth, refHeight, pageIndex };
+}
+
+export function parseResultsImageLayout(raw: unknown): LabResultImagePosition | null {
+  const v = unwrapLayoutJson(raw);
+  if (v == null || typeof v !== "object" || Array.isArray(v)) return null;
+  return parseOneImagePosition(v);
+}
+
+export function imageLayoutFormFieldsFromDb(rawLayout: unknown): ImageLayoutFormFields {
+  const pos = parseResultsImageLayout(rawLayout);
+  if (!pos) return emptyImageLayoutFormFields();
+  return {
+    print_ref_x: String(pos.refX),
+    print_ref_from_top: String(pos.refFromTop),
+    print_ref_width: String(pos.refWidth),
+    print_ref_height: String(pos.refHeight),
+    print_page_index: pos.pageIndex != null ? String(pos.pageIndex) : "",
+  };
+}
+
+export function buildImageLayoutJsonFromFormFields(
+  fields: ImageLayoutFormFields,
+): { ok: true; value: LabResultImagePosition | null } | { ok: false; error: string } {
+  const hasAny = [
+    fields.print_ref_x,
+    fields.print_ref_from_top,
+    fields.print_ref_width,
+    fields.print_ref_height,
+    fields.print_page_index,
+  ].some((s) => s.trim() !== "");
+  if (!hasAny) return { ok: true, value: null };
+
+  const refX = Number(fields.print_ref_x.trim());
+  const refFromTop = Number(fields.print_ref_from_top.trim());
+  const refWidth = Number(fields.print_ref_width.trim());
+  const refHeight = Number(fields.print_ref_height.trim());
+  if (!Number.isFinite(refX) || !Number.isFinite(refFromTop)) {
+    return { ok: false, error: "Signature image requires valid X and Y (from top)." };
+  }
+  if (!Number.isFinite(refWidth) || !Number.isFinite(refHeight) || refWidth <= 0 || refHeight <= 0) {
+    return { ok: false, error: "Signature image width and height must be positive numbers." };
+  }
+  const pageIndex = parseOptionalNonNegativeInt(fields.print_page_index);
+  if (fields.print_page_index.trim() !== "" && pageIndex === undefined) {
+    return { ok: false, error: "Page index must be a whole number ≥ 0 or empty." };
+  }
+  const value: LabResultImagePosition = { refX, refFromTop, refWidth, refHeight };
+  if (pageIndex != null) value.pageIndex = pageIndex;
+  return { ok: true, value };
+}
+
 /** Stacked overflow when a test has no valid `results_print_layout` (first page of template only). */
 export const LAB_PRINT_FALLBACK = {
   refX: 72,

@@ -46,6 +46,7 @@ import {
 } from "@/lib/physicalExamination";
 import { buildConsultationPlanNotesForPrint } from "@/lib/consultationPlanPrint";
 import { openConsultationPrintWindow } from "@/lib/consultationPrint";
+import { fetchPhysicianSignatureBytes } from "@/lib/signaturePrintFetch";
 import { fetchLabRequestsForEncounter, fetchLabRequestItemDetailsForRequestIds } from "@/lib/labRequests";
 import type { UserProfile } from "@/lib/types";
 import { formFromAllergiesRowOrDefault, fetchAllergies } from "@/lib/allergies";
@@ -487,6 +488,15 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
                   physician: {
                     fullname: u?.fullname?.trim() ?? "",
                     licenseNo: u?.license_no?.trim() ?? "",
+                    ...(u?.user_id
+                      ? await (async () => {
+                          const sig = await fetchPhysicianSignatureBytes(u.user_id);
+                          return {
+                            signatureBytes: sig.bytes,
+                            signatureContentType: sig.contentType,
+                          };
+                        })()
+                      : {}),
                   },
                   details: {
                     chiefComplaint:

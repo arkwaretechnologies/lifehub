@@ -2,6 +2,8 @@ import type { ConsultationPatient } from "@/components/consultation/consultation
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
 import type { PDFDocument, PDFFont, PDFPage, RGB } from "pdf-lib";
+import { drawSignatureImageAtRef, embedSignatureBytes } from "@/lib/signaturePdfEmbed";
+import { fetchPhysicianSignaturePrintLayout, type PhysicianSignaturePrintSlot } from "@/lib/clinicalPrintLayoutFetch";
 
 export type PrescriptionPrintMedicationLine = {
   drugLine: string;
@@ -16,6 +18,8 @@ export type PrescriptionPrintPhysician = {
   licenseNo: string;
   ptrNo: string;
   s2No: string;
+  signatureBytes?: Uint8Array | null;
+  signatureContentType?: string | null;
 };
 
 /** A5 portrait at 72 dpi (PDF points). */
@@ -35,6 +39,7 @@ type RxTemplateContext = {
   height: number;
   L: PrescriptionLayout;
   black: RGB;
+  signatureSlot: PhysicianSignaturePrintSlot;
 };
 
 function chunkArray<T>(items: T[], size: number): T[][] {
@@ -149,6 +154,7 @@ function prescriptionLayout(pageWidth: number, pageHeight: number) {
     sigSpecialty: { fromTop: py(508), x: px(250), size: 7.5 },
     sigBandFromTop: py(470),
     licRow: { fromTop: py(545), x: leftX, size: 7, col2: px(210), col3: px(340) },
+    physicianSignature: { x: px(115), fromTop: py(478), width: px(120), height: py(36) },
     qr: { x: 40, fromTop: py(470), size: px(62) },
   } as const;
 }
@@ -321,6 +327,7 @@ function buildRxTemplateContext(
   page: PDFPage,
   font: PDFFont,
   black: RGB,
+  signatureSlot: PhysicianSignaturePrintSlot,
 ): RxTemplateContext {
   const { width, height } = page.getSize();
   return {
@@ -331,19 +338,23 @@ function buildRxTemplateContext(
     height,
     L: prescriptionLayout(width, height),
     black,
+    signatureSlot,
   };
 }
 
 async function loadRxTemplateContext(): Promise<RxTemplateContext | null> {
   const { PDFDocument, rgb } = await import("pdf-lib");
-  const templateBytes = await loadRxTemplateBytes();
+  const [templateBytes, signatureSlot] = await Promise.all([
+    loadRxTemplateBytes(),
+    fetchPhysicianSignaturePrintLayout("prescription"),
+  ]);
   if (!templateBytes) return null;
 
   const doc = await PDFDocument.load(templateBytes);
   const page = doc.getPages()[0];
   normalizePageToA5(page);
   const font = await embedRxFont(doc);
-  return buildRxTemplateContext(doc, page, font, rgb(0, 0, 0));
+  return buildRxTemplateContext(doc, page, font, rgb(0, 0, 0), signatureSlot);
 }
 
 function drawRxPatientHeader(
@@ -499,7 +510,20 @@ function drawRxBodyText(ctx: RxTemplateContext, bodyText: string): void {
 }
 
 async function drawRxSigFooter(ctx: RxTemplateContext, physician: PrescriptionPrintPhysician, transId: string): Promise<void> {
-  const { doc, page, font, height, L, black } = ctx;
+  const { doc, page, font, height, L, black, signatureSlot } = ctx;
+
+  if (physician.signatureBytes?.length) {
+    const sigImg = await embedSignatureBytes(doc, physician.signatureBytes, physician.signatureContentType);
+    if (sigImg) {
+      drawSignatureImageAtRef(
+        page,
+        sigImg,
+        signatureSlot.position,
+        signatureSlot.refW,
+        signatureSlot.refH,
+      );
+    }
+  }
 
   if (physician.specialty.trim()) {
     page.drawText(physician.specialty.trim().toUpperCase(), {
@@ -549,7 +573,10 @@ export async function openPrescriptionPrintWindow(args: {
   transId: string;
 }): Promise<boolean> {
   const { PDFDocument, rgb } = await import("pdf-lib");
-  const templateBytes = await loadRxTemplateBytes();
+  const [templateBytes, signatureSlot] = await Promise.all([
+    loadRxTemplateBytes(),
+    fetchPhysicianSignaturePrintLayout("prescription"),
+  ]);
   if (!templateBytes) return false;
 
   const chunks = chunkArray(args.medications, RX_MEDS_PER_PAGE);
@@ -559,7 +586,7 @@ export async function openPrescriptionPrintWindow(args: {
 
   for (let i = 0; i < chunks.length; i++) {
     const page = await addRxTemplatePage(doc, templateBytes);
-    const ctx = buildRxTemplateContext(doc, page, font, black);
+    const ctx = buildRxTemplateContext(doc, page, font, black, signatureSlot);
     drawRxPatientHeader(ctx, args.patient, args.physician);
     drawRxMedications(ctx, chunks[i], { startNumber: i * RX_MEDS_PER_PAGE + 1 });
     await drawRxSigFooter(ctx, args.physician, args.transId);

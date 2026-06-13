@@ -33,6 +33,8 @@ export const SECURITY_API_ROUTE_GROUPS = {
     "/api/role-menu-access",
     "/api/dashboard/summary",
     "/api/settings/laboratory/**",
+    "/api/settings/clinical-print-layouts",
+    "/api/clinical-print-layouts/**",
     "/api/laboratory/**",
     "/api/imaging/**",
     "/api/cashier/**",

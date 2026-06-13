@@ -16,6 +16,7 @@ const USER_SELECT = [
   "license_no",
   "s2_no",
   "ptr_no",
+  "signature_storage_path",
   "created_at",
   "updated_at",
 ].join(",");

@@ -80,6 +80,7 @@ import { LabOrderCatalogSections } from "@/components/laboratory/LabOrderCatalog
 import { fetchActiveLabPricesByTestIds } from "@/lib/labServicePrices";
 import { fetchActiveLabPackagesWithTests, type LabPackageWithTests } from "@/lib/labPackages";
 import { openPlansTreatmentPrintWindow, openPrescriptionPrintWindow } from "@/lib/prescriptionPrint";
+import { fetchPhysicianSignatureBytes } from "@/lib/signaturePrintFetch";
 import type { UserProfile } from "@/lib/types";
 import {
   fetchActiveProductsPreview,
@@ -1229,9 +1230,19 @@ export default function PlansTreatmentPanel({
         window.alert(rx.error);
         return;
       }
+      const sig =
+        u?.user_id != null ? await fetchPhysicianSignatureBytes(u.user_id) : { bytes: null, contentType: null };
       const ok = await openPrescriptionPrintWindow({
         patient,
-        physician: { fullname, specialty, licenseNo, ptrNo, s2No },
+        physician: {
+          fullname,
+          specialty,
+          licenseNo,
+          ptrNo,
+          s2No,
+          signatureBytes: sig.bytes,
+          signatureContentType: sig.contentType,
+        },
         medications,
         transId,
       });

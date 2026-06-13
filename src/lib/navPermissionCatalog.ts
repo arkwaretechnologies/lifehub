@@ -178,6 +178,18 @@ export const PERMISSION_MODULES: PermissionModule[] = [
     children: [
       {
         kind: "subgroup",
+        id: "settings-clinical",
+        label: "Clinical",
+        children: [
+          {
+            label: "Print layouts",
+            pageKey: "settings/clinical/print-layouts",
+            href: "/settings/clinical/print-layouts",
+          },
+        ],
+      },
+      {
+        kind: "subgroup",
         id: "settings-laboratory",
         label: "Laboratory",
         children: [

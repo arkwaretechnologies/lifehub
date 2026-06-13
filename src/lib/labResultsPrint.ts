@@ -5,12 +5,14 @@ import { compareLabTestSortOrder, labResultsTemplateCodeFromCatalogTestCode } fr
 import { computeLabResultAutoFlag } from "@/lib/labResultAutoFlag";
 import type { LabResultSignatoriesMap } from "@/lib/labResultSignatories";
 import type { LabResultTemplateSignatureLayout } from "@/lib/labResultTemplates";
+import type { LabResultImagePosition, LabResultPrintPosition } from "@/lib/labResultsPrintLayout";
+import { fetchLabSignatorySignatureBytes } from "@/lib/signaturePrintFetch";
+import { embedSignatureBytes } from "@/lib/signaturePdfEmbed";
 import {
   isAllowedLabResultTemplateCode,
   sortLabResultTemplateCodes,
   splitAllowlistedResultsTemplateCodes,
 } from "@/lib/labResultTemplates";
-import type { LabResultPrintPosition } from "@/lib/labResultsPrintLayout";
 import {
   effectivePrintLineHeight,
   getPrintLayoutForTemplateCode,
@@ -106,13 +108,76 @@ function drawSignatureSlot(
   drawAtTopRef(page, t, pos.refX, pos.refFromTop, pos.fontSize ?? 9, font, { maxWidth: pos.maxWidth });
 }
 
-function drawTemplateSignatures(
+type SignatureImageCache = {
+  medtech: Uint8Array | null;
+  pathologist: Uint8Array | null;
+};
+
+async function embedSignatureImage(
+  doc: import("pdf-lib").PDFDocument,
+  bytes: Uint8Array,
+  contentType: string | null,
+): Promise<import("pdf-lib").PDFImage | null> {
+  return embedSignatureBytes(doc, bytes, contentType);
+}
+
+function drawSignatureImageSlot(
+  page: import("pdf-lib").PDFPage,
+  image: import("pdf-lib").PDFImage,
+  pos: LabResultImagePosition | null,
+): void {
+  if (!pos) return;
+  const { height } = page.getSize();
+  const { sx, sy } = scaleRefToPage(page);
+  const x = pos.refX * sx;
+  const y = height - pos.refFromTop * sy - pos.refHeight * sy;
+  page.drawImage(image, {
+    x,
+    y,
+    width: pos.refWidth * sx,
+    height: pos.refHeight * sy,
+  });
+}
+
+async function loadLabSignatureImageCache(): Promise<SignatureImageCache> {
+  const [medtechRes, pathologistRes] = await Promise.all([
+    fetchLabSignatorySignatureBytes("medtech"),
+    fetchLabSignatorySignatureBytes("pathologist"),
+  ]);
+  return {
+    medtech: medtechRes.bytes,
+    pathologist: pathologistRes.bytes,
+  };
+}
+
+async function drawTemplateSignatures(
+  doc: import("pdf-lib").PDFDocument,
   page: import("pdf-lib").PDFPage,
   layout: LabResultTemplateSignatureLayout | null | undefined,
   signatories: LabResultSignatoriesMap | null | undefined,
   font: import("pdf-lib").PDFFont,
-): void {
+  imageCache: SignatureImageCache,
+  embeddedImages: Map<string, import("pdf-lib").PDFImage>,
+): Promise<void> {
   if (!layout || !signatories) return;
+
+  if (imageCache.medtech && layout.medtech.signature) {
+    let img = embeddedImages.get("medtech");
+    if (!img) {
+      img = (await embedSignatureImage(doc, imageCache.medtech, "image/png")) ?? undefined;
+      if (img) embeddedImages.set("medtech", img);
+    }
+    if (img) drawSignatureImageSlot(page, img, layout.medtech.signature);
+  }
+  if (imageCache.pathologist && layout.pathologist.signature) {
+    let img = embeddedImages.get("pathologist");
+    if (!img) {
+      img = (await embedSignatureImage(doc, imageCache.pathologist, "image/png")) ?? undefined;
+      if (img) embeddedImages.set("pathologist", img);
+    }
+    if (img) drawSignatureImageSlot(page, img, layout.pathologist.signature);
+  }
+
   drawSignatureSlot(page, signatories.medtech.full_name, layout.medtech.name, font);
   drawSignatureSlot(page, signatories.medtech.license_no, layout.medtech.license, font);
   drawSignatureSlot(page, signatories.pathologist.full_name, layout.pathologist.name, font);
@@ -333,9 +398,10 @@ export async function openLabResultsPrintWindow(args: {
   if (!items.length) return false;
 
   try {
-    const [registry, signatories] = await Promise.all([
+    const [registry, signatories, imageCache] = await Promise.all([
       fetchTemplateRegistry(),
       fetchSignatoriesForPrint(),
+      loadLabSignatureImageCache(),
     ]);
     if (!registry || !signatories) return false;
 
@@ -344,6 +410,7 @@ export async function openLabResultsPrintWindow(args: {
     const merged = await PDFDocument.create();
     const font = await merged.embedFont(StandardFonts.Helvetica);
     const mono = await merged.embedFont(StandardFonts.Courier);
+    const embeddedSignatureImages = new Map<string, import("pdf-lib").PDFImage>();
 
     const byTpl = new Map<string, LabRequestItemView[]>();
     const noTemplate: LabRequestItemView[] = [];
@@ -381,7 +448,15 @@ export async function openLabResultsPrintWindow(args: {
       for (let i = 0; i < pageCount; i++) {
         const page = merged.getPage(templatePageStart + i);
         drawSharedHeader(page, header, font);
-        drawTemplateSignatures(page, signatureLayout, signatories, font);
+        await drawTemplateSignatures(
+          merged,
+          page,
+          signatureLayout,
+          signatories,
+          font,
+          imageCache,
+          embeddedSignatureImages,
+        );
       }
       drawGroupResultsForTemplate(
         merged,

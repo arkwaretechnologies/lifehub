@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 import { IMAGING_CATALOG_TABLE, type ImagingCatalogRow } from "@/lib/imagingCatalog";
+import { parseTemplateResultLayoutInput } from "@/lib/imagingResultTemplates";
+import { normalizeImagingResultTemplateCode } from "@/lib/imagingResultTemplates";
+import { parseTemplateResultLayout } from "@/lib/imagingResultTemplates";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
 
 function adminOr500() {
@@ -36,6 +39,11 @@ function mapRow(raw: Record<string, unknown>): ImagingCatalogRow {
     sort_order:
       raw.sort_order == null || raw.sort_order === "" ? null : Number(raw.sort_order),
     is_active: raw.is_active !== false,
+    results_template_code:
+      raw.results_template_code == null || String(raw.results_template_code).trim() === ""
+        ? null
+        : String(raw.results_template_code).trim().toUpperCase(),
+    results_print_layout: parseTemplateResultLayout(raw.results_print_layout),
   };
 }
 
@@ -45,7 +53,9 @@ export async function GET() {
 
   const { data, error } = await db
     .from(IMAGING_CATALOG_TABLE)
-    .select("id, code, name, default_price, requires_view_field, view_field_label, sort_order, is_active")
+    .select(
+      "id, code, name, default_price, requires_view_field, view_field_label, sort_order, is_active, results_template_code, results_print_layout",
+    )
     .order("sort_order", { ascending: true, nullsFirst: false })
     .order("name", { ascending: true });
 
@@ -67,6 +77,8 @@ export async function POST(req: Request) {
     view_field_label?: string | null;
     sort_order?: number | null;
     is_active?: boolean;
+    results_template_code?: string | null;
+    results_print_layout?: unknown | null;
   } | null;
 
   const code = body?.code?.trim();
@@ -93,6 +105,20 @@ export async function POST(req: Request) {
       : Number(body.sort_order);
   const is_active = body?.is_active !== false;
 
+  let results_template_code: string | null = null;
+  if (body?.results_template_code !== undefined && body.results_template_code != null) {
+    const tc = String(body.results_template_code).trim();
+    results_template_code = tc === "" ? null : normalizeImagingResultTemplateCode(tc);
+  }
+  let results_print_layout = null;
+  if (body?.results_print_layout !== undefined) {
+    const layoutParsed = parseTemplateResultLayoutInput(body.results_print_layout);
+    if (!layoutParsed.ok) {
+      return NextResponse.json({ error: layoutParsed.error }, { status: 400 });
+    }
+    results_print_layout = layoutParsed.value;
+  }
+
   const insertRow: Record<string, unknown> = {
     code,
     name,
@@ -101,13 +127,17 @@ export async function POST(req: Request) {
     view_field_label: requires_view_field ? view_field_label : null,
     sort_order: sort_order != null && Number.isFinite(sort_order) ? Math.trunc(sort_order) : null,
     is_active,
+    results_template_code,
+    results_print_layout,
     updated_at: new Date().toISOString(),
   };
 
   const { data, error } = await db
     .from(IMAGING_CATALOG_TABLE)
     .insert(insertRow)
-    .select("id, code, name, default_price, requires_view_field, view_field_label, sort_order, is_active")
+    .select(
+      "id, code, name, default_price, requires_view_field, view_field_label, sort_order, is_active, results_template_code, results_print_layout",
+    )
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });

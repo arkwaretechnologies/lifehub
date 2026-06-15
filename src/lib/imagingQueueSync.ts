@@ -14,19 +14,32 @@ export type ImagingRequestItemStatusRow = {
   findings?: string | null;
 };
 
+/** Radiologist finished reading (terminal study status). */
+export function isImagingItemInterpreted(status: string | null | undefined): boolean {
+  const s = String(status ?? "").trim();
+  return s === "Interpreted" || s === "Completed";
+}
+
+/** User-facing label for imaging_request_items.status. */
+export function imagingItemStatusLabel(status: string | null | undefined): string {
+  if (isImagingItemInterpreted(status)) return "Interpreted";
+  return String(status ?? "").trim() || "—";
+}
+
 /** Study performed (X-ray taken) — same role as laboratory specimen Collected. */
 export function isImagingItemCaptured(status: string | null | undefined): boolean {
   const s = String(status ?? "").trim();
-  return s === "Captured" || s === "Received" || s === "Completed";
+  return s === "Captured" || s === "Received" || s === "Completed" || s === "Interpreted";
 }
 
 /** Result/film is available and ready to enter or upload findings. */
 export function isImagingItemResultReceived(status: string | null | undefined): boolean {
   const s = String(status ?? "").trim();
-  return s === "Received" || s === "Completed";
+  return s === "Received" || s === "Completed" || s === "Interpreted";
 }
 
 export function isImagingItemCompleted(status: string | null | undefined, findings?: string | null): boolean {
+  if (isImagingItemInterpreted(status)) return true;
   if (String(findings ?? "").trim()) return true;
   return String(status ?? "").trim() === "Completed";
 }

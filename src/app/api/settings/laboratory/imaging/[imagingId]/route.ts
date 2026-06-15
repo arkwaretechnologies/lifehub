@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
 import { IMAGING_CATALOG_TABLE, type ImagingCatalogRow } from "@/lib/imagingCatalog";
+import {
+  normalizeImagingResultTemplateCode,
+  parseTemplateResultLayout,
+  parseTemplateResultLayoutInput,
+} from "@/lib/imagingResultTemplates";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
 
 function adminOr500() {
@@ -46,6 +51,11 @@ function mapRow(raw: Record<string, unknown>): ImagingCatalogRow {
     sort_order:
       raw.sort_order == null || raw.sort_order === "" ? null : Number(raw.sort_order),
     is_active: raw.is_active !== false,
+    results_template_code:
+      raw.results_template_code == null || String(raw.results_template_code).trim() === ""
+        ? null
+        : String(raw.results_template_code).trim().toUpperCase(),
+    results_print_layout: parseTemplateResultLayout(raw.results_print_layout),
   };
 }
 
@@ -70,6 +80,8 @@ export async function PATCH(
     view_field_label?: string | null;
     sort_order?: number | null;
     is_active?: boolean;
+    results_template_code?: string | null;
+    results_print_layout?: unknown | null;
   } | null;
 
   if (!body || Object.keys(body).length === 0) {
@@ -112,12 +124,25 @@ export async function PATCH(
     patch.sort_order = s == null || !Number.isFinite(s) ? null : Math.trunc(s);
   }
   if (body.is_active !== undefined) patch.is_active = body.is_active !== false;
+  if (body.results_template_code !== undefined) {
+    const tc = body.results_template_code == null ? "" : String(body.results_template_code).trim();
+    patch.results_template_code = tc === "" ? null : normalizeImagingResultTemplateCode(tc);
+  }
+  if (body.results_print_layout !== undefined) {
+    const layoutParsed = parseTemplateResultLayoutInput(body.results_print_layout);
+    if (!layoutParsed.ok) {
+      return NextResponse.json({ error: layoutParsed.error }, { status: 400 });
+    }
+    patch.results_print_layout = layoutParsed.value;
+  }
 
   const { data, error } = await db
     .from(IMAGING_CATALOG_TABLE)
     .update(patch)
     .eq("id", id.toString())
-    .select("id, code, name, default_price, requires_view_field, view_field_label, sort_order, is_active")
+    .select(
+      "id, code, name, default_price, requires_view_field, view_field_label, sort_order, is_active, results_template_code, results_print_layout",
+    )
     .maybeSingle();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });

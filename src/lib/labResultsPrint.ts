@@ -1,6 +1,5 @@
 import type { LabRequestHeaderView, LabRequestItemView } from "@/app/api/laboratory/lab-request/route";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
-import { formatDateMMDDYYYY, formatLabTime } from "@/lib/dateDisplay";
 import { compareLabTestSortOrder, labResultsTemplateCodeFromCatalogTestCode } from "@/lib/labTests";
 import { computeLabResultAutoFlag } from "@/lib/labResultAutoFlag";
 import type { LabResultSignatoriesMap } from "@/lib/labResultSignatories";
@@ -8,6 +7,7 @@ import type { LabResultTemplateSignatureLayout } from "@/lib/labResultTemplates"
 import type { LabResultImagePosition, LabResultPrintPosition } from "@/lib/labResultsPrintLayout";
 import { fetchLabSignatorySignatureBytes } from "@/lib/signaturePrintFetch";
 import { embedSignatureBytes } from "@/lib/signaturePdfEmbed";
+import { drawLabResultsPatientHeader } from "@/lib/labResultsPatientHeader";
 import {
   isAllowedLabResultTemplateCode,
   sortLabResultTemplateCodes,
@@ -25,26 +25,6 @@ import { rgb } from "pdf-lib";
 /** US Letter reference size (points) for coordinate calibration; scaled to each template page. */
 const REF_W = 612;
 const REF_H = 792;
-
-function formatLabRequestDateTime(requestDate: string, requestTime: string | null): string {
-  const d = formatDateMMDDYYYY(requestDate);
-  const t = formatLabTime(requestTime);
-  if (!d) return t === "—" ? "—" : t;
-  return t === "—" ? d : `${d} · ${t}`;
-}
-
-/** Local calendar + clock from ISO (e.g. `lab_results.updated_at`) for "date released" line. */
-function formatReleasedDateTime(iso: string | null | undefined): string {
-  if (iso == null || String(iso).trim() === "") return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  const y = d.getFullYear();
-  const h = String(d.getHours()).padStart(2, "0");
-  const min = String(d.getMinutes()).padStart(2, "0");
-  return `${mm}-${day}-${y} · ${h}:${min}`;
-}
 
 type TemplateRegistry = {
   allowedCodes: Set<string>;
@@ -290,38 +270,6 @@ function pushWrappedParagraph(lines: string[], paragraph: string, maxChars: numb
   if (cur) lines.push(cur);
 }
 
-function drawSharedHeader(
-  page: import("pdf-lib").PDFPage,
-  header: LabRequestHeaderView,
-  font: import("pdf-lib").PDFFont,
-): void {
-  const name = (header.patient_name ?? "").trim() || "—";
-  const dt = formatLabRequestDateTime(header.request_date, header.request_time);
-  const pid = header.patient_id != null ? String(header.patient_id) : "—";
-
-  const age = header.patient_age_years;
-  const sex = (header.patient_sex ?? "").trim();
-  const ageSex =
-    age != null && Number.isFinite(age) ? `${Math.trunc(age)}/${sex || "—"}` : sex ? `—/${sex}` : "—";
-  const dob = formatDateMMDDYYYY(header.patient_date_of_birth ?? "") || "—";
-  const addr = (header.patient_address ?? "").trim() || "—";
-  const contact = (header.patient_contact_no ?? "").trim() || "—";
-  const phil = (header.patient_philhealth_no ?? "").trim() || "—";
-  const physician = (header.requesting_physician ?? "").trim() || "—";
-  const released = formatReleasedDateTime(header.results_released_at);
-
-  drawAtTopRef(page, name, 118, 194, 9, font);
-  drawAtTopRef(page, dt, 395, 194, 9, font);
-  drawAtTopRef(page, pid, 376, 254, 9, font);
-  drawAtTopRef(page, ageSex, 118, 213, 8, font);
-  drawAtTopRef(page, dob, 225, 213, 8, font);
-  drawAtTopRef(page, addr, 118, 233, 8, font, { maxWidth: 100, lineHeight: 8 });
-  drawAtTopRef(page, contact, 245, 233, 8, font, { maxWidth: 260, lineHeight: 7 });
-  drawAtTopRef(page, phil, 500, 233, 8, font, { maxWidth: 250, lineHeight: 7 });
-  drawAtTopRef(page, physician, 172, 253, 8, font, { maxWidth: 470 });
-  drawAtTopRef(page, released, 395, 212, 8, font);
-}
-
 /**
  * Overlay results: each item uses `results_print_layouts` aligned to `results_template_code` for this
  * template stem; missing/invalid layouts use stacked fallback on page 0 of the template block.
@@ -447,7 +395,7 @@ export async function openLabResultsPrintWindow(args: {
       const signatureLayout = registry.signatureByCode.get(code) ?? null;
       for (let i = 0; i < pageCount; i++) {
         const page = merged.getPage(templatePageStart + i);
-        drawSharedHeader(page, header, font);
+        drawLabResultsPatientHeader(page, header, font);
         await drawTemplateSignatures(
           merged,
           page,
@@ -479,7 +427,7 @@ export async function openLabResultsPrintWindow(args: {
       );
 
       let page = merged.addPage([REF_W, REF_H]);
-      drawSharedHeader(page, header, font);
+      drawLabResultsPatientHeader(page, header, font);
       drawAtTopRef(page, title, 48, 232, 10, font);
 
       let fromTop = 256;
@@ -491,7 +439,7 @@ export async function openLabResultsPrintWindow(args: {
         for (const line of wrapped) {
           if (fromTop > maxFromTop) {
             page = merged.addPage([REF_W, REF_H]);
-            drawSharedHeader(page, header, font);
+            drawLabResultsPatientHeader(page, header, font);
             drawAtTopRef(page, "(continued)", 48, 232, 9, font);
             fromTop = 256;
           }

@@ -2,7 +2,7 @@
  * Assignable sidebar destinations for `public.role_pages.page_key`.
  * Only leaf keys are stored in the DB; parent rows are UI-only (bulk select).
  */
-import { CONSULTATION_LAB_REPORTS, POS_REPORTS } from "@/lib/reportsNavLeaves";
+import { CONSULTATION_LAB_REPORTS, POS_REPORTS, RADIOLOGY_REPORTS } from "@/lib/reportsNavLeaves";
 
 export type NavLeaf = {
   label: string;
@@ -100,6 +100,16 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   },
   {
     kind: "group",
+    id: "radiology",
+    sectionHeading: "OPERATIONS",
+    label: "Radiology",
+    children: [
+      { label: "Reading Queue", pageKey: "radiology/patients", href: "/radiology/patients" },
+      { label: "Reading Assignment", pageKey: "radiology/assignment", href: "/radiology/assignment" },
+    ],
+  },
+  {
+    kind: "group",
     id: "pharmacy",
     sectionHeading: "OPERATIONS",
     label: "Pharmacy",
@@ -135,6 +145,16 @@ export const PERMISSION_MODULES: PermissionModule[] = [
         id: "reports-consultation-lab",
         label: "Consultation and Lab Reports",
         children: CONSULTATION_LAB_REPORTS.map((leaf) => ({
+          label: leaf.label,
+          pageKey: leaf.pageKey,
+          href: leaf.href,
+        })),
+      },
+      {
+        kind: "subgroup",
+        id: "reports-radiology",
+        label: "Radiology Reports",
+        children: RADIOLOGY_REPORTS.map((leaf) => ({
           label: leaf.label,
           pageKey: leaf.pageKey,
           href: leaf.href,
@@ -204,9 +224,19 @@ export const PERMISSION_MODULES: PermissionModule[] = [
             href: "/settings/laboratory/lab-tests",
           },
           {
-            label: "Result templates",
+            label: "Lab result templates",
             pageKey: "settings/laboratory/result-templates",
             href: "/settings/laboratory/result-templates",
+          },
+          {
+            label: "Imaging result templates",
+            pageKey: "settings/laboratory/imaging-result-templates",
+            href: "/settings/laboratory/imaging-result-templates",
+          },
+          {
+            label: "Imaging signatories",
+            pageKey: "settings/laboratory/imaging-signatories",
+            href: "/settings/laboratory/imaging-signatories",
           },
           {
             label: "Lab signatories",

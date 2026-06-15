@@ -47,3 +47,16 @@ export const fieldMultilineInputSx = {
     textTransform: "uppercase",
   },
 } as const;
+
+/** Findings / impression fields — keep pasted and typed letter casing as entered. */
+export const imagingReportFieldSx = {
+  "& .MuiInputBase-root": {
+    minHeight: 88,
+    alignItems: "flex-start",
+  },
+  "& .MuiInputBase-input": {
+    py: 1.25,
+    boxSizing: "border-box",
+    textTransform: "none",
+  },
+} as const;

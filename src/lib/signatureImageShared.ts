@@ -1,6 +1,7 @@
 /** Client-safe signature upload constants (no Node-only deps). */
 
 import type { LabSignatureRole } from "@/lib/labResultSignatures";
+import type { ImagingSignatureRole } from "@/lib/imagingResultSignatures";
 
 export const SIGNATURES_BUCKET = "signatures" as const;
 
@@ -52,6 +53,11 @@ export function buildLabSignatoryStoragePath(role: LabSignatureRole, ext: string
   return `lab/${role}${safeExt}`;
 }
 
+export function buildImagingSignatoryStoragePath(role: ImagingSignatureRole, ext: string): string {
+  const safeExt = ext.startsWith(".") ? ext.toLowerCase() : `.${ext.toLowerCase()}`;
+  return `imaging/${role}${safeExt}`;
+}
+
 export function buildPhysicianSignatureStoragePath(userId: number, ext: string): string {
   const safeExt = ext.startsWith(".") ? ext.toLowerCase() : `.${ext.toLowerCase()}`;
   return `physicians/${userId}${safeExt}`;
@@ -60,6 +66,13 @@ export function buildPhysicianSignatureStoragePath(userId: number, ext: string):
 export function parseLabSignatoryRole(raw: string): LabSignatureRole | null {
   const r = raw.trim().toLowerCase();
   if (r === "medtech" || r === "pathologist") return r;
+  return null;
+}
+
+export function parseImagingSignatoryRole(raw: string): ImagingSignatureRole | null {
+  const r = raw.trim().toLowerCase();
+  if (r === "radtech" || r === "radiologic_technologist") return "radtech";
+  if (r === "radiologist") return "radiologist";
   return null;
 }
 

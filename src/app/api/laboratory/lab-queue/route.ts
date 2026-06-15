@@ -294,7 +294,7 @@ export async function GET(req: Request) {
     .or("includes_lab.eq.true,lab_request_id.not.is.null")
     .order("issued_at", { ascending: true });
 
-  // Default view: today's active tickets. Search can request a broader scope.
+  // Default view: today's active tickets. Use scope=today_all for all statuses incl. completed.
   if (scope === "all") {
     base = base.gte("ticket_date", isoDateDaysAgo(days));
   } else if (scope === "today_all") {

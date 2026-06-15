@@ -24,6 +24,14 @@ export async function fetchLabSignatorySignatureBytes(
   );
 }
 
+export async function fetchImagingSignatorySignatureBytes(
+  role: "radtech" | "radiologist",
+): Promise<SignatureBytesResult> {
+  return fetchSignatureBytesFromUrl(
+    `/api/imaging/imaging-result-signatories/signature-bytes?role=${encodeURIComponent(role)}`,
+  );
+}
+
 export async function fetchPhysicianSignatureBytes(userId: number): Promise<SignatureBytesResult> {
   if (!Number.isFinite(userId) || userId <= 0) return { bytes: null, contentType: null };
   return fetchSignatureBytesFromUrl(

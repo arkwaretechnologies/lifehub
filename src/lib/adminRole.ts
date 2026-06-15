@@ -3,10 +3,10 @@ import { NextResponse } from "next/server";
 import { getMenuAccessForRoleName } from "@/lib/roleMenuAccessServer";
 import { getBearerSessionUserId } from "@/lib/requireSession";
 
-/** Comma-separated role names from `users.role`; match is case-insensitive. Default allows `Administrator`. */
+/** Comma-separated role names from `users.role`; match is case-insensitive. */
 export function parseAdminRoleNames(): string[] {
   const raw = process.env.ADMIN_ROLE_NAMES?.trim();
-  if (!raw) return ["Administrator"];
+  if (!raw) return ["Administrator", "ADMIN"];
   return raw.split(",").map((s) => s.trim()).filter(Boolean);
 }
 

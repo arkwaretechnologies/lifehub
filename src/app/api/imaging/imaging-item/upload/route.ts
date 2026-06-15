@@ -6,6 +6,7 @@ import {
   validateImagingUploadFile,
 } from "@/lib/imagingResultImageShared";
 import {
+  DicomConversionError,
   optimizeImagingUploadBuffer,
   resolveImagingResultDisplayFilename,
 } from "@/lib/imagingResultImageServer";
@@ -78,7 +79,10 @@ export async function POST(req: Request) {
   let optimized;
   try {
     optimized = await optimizeImagingUploadBuffer(inputBuffer, file.name, file.type);
-  } catch {
+  } catch (err) {
+    if (err instanceof DicomConversionError) {
+      return NextResponse.json({ error: err.message }, { status: 400 });
+    }
     return NextResponse.json(
       { error: "Could not process image. Check the file format or try exporting as JPEG/PNG from your device." },
       { status: 400 },

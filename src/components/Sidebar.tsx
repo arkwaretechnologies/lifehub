@@ -21,6 +21,7 @@ import DashboardOutlinedIcon from "@mui/icons-material/DashboardOutlined";
 import PersonOutlinedIcon from "@mui/icons-material/PersonOutlined";
 import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
 import CameraAltOutlinedIcon from "@mui/icons-material/CameraAltOutlined";
+import MedicalServicesOutlinedIcon from "@mui/icons-material/MedicalServicesOutlined";
 import CategoryOutlinedIcon from "@mui/icons-material/CategoryOutlined";
 import AssignmentOutlinedIcon from "@mui/icons-material/AssignmentOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
@@ -39,7 +40,7 @@ import HistoryOutlinedIcon from "@mui/icons-material/HistoryOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import InventoryOutlinedIcon from "@mui/icons-material/InventoryOutlined";
 import BusinessOutlinedIcon from "@mui/icons-material/BusinessOutlined";
-import { CONSULTATION_LAB_REPORTS, POS_REPORTS } from "@/lib/reportsNavLeaves";
+import { CONSULTATION_LAB_REPORTS, POS_REPORTS, RADIOLOGY_REPORTS } from "@/lib/reportsNavLeaves";
 import AdminPanelSettingsOutlinedIcon from "@mui/icons-material/AdminPanelSettingsOutlined";
 import PeopleOutlinedIcon from "@mui/icons-material/PeopleOutlined";
 import RuleOutlinedIcon from "@mui/icons-material/RuleOutlined";
@@ -188,6 +189,26 @@ const menuSections: MenuSection[] = [
         ],
       },
       {
+        kind: "group",
+        id: "radiology",
+        label: "Radiology",
+        icon: <MedicalServicesOutlinedIcon />,
+        children: [
+          {
+            label: "Reading Queue",
+            icon: <AssignmentOutlinedIcon />,
+            href: "/radiology/patients",
+            pageKey: "radiology/patients",
+          },
+          {
+            label: "Reading Assignment",
+            icon: <PeopleOutlinedIcon />,
+            href: "/radiology/assignment",
+            pageKey: "radiology/assignment",
+          },
+        ],
+      },
+      {
         kind: "link",
         label: "pharmacy",
         icon: <LocalPharmacyOutlinedIcon />,
@@ -218,6 +239,18 @@ const menuSections: MenuSection[] = [
             label: "Consultation and Lab Reports",
             icon: <LocalHospitalOutlinedIcon />,
             children: CONSULTATION_LAB_REPORTS.map((leaf) => ({
+              label: leaf.label,
+              icon: <AssessmentOutlinedIcon />,
+              href: leaf.href,
+              pageKey: leaf.pageKey,
+            })),
+          },
+          {
+            kind: "subgroup",
+            id: "reports-radiology",
+            label: "Radiology Reports",
+            icon: <CameraAltOutlinedIcon />,
+            children: RADIOLOGY_REPORTS.map((leaf) => ({
               label: leaf.label,
               icon: <AssessmentOutlinedIcon />,
               href: leaf.href,
@@ -348,10 +381,22 @@ const menuSections: MenuSection[] = [
                 pageKey: "settings/laboratory/lab-tests",
               },
               {
-                label: "Result templates",
+                label: "Lab result templates",
                 icon: <AssignmentOutlinedIcon />,
                 href: "/settings/laboratory/result-templates",
                 pageKey: "settings/laboratory/result-templates",
+              },
+              {
+                label: "Imaging result templates",
+                icon: <CameraAltOutlinedIcon />,
+                href: "/settings/laboratory/imaging-result-templates",
+                pageKey: "settings/laboratory/imaging-result-templates",
+              },
+              {
+                label: "Imaging signatories",
+                icon: <CameraAltOutlinedIcon />,
+                href: "/settings/laboratory/imaging-signatories",
+                pageKey: "settings/laboratory/imaging-signatories",
               },
               {
                 label: "Lab signatories",

@@ -1,5 +1,7 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import daikon from "daikon";
 import sharp from "sharp";
 import {
   buildImagingResultDisplayFilename,
@@ -22,6 +24,16 @@ const EXT_TO_MIME: Record<string, string> = {
 const MAX_EDGE_PX = 4096;
 const JPEG_QUALITY = 90;
 
+export const DICOM_CONVERSION_ERROR =
+  "Could not convert DICOM to JPEG. The file may use an unsupported compression. Try exporting as JPEG from your imaging device.";
+
+export class DicomConversionError extends Error {
+  constructor(message: string = DICOM_CONVERSION_ERROR) {
+    super(message);
+    this.name = "DicomConversionError";
+  }
+}
+
 export type OptimizedImagingImage = {
   buffer: Buffer;
   contentType: string;
@@ -29,7 +41,95 @@ export type OptimizedImagingImage = {
   optimized: boolean;
 };
 
-/** Resize large rasters and re-encode with high quality; DICOM stored unchanged. */
+type InterpretedDicomFrame = {
+  data: Float32Array;
+  min: number;
+  max: number;
+  numCols: number;
+  numRows: number;
+};
+
+function decodeDicomToRgba(input: Buffer): { data: Buffer; width: number; height: number } {
+  const arrayBuffer = input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength);
+  const dataView = new DataView(arrayBuffer);
+
+  const image = daikon.Series.parseImage(dataView);
+  if (!image) {
+    throw new DicomConversionError();
+  }
+
+  const width = image.getCols();
+  const height = image.getRows();
+  if (!width || !height || width <= 0 || height <= 0) {
+    throw new DicomConversionError();
+  }
+
+  const samples = image.getNumberOfSamplesPerPixel();
+  const pixelCount = width * height;
+
+  if (samples >= 3 || image.getDataType() === daikon.Image.BYTE_TYPE_RGB) {
+    const raw = new Uint8Array(image.getRawData());
+    const rgba = Buffer.alloc(pixelCount * 4);
+    for (let i = 0; i < pixelCount; i += 1) {
+      const base = i * 3;
+      rgba[i * 4] = raw[base] ?? 0;
+      rgba[i * 4 + 1] = raw[base + 1] ?? 0;
+      rgba[i * 4 + 2] = raw[base + 2] ?? 0;
+      rgba[i * 4 + 3] = 255;
+    }
+    return { data: rgba, width, height };
+  }
+
+  const interpreted = image.getInterpretedData(false, true, 0) as InterpretedDicomFrame;
+  if (!interpreted?.data || interpreted.data.length < pixelCount) {
+    throw new DicomConversionError();
+  }
+
+  const windowCenter = image.getWindowCenter() ?? (interpreted.min + interpreted.max) / 2;
+  const windowWidth = image.getWindowWidth() ?? Math.max(interpreted.max - interpreted.min, 1);
+  const lower = windowCenter - windowWidth / 2;
+  const upper = windowCenter + windowWidth / 2;
+  const range = upper - lower || 1;
+
+  const rgba = Buffer.alloc(pixelCount * 4);
+  for (let i = 0; i < pixelCount; i += 1) {
+    const value = interpreted.data[i] ?? 0;
+    let gray: number;
+    if (value <= lower) gray = 0;
+    else if (value >= upper) gray = 255;
+    else gray = Math.round(((value - lower) / range) * 255);
+
+    rgba[i * 4] = gray;
+    rgba[i * 4 + 1] = gray;
+    rgba[i * 4 + 2] = gray;
+    rgba[i * 4 + 3] = 255;
+  }
+
+  return { data: rgba, width, height };
+}
+
+async function encodeRgbaToJpeg(
+  rgba: Buffer,
+  width: number,
+  height: number,
+): Promise<Buffer> {
+  let pipeline = sharp(rgba, { raw: { width, height, channels: 4 } });
+  if (width > MAX_EDGE_PX || height > MAX_EDGE_PX) {
+    pipeline = pipeline.resize(MAX_EDGE_PX, MAX_EDGE_PX, {
+      fit: "inside",
+      withoutEnlargement: true,
+    });
+  }
+  return pipeline
+    .jpeg({
+      quality: JPEG_QUALITY,
+      mozjpeg: true,
+      chromaSubsampling: "4:4:4",
+    })
+    .toBuffer();
+}
+
+/** Resize large rasters and re-encode with high quality; DICOM converted to JPEG. */
 export async function optimizeImagingUploadBuffer(
   input: Buffer,
   originalName: string,
@@ -39,12 +139,14 @@ export async function optimizeImagingUploadBuffer(
   const mime = (mimeHint || EXT_TO_MIME[ext] || "application/octet-stream").toLowerCase();
 
   if (isDicomUpload(ext, mime)) {
-    return {
-      buffer: input,
-      contentType: "application/dicom",
-      ext: ext === ".dicom" ? ".dicom" : ".dcm",
-      optimized: false,
-    };
+    try {
+      const { data, width, height } = decodeDicomToRgba(input);
+      const buffer = await encodeRgbaToJpeg(data, width, height);
+      return { buffer, contentType: "image/jpeg", ext: ".jpg", optimized: true };
+    } catch (err) {
+      if (err instanceof DicomConversionError) throw err;
+      throw new DicomConversionError();
+    }
   }
 
   let pipeline = sharp(input, { failOn: "none" }).rotate();

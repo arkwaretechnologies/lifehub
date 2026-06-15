@@ -1,8 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { ImagingResultTemplateResultLayout } from "@/lib/imagingResultTemplates";
+import { parseTemplateResultLayout } from "@/lib/imagingResultTemplates";
 import { supabase } from "@/lib/supabaseClient";
 import {
   buildImagingRequestLinesFromCatalog,
   fetchActiveImagingCatalog,
+  IMAGING_CATALOG_TABLE,
   type ImagingCatalogRow,
   type ImagingLineSelection,
 } from "@/lib/imagingCatalog";
@@ -21,6 +24,10 @@ export type ImagingRequestItemRow = {
   status: string;
   findings: string | null;
   remarks: string | null;
+  performed_at?: string | null;
+  updated_at?: string | null;
+  results_template_code?: string | null;
+  results_print_layout?: ImagingResultTemplateResultLayout | null;
   image_storage_path?: string | null;
   image_content_type?: string | null;
   image_original_filename?: string | null;
@@ -257,7 +264,7 @@ export async function fetchImagingRequestItemsForRequestIdsClient(
   const { data, error } = await supabase
     .from(IMAGING_REQUEST_ITEMS_TABLE)
     .select(
-      "id, imaging_request_id, imaging_catalog_id, study_code, study_name, view_text, unit_price, status, findings, remarks, image_storage_path, image_content_type, image_original_filename, image_uploaded_at",
+      "id, imaging_request_id, imaging_catalog_id, study_code, study_name, view_text, unit_price, status, findings, remarks, performed_at, updated_at, image_storage_path, image_content_type, image_original_filename, image_uploaded_at",
     )
     .in("imaging_request_id", ids);
 
@@ -275,11 +282,51 @@ export async function fetchImagingRequestItemsForRequestIds(
   const { data, error } = await admin
     .from(IMAGING_REQUEST_ITEMS_TABLE)
     .select(
-      "id, imaging_request_id, imaging_catalog_id, study_code, study_name, view_text, unit_price, status, findings, remarks, image_storage_path, image_content_type, image_original_filename, image_uploaded_at",
+      "id, imaging_request_id, imaging_catalog_id, study_code, study_name, view_text, unit_price, status, findings, remarks, performed_at, updated_at, image_storage_path, image_content_type, image_original_filename, image_uploaded_at",
     )
     .in("imaging_request_id", ids);
 
   if (error) return { rows: [], error: error.message };
   const rows = (data ?? []) as ImagingRequestItemRow[];
   return { rows, error: null };
+}
+
+export async function enrichImagingRequestItemsWithCatalogPrint(
+  admin: SupabaseClient,
+  items: ImagingRequestItemRow[],
+): Promise<{ items: ImagingRequestItemRow[]; error: string | null }> {
+  const catalogIds = [...new Set(items.map((it) => String(it.imaging_catalog_id ?? "").trim()).filter(Boolean))];
+  if (catalogIds.length === 0) return { items, error: null };
+
+  const { data, error } = await admin
+    .from(IMAGING_CATALOG_TABLE)
+    .select("id, results_template_code, results_print_layout")
+    .in("id", catalogIds);
+  if (error) return { items, error: error.message };
+
+  const byId = new Map<string, { results_template_code: string | null; results_print_layout: ImagingResultTemplateResultLayout | null }>();
+  for (const raw of (data ?? []) as Array<Record<string, unknown>>) {
+    const id = String(raw.id ?? "").trim();
+    if (!id) continue;
+    byId.set(id, {
+      results_template_code:
+        raw.results_template_code == null || String(raw.results_template_code).trim() === ""
+          ? null
+          : String(raw.results_template_code).trim().toUpperCase(),
+      results_print_layout: parseTemplateResultLayout(raw.results_print_layout),
+    });
+  }
+
+  return {
+    items: items.map((it) => {
+      const cat = byId.get(String(it.imaging_catalog_id ?? "").trim());
+      if (!cat) return it;
+      return {
+        ...it,
+        results_template_code: cat.results_template_code,
+        results_print_layout: cat.results_print_layout,
+      };
+    }),
+    error: null,
+  };
 }

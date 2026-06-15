@@ -1,11 +1,45 @@
 import { NextResponse } from "next/server";
+import { userHasAdminRole } from "@/lib/adminRole";
 import type { ImagingLineSelection } from "@/lib/imagingCatalog";
 import {
   adminCreateImagingRequestWithItems,
+  enrichImagingRequestItemsWithCatalogPrint,
   fetchImagingRequestItemsForRequestIds,
 } from "@/lib/imagingRequests";
 import { syncImagingQueueTicketsForRequest } from "@/lib/imagingQueueSync";
+import { assertRadiologistMayEditItem, userIsRadiologist } from "@/lib/radiologyRole";
+import { getBearerSessionUserId } from "@/lib/requireSession";
 import { queueAdminClient } from "@/lib/receptionQueueServer";
+import {
+  ageYearsAt,
+  parsePatientRowFields,
+  resolveRequestingPhysicianLabel,
+} from "@/lib/resultsPrintPatientFields";
+
+type ImagingRequestHeader = {
+  id: string;
+  encounter_id: string | null;
+  patient_id: number | null;
+  request_date: string;
+  request_time: string | null;
+  priority: string;
+  remarks: string | null;
+  status: string;
+  created_at: string;
+};
+
+/** Full header returned by GET (includes resolved patient label + queue ticket if any). */
+export type ImagingRequestHeaderView = ImagingRequestHeader & {
+  patient_name: string | null;
+  queue_display: string | null;
+  patient_date_of_birth: string | null;
+  patient_sex: string | null;
+  patient_age_years: number | null;
+  patient_address: string | null;
+  patient_contact_no: string | null;
+  patient_philhealth_no: string | null;
+  requesting_physician: string | null;
+};
 
 export async function POST(req: Request) {
   const admin = queueAdminClient();
@@ -69,8 +103,12 @@ export async function GET(req: Request) {
   if (hErr) return NextResponse.json({ error: hErr.message }, { status: 500 });
   if (!header) return NextResponse.json({ error: "Imaging request not found." }, { status: 404 });
 
-  const { rows: items, error: iErr } = await fetchImagingRequestItemsForRequestIds(admin, [imagingRequestId]);
+  const baseHeader = header as ImagingRequestHeader;
+
+  const { rows: itemsRaw, error: iErr } = await fetchImagingRequestItemsForRequestIds(admin, [imagingRequestId]);
   if (iErr) return NextResponse.json({ error: iErr }, { status: 500 });
+  const { items, error: enrichErr } = await enrichImagingRequestItemsWithCatalogPrint(admin, itemsRaw);
+  if (enrichErr) return NextResponse.json({ error: enrichErr }, { status: 500 });
 
   let queue_display: string | null = null;
   const { data: qt } = await admin
@@ -83,15 +121,71 @@ export async function GET(req: Request) {
   queue_display = (qt as { queue_display?: string } | null)?.queue_display ?? null;
 
   let patient_name: string | null = null;
-  const pid = (header as { patient_id?: number | null }).patient_id;
-  if (pid != null && Number.isFinite(pid)) {
-    const { data: pat } = await admin.from("patients").select("name").eq("id", pid).maybeSingle();
-    patient_name = (pat as { name?: string } | null)?.name ?? null;
+  let patient_date_of_birth: string | null = null;
+  let patient_sex: string | null = null;
+  let patient_address: string | null = null;
+  let patient_contact_no: string | null = null;
+  let patient_philhealth_no: string | null = null;
+  if (baseHeader.patient_id != null) {
+    const { data: pat, error: pErr } = await admin
+      .from("patients")
+      .select("name, date_of_birth, sex, address, contact_no, philhealth_no")
+      .eq("id", baseHeader.patient_id)
+      .maybeSingle();
+    if (pErr) return NextResponse.json({ error: pErr.message }, { status: 500 });
+    const parsed = parsePatientRowFields(
+      pat as {
+        name?: string | null;
+        date_of_birth?: string | null;
+        sex?: string | null;
+        address?: string | null;
+        contact_no?: string | null;
+        philhealth_no?: number | null;
+      } | null,
+    );
+    patient_name = parsed.patient_name;
+    patient_date_of_birth = parsed.patient_date_of_birth;
+    patient_sex = parsed.patient_sex;
+    patient_address = parsed.patient_address;
+    patient_contact_no = parsed.patient_contact_no;
+    patient_philhealth_no = parsed.patient_philhealth_no;
   }
 
+  const patient_age_years = ageYearsAt(patient_date_of_birth, baseHeader.request_date);
+
+  let requesting_physician: string | null = null;
+  const encounterId = (baseHeader.encounter_id ?? "").trim();
+  if (encounterId) {
+    const { data: enc, error: encErr } = await admin
+      .from("encounters")
+      .select("referring_physician, physician_id")
+      .eq("trans_id", encounterId)
+      .maybeSingle();
+    if (encErr) return NextResponse.json({ error: encErr.message }, { status: 500 });
+    requesting_physician = await resolveRequestingPhysicianLabel(
+      admin,
+      (enc as { referring_physician?: string | null } | null)?.referring_physician ?? null,
+      (enc as { physician_id?: number | null } | null)?.physician_id ?? null,
+    );
+  }
+
+  const headerOut: ImagingRequestHeaderView = {
+    ...baseHeader,
+    patient_name,
+    queue_display,
+    patient_date_of_birth,
+    patient_sex,
+    patient_age_years,
+    patient_address,
+    patient_contact_no,
+    patient_philhealth_no,
+    requesting_physician,
+  };
+
   return NextResponse.json({
-    request: header,
+    header: headerOut,
     items,
+    request: headerOut,
     queue_display,
     patient_name,
   });
@@ -108,6 +202,7 @@ export async function PATCH(req: Request) {
     findings?: string | null;
     remarks?: string | null;
     status?: string | null;
+    markReadingDone?: boolean;
   };
 
   const itemId = typeof body.imagingRequestItemId === "string" ? body.imagingRequestItemId.trim() : "";
@@ -115,23 +210,31 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ error: "imagingRequestItemId is required." }, { status: 400 });
   }
 
+  const sessionUserId = await getBearerSessionUserId(req);
+  if (sessionUserId == null) {
+    return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+  }
+
   const { data: existingItem, error: existErr } = await admin
     .from("imaging_request_items")
-    .select("id, status, findings")
+    .select("id, imaging_request_id, status, findings, remarks")
     .eq("id", itemId)
     .maybeSingle();
   if (existErr) return NextResponse.json({ error: existErr.message }, { status: 500 });
   if (!existingItem) return NextResponse.json({ error: "Imaging request item not found." }, { status: 404 });
 
-  const existingStatus = String((existingItem as { status?: string }).status ?? "").trim();
-  const hasFindingsInBody =
-    body.findings != null && String(body.findings).trim() !== "";
-  if (hasFindingsInBody && existingStatus !== "Received" && existingStatus !== "Completed") {
-    return NextResponse.json(
-      { error: "Mark the study as Captured, then Received (result ready), before entering findings." },
-      { status: 409 },
-    );
+  const imagingRequestItemIdForAuth = String((existingItem as { id?: string }).id ?? "").trim();
+  const isAdmin = await userHasAdminRole(admin, sessionUserId);
+  const isRad = await userIsRadiologist(admin, sessionUserId);
+  if (isRad && !isAdmin) {
+    const auth = await assertRadiologistMayEditItem(admin, sessionUserId, imagingRequestItemIdForAuth);
+    if (!auth.ok) {
+      return NextResponse.json({ error: auth.error ?? "Forbidden." }, { status: 403 });
+    }
   }
+
+  const existingStatus = String((existingItem as { status?: string }).status ?? "").trim();
+  const markReadingDone = body.markReadingDone === true;
 
   const findings =
     body.findings == null ? undefined : String(body.findings).trim() === "" ? null : String(body.findings).trim();
@@ -140,10 +243,51 @@ export async function PATCH(req: Request) {
   const status =
     body.status == null ? undefined : String(body.status).trim() === "" ? "Pending" : String(body.status).trim();
 
+  if (markReadingDone) {
+    const allowedForDone = existingStatus === "Received" || existingStatus === "Interpreted" || existingStatus === "Completed";
+    if (!allowedForDone) {
+      return NextResponse.json(
+        { error: "Study must be Received (result ready) before marking reading as done." },
+        { status: 409 },
+      );
+    }
+    const findingsText =
+      findings !== undefined
+        ? String(findings ?? "").trim()
+        : String((existingItem as { findings?: string }).findings ?? "").trim();
+    const remarksText =
+      remarks !== undefined
+        ? String(remarks ?? "").trim()
+        : String((existingItem as { remarks?: string }).remarks ?? "").trim();
+    if (!findingsText && !remarksText) {
+      return NextResponse.json(
+        { error: "Enter findings or impression before marking reading as done." },
+        { status: 409 },
+      );
+    }
+  } else {
+    const hasFindingsInBody = body.findings != null && String(body.findings).trim() !== "";
+    if (
+      hasFindingsInBody &&
+      existingStatus !== "Received" &&
+      existingStatus !== "Completed" &&
+      existingStatus !== "Interpreted"
+    ) {
+      return NextResponse.json(
+        { error: "Mark the study as Captured, then Received (result ready), before entering findings." },
+        { status: 409 },
+      );
+    }
+  }
+
   const payload: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (findings !== undefined) payload.findings = findings;
   if (remarks !== undefined) payload.remarks = remarks;
-  if (status !== undefined) {
+
+  if (markReadingDone) {
+    payload.status = "Interpreted";
+    payload.performed_at = new Date().toISOString();
+  } else if (status !== undefined) {
     payload.status = findings ? "Completed" : status;
     if (findings) payload.performed_at = new Date().toISOString();
   }

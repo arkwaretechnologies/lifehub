@@ -44,6 +44,7 @@ type ImagingForm = {
   view_field_label: string;
   sort_order: string;
   is_active: boolean;
+  results_template_code: string;
 };
 
 const emptyForm = (): ImagingForm => ({
@@ -54,6 +55,7 @@ const emptyForm = (): ImagingForm => ({
   view_field_label: "VIEW",
   sort_order: "",
   is_active: true,
+  results_template_code: "",
 });
 
 function rowToForm(r: ImagingCatalogRow): ImagingForm {
@@ -65,6 +67,7 @@ function rowToForm(r: ImagingCatalogRow): ImagingForm {
     view_field_label: r.view_field_label ?? "VIEW",
     sort_order: r.sort_order == null ? "" : String(r.sort_order),
     is_active: r.is_active !== false,
+    results_template_code: r.results_template_code ?? "",
   };
 }
 
@@ -228,6 +231,7 @@ export default function SettingsLaboratoryImagingPage() {
         view_field_label,
         sort_order,
         is_active: f.is_active,
+        results_template_code: f.results_template_code.trim() || null,
       },
     };
   };
@@ -365,6 +369,14 @@ export default function SettingsLaboratoryImagingPage() {
         onChange={(e) => setForm((f) => ({ ...f, sort_order: e.target.value }))}
         {...fieldSx}
       />
+      <TextField
+        label="Result template code"
+        value={form.results_template_code}
+        onChange={(e) => setForm((f) => ({ ...f, results_template_code: e.target.value.toUpperCase() }))}
+        placeholder="e.g. XRAY"
+        helperText="Imaging result PDF template (Settings → Imaging result templates)."
+        {...fieldSx}
+      />
       <FormControlLabel
         control={
           <Switch checked={form.is_active} onChange={(_, v) => setForm((f) => ({ ...f, is_active: v }))} />
@@ -466,6 +478,7 @@ export default function SettingsLaboratoryImagingPage() {
                     <TableCell>Name</TableCell>
                     <TableCell align="right">Default price</TableCell>
                     <TableCell align="center">View field</TableCell>
+                    <TableCell>Template</TableCell>
                     <TableCell align="right">Sort</TableCell>
                     <TableCell>Status</TableCell>
                     <TableCell align="right" width={100}>
@@ -476,7 +489,7 @@ export default function SettingsLaboratoryImagingPage() {
                 <TableBody>
                   {rows.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7}>
+                      <TableCell colSpan={8}>
                         <Typography variant="body2" color="text.secondary">
                           No imaging studies. Run the database migration, then refresh — five default studies are
                           seeded.
@@ -485,7 +498,7 @@ export default function SettingsLaboratoryImagingPage() {
                     </TableRow>
                   ) : filteredRows.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7}>
+                      <TableCell colSpan={8}>
                         <Typography variant="body2" color="text.secondary">
                           No rows match your search.
                         </Typography>
@@ -510,6 +523,9 @@ export default function SettingsLaboratoryImagingPage() {
                           ) : (
                             "—"
                           )}
+                        </TableCell>
+                        <TableCell sx={{ fontFamily: "monospace", fontSize: "0.8rem" }}>
+                          {r.results_template_code ?? "—"}
                         </TableCell>
                         <TableCell align="right">{r.sort_order ?? "—"}</TableCell>
                         <TableCell>

@@ -238,7 +238,7 @@ export default function SettingsLabSignatoriesPage() {
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         Names, license numbers, and signature images printed on laboratory result forms. Text position on each PDF is configured
-        under Settings → Laboratory → Result templates.
+        under Settings → Laboratory → Lab result templates.
       </Typography>
 
       {error ? (

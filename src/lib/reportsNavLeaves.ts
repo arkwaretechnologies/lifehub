@@ -44,6 +44,14 @@ export const CONSULTATION_LAB_REPORTS: readonly ReportNavLeaf[] = [
   },
 ];
 
+export const RADIOLOGY_REPORTS: readonly ReportNavLeaf[] = [
+  {
+    label: "Radiologist Interpretation",
+    href: "/reports/radiology/radiologist-interpretation",
+    pageKey: "reports/radiology/radiologist-interpretation",
+  },
+];
+
 export const POS_REPORTS: readonly ReportNavLeaf[] = [
   {
     label: "Daily Sales Summary",

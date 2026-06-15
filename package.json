@@ -17,6 +17,7 @@
     "@supabase/supabase-js": "^2.101.1",
     "@upstash/redis": "^1.38.0",
     "bcryptjs": "^3.0.3",
+    "daikon": "^1.2.46",
     "jose": "^6.2.3",
     "next": "16.2.2",
     "pdf-lib": "^1.17.1",

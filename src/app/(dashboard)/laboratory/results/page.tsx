@@ -258,7 +258,7 @@ export default function LabResultsPage() {
     setError("");
     setLoading(true);
     try {
-      const res = await authenticatedFetch("/api/laboratory/lab-queue", { cache: "no-store" });
+      const res = await authenticatedFetch("/api/laboratory/lab-queue?scope=today_all", { cache: "no-store" });
       const json = (await res.json().catch(() => ({}))) as { error?: string; rows?: LabQueueRow[] };
       if (!res.ok) {
         setError(json.error ?? `Request failed (${res.status})`);
@@ -892,7 +892,7 @@ export default function LabResultsPage() {
                   Today’s LAB queue
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
-                  Active tickets only
+                  All tickets today
                 </Typography>
               </Box>
 
@@ -902,7 +902,7 @@ export default function LabResultsPage() {
                 </Box>
               ) : sorted.length === 0 ? (
                 <Typography variant="body2" color="text.secondary">
-                  No active LAB queue tickets for today.
+                  No LAB queue tickets for today.
                 </Typography>
               ) : (
                 <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>

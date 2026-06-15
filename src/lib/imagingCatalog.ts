@@ -1,5 +1,8 @@
 import { supabase } from "@/lib/supabaseClient";
 
+import type { ImagingResultTemplateResultLayout } from "@/lib/imagingResultTemplates";
+import { parseTemplateResultLayout } from "@/lib/imagingResultTemplates";
+
 export const IMAGING_CATALOG_TABLE = "imaging_catalog" as const;
 
 export const IMAGING_NOTES_START = "[IMAGING_REQUEST]";
@@ -14,6 +17,8 @@ export type ImagingCatalogRow = {
   view_field_label: string | null;
   sort_order: number | null;
   is_active: boolean | null;
+  results_template_code: string | null;
+  results_print_layout: ImagingResultTemplateResultLayout | null;
 };
 
 export type ImagingLineSelection = { checked: boolean; view: string };
@@ -25,7 +30,9 @@ export async function fetchActiveImagingCatalog(): Promise<{
 }> {
   const { data, error } = await supabase
     .from(IMAGING_CATALOG_TABLE)
-    .select("id, code, name, default_price, requires_view_field, view_field_label, sort_order, is_active")
+    .select(
+      "id, code, name, default_price, requires_view_field, view_field_label, sort_order, is_active, results_template_code, results_print_layout",
+    )
     .eq("is_active", true)
     .order("sort_order", { ascending: true, nullsFirst: false })
     .order("name", { ascending: true });
@@ -45,6 +52,11 @@ export async function fetchActiveImagingCatalog(): Promise<{
     sort_order:
       raw.sort_order == null || raw.sort_order === "" ? null : Number(raw.sort_order),
     is_active: raw.is_active !== false,
+    results_template_code:
+      raw.results_template_code == null || String(raw.results_template_code).trim() === ""
+        ? null
+        : String(raw.results_template_code).trim().toUpperCase(),
+    results_print_layout: parseTemplateResultLayout(raw.results_print_layout),
   }));
 
   return { rows, error: null };

@@ -7,6 +7,7 @@ import CameraAltOutlinedIcon from "@mui/icons-material/CameraAltOutlined";
 import PrintOutlinedIcon from "@mui/icons-material/PrintOutlined";
 import RefreshOutlinedIcon from "@mui/icons-material/RefreshOutlined";
 import SearchIcon from "@mui/icons-material/Search";
+import SmsOutlinedIcon from "@mui/icons-material/SmsOutlined";
 import {
   Alert,
   Box,
@@ -16,7 +17,13 @@ import {
   Checkbox,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   InputAdornment,
+  Snackbar,
+  Stack,
   TextField,
   Table,
   TableBody,
@@ -43,6 +50,14 @@ import { imagingItemHasPrintableResult, openImagingResultPrintWindow } from "@/l
 
 type ImagingRequestHeader = ImagingRequestHeaderView;
 
+function formatSmsSentAt(value: string | null | undefined): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "—";
+  const dt = new Date(raw);
+  if (!Number.isFinite(dt.getTime())) return raw;
+  return dt.toLocaleString();
+}
+
 export default function ImagingResultsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -66,6 +81,11 @@ export default function ImagingResultsPage() {
   const [reqError, setReqError] = useState("");
   const [header, setHeader] = useState<ImagingRequestHeader | null>(null);
   const [items, setItems] = useState<ImagingRequestItemRow[]>([]);
+  const [sendSmsBusy, setSendSmsBusy] = useState(false);
+  const [resendSmsDialogOpen, setResendSmsDialogOpen] = useState(false);
+  const [toastOpen, setToastOpen] = useState(false);
+  const [toastMessage, setToastMessage] = useState("");
+  const [toastSeverity, setToastSeverity] = useState<"success" | "error">("success");
 
   const loadQueue = async () => {
     setQueueError("");
@@ -221,6 +241,8 @@ export default function ImagingResultsPage() {
       (selectedTicket?.status === "Called" && selectedTicket?.active_dept !== "LAB"));
   const [itemBusyId, setItemBusyId] = useState<string | null>(null);
 
+  const canSendResultSms = Boolean(header?.id && header?.any_result_saved && header?.patient_contact_no);
+
   const openImagingRequestFromTicket = (imagingRequestId: string) => {
     const rid = imagingRequestId.trim();
     if (!rid) return;
@@ -269,6 +291,54 @@ export default function ImagingResultsPage() {
     void openImagingResultPrintWindow({ header, item });
   };
 
+  const sendResultReadySms = async (forceResend: boolean) => {
+    if (!header) return;
+    setReqError("");
+    setSendSmsBusy(true);
+    try {
+      const res = await authenticatedFetch("/api/imaging/imaging-result-ready-sms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imagingRequestId: header.id,
+          forceResend,
+        }),
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        code?: string;
+        result_sms_sent_at?: string;
+      };
+      if (!res.ok) {
+        if (res.status === 409 && json.code === "alreadySentNeedsConfirm" && !forceResend) {
+          setResendSmsDialogOpen(true);
+          return;
+        }
+        const msg = json.error ?? `Request failed (${res.status})`;
+        setReqError(msg);
+        setToastSeverity("error");
+        setToastMessage(msg);
+        setToastOpen(true);
+        return;
+      }
+      const sentAt = String(json.result_sms_sent_at ?? "").trim();
+      if (sentAt) {
+        setHeader((prev) => (prev ? { ...prev, result_sms_sent_at: sentAt } : prev));
+      }
+      setToastSeverity("success");
+      setToastMessage(forceResend ? "SMS resent to patient." : "SMS sent to patient.");
+      setToastOpen(true);
+    } catch {
+      const msg = "Failed to send SMS.";
+      setReqError(msg);
+      setToastSeverity("error");
+      setToastMessage(msg);
+      setToastOpen(true);
+    } finally {
+      setSendSmsBusy(false);
+    }
+  };
+
   const patchImagingItem = async (
     itemId: string,
     flags: { captured?: boolean; received?: boolean },
@@ -297,6 +367,42 @@ export default function ImagingResultsPage() {
 
   return (
     <>
+      <Snackbar
+        open={toastOpen}
+        autoHideDuration={5000}
+        onClose={() => setToastOpen(false)}
+        anchorOrigin={{ vertical: "top", horizontal: "center" }}
+      >
+        <Alert severity={toastSeverity} onClose={() => setToastOpen(false)} sx={{ width: "100%" }}>
+          {toastMessage}
+        </Alert>
+      </Snackbar>
+
+      <Dialog open={resendSmsDialogOpen} onClose={() => (sendSmsBusy ? null : setResendSmsDialogOpen(false))}>
+        <DialogTitle>Resend SMS?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            A result-ready text message was already sent for this request. Do you want to send another message?
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setResendSmsDialogOpen(false)} disabled={sendSmsBusy}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="secondary"
+            disabled={sendSmsBusy}
+            onClick={() => {
+              setResendSmsDialogOpen(false);
+              void sendResultReadySms(true);
+            }}
+          >
+            {sendSmsBusy ? <CircularProgress size={18} color="inherit" /> : "Resend"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <Typography variant="h5" sx={{ mb: 3 }}>
         Imaging Results
       </Typography>
@@ -608,9 +714,11 @@ export default function ImagingResultsPage() {
                 <Typography variant="subtitle1" fontWeight={700} gutterBottom>
                   {(header.patient_name ?? "").trim() || "Patient"} · Queue {(header.queue_display ?? "").trim() || "—"}
                 </Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
                   Request {header.request_date}
                   {header.request_time ? ` ${header.request_time}` : ""} · {header.priority} · {header.status}
+                  {header.patient_contact_no ? ` · Contact ${header.patient_contact_no}` : ""}
+                  {` · Last result-ready SMS: ${formatSmsSentAt(header.result_sms_sent_at)}`}
                 </Typography>
 
                 <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 2, flexWrap: "wrap", mb: 2 }}>
@@ -619,16 +727,41 @@ export default function ImagingResultsPage() {
                     <strong>Collected</strong>). Mark <strong>Received</strong> when the result or film is ready to upload.
                     Findings and impression are entered by radiology.
                   </Typography>
-                  <Button
-                    variant="outlined"
-                    size="small"
-                    startIcon={reqLoading ? <CircularProgress size={16} color="inherit" /> : <RefreshOutlinedIcon />}
-                    disabled={!selectedRequestId || reqLoading}
-                    onClick={refreshRequest}
-                    sx={{ textTransform: "none", fontWeight: 700, flexShrink: 0 }}
-                  >
-                    Refresh
-                  </Button>
+                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ flexShrink: 0 }}>
+                    <Tooltip
+                      title={
+                        !header.any_result_saved
+                          ? "Enter findings or impression in radiology first."
+                          : !header.patient_contact_no
+                            ? "Patient contact number is missing."
+                            : "Send text message to patient."
+                      }
+                    >
+                      <span>
+                        <Button
+                          variant="contained"
+                          color="secondary"
+                          size="small"
+                          startIcon={sendSmsBusy ? <CircularProgress size={16} color="inherit" /> : <SmsOutlinedIcon />}
+                          disabled={!canSendResultSms || sendSmsBusy}
+                          onClick={() => void sendResultReadySms(false)}
+                          sx={{ textTransform: "none", fontWeight: 700 }}
+                        >
+                          Send text to patient
+                        </Button>
+                      </span>
+                    </Tooltip>
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      startIcon={reqLoading ? <CircularProgress size={16} color="inherit" /> : <RefreshOutlinedIcon />}
+                      disabled={!selectedRequestId || reqLoading}
+                      onClick={refreshRequest}
+                      sx={{ textTransform: "none", fontWeight: 700 }}
+                    >
+                      Refresh
+                    </Button>
+                  </Stack>
                 </Box>
 
                 <TableContainer

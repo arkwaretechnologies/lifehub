@@ -5,6 +5,7 @@ import {
   adminCreateImagingRequestWithItems,
   enrichImagingRequestItemsWithCatalogPrint,
   fetchImagingRequestItemsForRequestIds,
+  imagingItemHasPrintableResult,
 } from "@/lib/imagingRequests";
 import { syncImagingQueueTicketsForRequest } from "@/lib/imagingQueueSync";
 import { assertRadiologistMayEditItem, userIsRadiologist } from "@/lib/radiologyRole";
@@ -26,6 +27,7 @@ type ImagingRequestHeader = {
   remarks: string | null;
   status: string;
   created_at: string;
+  result_sms_sent_at: string | null;
 };
 
 /** Full header returned by GET (includes resolved patient label + queue ticket if any). */
@@ -39,6 +41,8 @@ export type ImagingRequestHeaderView = ImagingRequestHeader & {
   patient_contact_no: string | null;
   patient_philhealth_no: string | null;
   requesting_physician: string | null;
+  /** True when at least one study has findings or impression. */
+  any_result_saved: boolean;
 };
 
 export async function POST(req: Request) {
@@ -97,7 +101,7 @@ export async function GET(req: Request) {
 
   const { data: header, error: hErr } = await admin
     .from("imaging_requests")
-    .select("id, encounter_id, patient_id, request_date, request_time, priority, remarks, status, created_at")
+    .select("id, encounter_id, patient_id, request_date, request_time, priority, remarks, status, created_at, result_sms_sent_at")
     .eq("id", imagingRequestId)
     .maybeSingle();
   if (hErr) return NextResponse.json({ error: hErr.message }, { status: 500 });
@@ -169,8 +173,12 @@ export async function GET(req: Request) {
     );
   }
 
+  const any_result_saved = items.some((it) => imagingItemHasPrintableResult(it));
+  const result_sms_sent_at = String(baseHeader.result_sms_sent_at ?? "").trim() || null;
+
   const headerOut: ImagingRequestHeaderView = {
     ...baseHeader,
+    result_sms_sent_at,
     patient_name,
     queue_display,
     patient_date_of_birth,
@@ -180,6 +188,7 @@ export async function GET(req: Request) {
     patient_contact_no,
     patient_philhealth_no,
     requesting_physician,
+    any_result_saved,
   };
 
   return NextResponse.json({

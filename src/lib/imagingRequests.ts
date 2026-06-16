@@ -34,6 +34,13 @@ export type ImagingRequestItemRow = {
   image_uploaded_at?: string | null;
 };
 
+export function imagingItemHasPrintableResult(item: {
+  findings?: string | null;
+  remarks?: string | null;
+}): boolean {
+  return Boolean(String(item.findings ?? "").trim() || String(item.remarks ?? "").trim());
+}
+
 export type CreateImagingRequestInput = {
   encounterId: string | null;
   patientId: number | null;

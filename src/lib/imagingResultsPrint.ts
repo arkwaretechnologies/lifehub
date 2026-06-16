@@ -1,4 +1,5 @@
 import type { ImagingRequestItemRow } from "@/lib/imagingRequests";
+import { imagingItemHasPrintableResult } from "@/lib/imagingRequests";
 import type { ImagingRequestHeaderView } from "@/app/api/imaging/imaging-request/route";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
@@ -407,9 +408,7 @@ function openImagingResultPrintHtml(args: {
   };
 }
 
-export function imagingItemHasPrintableResult(item: ImagingRequestItemRow): boolean {
-  return Boolean(String(item.findings ?? "").trim() || String(item.remarks ?? "").trim());
-}
+export { imagingItemHasPrintableResult } from "@/lib/imagingRequests";
 
 export async function openImagingResultPrintWindow(args: {
   header: ImagingRequestHeaderView;

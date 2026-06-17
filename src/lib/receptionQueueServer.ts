@@ -19,6 +19,7 @@ import { insertLabQueueNewRequestNotifications } from "@/lib/labQueueNotificatio
 import { computeLabRequestQueueCollectionState } from "@/lib/labQueueTicketSync";
 import { applyActiveDeptToNotes } from "@/lib/queueActiveDept";
 import {
+  fetchLabRequestPackageIdsByRequestIdMap,
   LAB_REQUEST_ITEMS_TABLE,
   LAB_REQUEST_PACKAGES_TABLE,
   LAB_REQUESTS_TABLE,
@@ -40,6 +41,7 @@ import {
 } from "@/lib/diagnosticQueueServer";
 import {
   adminCreateImagingRequestWithItems,
+  ensureImagingRequestForLabPackages,
   imagingSelectionHasChecked,
   syncUnpaidImagingItemsToPackageCoverage,
 } from "@/lib/imagingRequests";
@@ -596,6 +598,16 @@ async function adminCreateLabRequestWithItems(input: {
     if (sync.error) {
       await admin.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
       return { labRequestId: null, error: sync.error };
+    }
+    const ensured = await ensureImagingRequestForLabPackages(admin, {
+      encounterId: enc,
+      patientId: input.patientId,
+      packageIds,
+      remarks: "Laboratory package imaging",
+    });
+    if (ensured.error) {
+      await admin.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
+      return { labRequestId: null, error: ensured.error };
     }
   }
 
@@ -1209,8 +1221,32 @@ export async function adminIssueCashierLaboratoryQueueTicket(input: {
 
   const encounterTransId = input.encounterTransId.trim();
   const labUniq = [...new Set(input.labRequestIds.map((x) => String(x).trim()).filter(Boolean))].sort();
-  const imgUniq = [...new Set((input.imagingRequestIds ?? []).map((x) => String(x).trim()).filter(Boolean))].sort();
+  let imgUniq = [...new Set((input.imagingRequestIds ?? []).map((x) => String(x).trim()).filter(Boolean))].sort();
   if (!encounterTransId || (labUniq.length === 0 && imgUniq.length === 0)) {
+    return { error: "encounterTransId and at least one lab or imaging request id are required." };
+  }
+
+  if (labUniq.length > 0) {
+    const { map: pkgByLab, error: pkgMapErr } = await fetchLabRequestPackageIdsByRequestIdMap(admin, labUniq);
+    if (pkgMapErr) return { error: pkgMapErr };
+    const packageIds = [
+      ...new Set([...pkgByLab.values()].flat().filter((n) => Number.isFinite(n) && n > 0)),
+    ];
+    if (packageIds.length > 0) {
+      const ensured = await ensureImagingRequestForLabPackages(admin, {
+        encounterId: encounterTransId,
+        patientId: input.patient.id,
+        packageIds,
+        remarks: "Laboratory package imaging (cashier queue)",
+      });
+      if (ensured.error) return { error: ensured.error };
+      if (ensured.imagingRequestId) {
+        imgUniq = [...new Set([...imgUniq, ensured.imagingRequestId])].sort();
+      }
+    }
+  }
+
+  if (labUniq.length === 0 && imgUniq.length === 0) {
     return { error: "encounterTransId and at least one lab or imaging request id are required." };
   }
 

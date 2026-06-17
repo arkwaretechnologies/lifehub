@@ -24,23 +24,8 @@ export type ImagingCatalogRow = {
 
 export type ImagingLineSelection = { checked: boolean; view: string };
 
-/** Ordered active rows for consultation / charges. */
-export async function fetchActiveImagingCatalog(): Promise<{
-  rows: ImagingCatalogRow[];
-  error: string | null;
-}> {
-  const { data, error } = await supabase
-    .from(IMAGING_CATALOG_TABLE)
-    .select(
-      "id, code, name, default_price, requires_view_field, view_field_label, sort_order, is_active, results_template_code, results_print_layout",
-    )
-    .eq("is_active", true)
-    .order("sort_order", { ascending: true, nullsFirst: false })
-    .order("name", { ascending: true });
-
-  if (error) return { rows: [], error: error.message };
-
-  const rows: ImagingCatalogRow[] = (data ?? []).map((raw: Record<string, unknown>) => ({
+function mapImagingCatalogRows(data: Array<Record<string, unknown>> | null | undefined): ImagingCatalogRow[] {
+  return (data ?? []).map((raw: Record<string, unknown>) => ({
     id: String(raw.id ?? ""),
     code: String(raw.code ?? "").trim(),
     name: String(raw.name ?? "").trim(),
@@ -59,8 +44,46 @@ export async function fetchActiveImagingCatalog(): Promise<{
         : String(raw.results_template_code).trim().toUpperCase(),
     results_print_layout: parseTemplateResultLayout(raw.results_print_layout),
   }));
+}
 
-  return { rows, error: null };
+/** Ordered active rows for consultation / charges. */
+export async function fetchActiveImagingCatalog(): Promise<{
+  rows: ImagingCatalogRow[];
+  error: string | null;
+}> {
+  return fetchActiveImagingCatalogForDb(supabase);
+}
+
+/** Same as `fetchActiveImagingCatalog` using an arbitrary Supabase client (e.g. service role). */
+export async function fetchActiveImagingCatalogForDb(db: SupabaseClient): Promise<{
+  rows: ImagingCatalogRow[];
+  error: string | null;
+}> {
+  const { data, error } = await db
+    .from(IMAGING_CATALOG_TABLE)
+    .select(
+      "id, code, name, default_price, requires_view_field, view_field_label, sort_order, is_active, results_template_code, results_print_layout",
+    )
+    .eq("is_active", true)
+    .order("sort_order", { ascending: true, nullsFirst: false })
+    .order("name", { ascending: true });
+
+  if (error) return { rows: [], error: error.message };
+  return { rows: mapImagingCatalogRows(data as Array<Record<string, unknown>>), error: null };
+}
+
+/** Check package-covered imaging catalog members in a selection map. */
+export function imagingSelectionForCatalogIds(
+  catalog: ImagingCatalogRow[],
+  catalogIds: Set<string>,
+  base?: Record<string, ImagingLineSelection>,
+): Record<string, ImagingLineSelection> {
+  const next = { ...(base ?? {}) };
+  for (const c of catalog) {
+    if (!catalogIds.has(c.id) || !c.code) continue;
+    next[c.code] = { ...(next[c.code] ?? { checked: false, view: "" }), checked: true };
+  }
+  return next;
 }
 
 function numPrice(v: unknown): number {

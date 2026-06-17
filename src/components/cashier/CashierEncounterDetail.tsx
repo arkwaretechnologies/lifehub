@@ -838,6 +838,42 @@ export default function CashierEncounterDetail() {
         return { id: s.id, subtotal: lineSum };
       });
 
+      let payImagingRequests = openImagingRequests;
+      let payImagingItemsByRequestId = imagingItemsByRequestId;
+
+      if (openLabRequests.length > 0) {
+        const pidForEnsure = patientIdNum(patient.patientId);
+        if (pidForEnsure != null) {
+          const ensureRes = await authenticatedFetch("/api/cashier/ensure-package-imaging", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              encounterTransId: encounterId,
+              labRequestIds: openLabRequests.map((r) => r.id),
+              patientId: pidForEnsure,
+            }),
+          });
+          const ensureJson = (await ensureRes.json().catch(() => ({}))) as { error?: string };
+          if (!ensureRes.ok || ensureJson.error) {
+            throw new Error(ensureJson.error ?? "Could not prepare package imaging.");
+          }
+        }
+        const imgRefresh = await fetchImagingRequestsWithoutSaleForEncounters([encounterId]);
+        if (imgRefresh.error) throw new Error(imgRefresh.error);
+        payImagingRequests = imgRefresh.byEncounter.get(encounterId) ?? [];
+        const imgItemsRefresh = await fetchImagingRequestItemsForRequestIdsClient(
+          payImagingRequests.map((r) => r.id),
+        );
+        if (imgItemsRefresh.error) throw new Error(imgItemsRefresh.error);
+        const refreshedItemsByReq = new Map<string, ImagingRequestItemRow[]>();
+        for (const row of imgItemsRefresh.rows) {
+          const list = refreshedItemsByReq.get(row.imaging_request_id) ?? [];
+          list.push(row);
+          refreshedItemsByReq.set(row.imaging_request_id, list);
+        }
+        payImagingItemsByRequestId = refreshedItemsByReq;
+      }
+
       // Create lab sales (one per lab request) + items
       const allLabTestIds = [...new Set(labItemRows.map((r) => r.lab_test_id).filter(Boolean))];
       const priceRes = await fetchLabTestCheckoutPricesByIds(allLabTestIds);
@@ -860,8 +896,8 @@ export default function CashierEncounterDetail() {
         };
       });
 
-      const imagingSubtotals = openImagingRequests.map((req) => {
-        const items = imagingItemsByRequestId.get(req.id) ?? [];
+      const imagingSubtotals = payImagingRequests.map((req) => {
+        const items = payImagingItemsByRequestId.get(req.id) ?? [];
         return {
           imagingRequestId: req.id,
           subtotal: items.reduce((s, it) => s + moneyNum(it.unit_price), 0),
@@ -928,8 +964,8 @@ export default function CashierEncounterDetail() {
           notes: it.notes,
         }));
         if (i === 0) {
-          for (const imgReq of openImagingRequests) {
-            for (const it of imagingItemsByRequestId.get(imgReq.id) ?? []) {
+          for (const imgReq of payImagingRequests) {
+            for (const it of payImagingItemsByRequestId.get(imgReq.id) ?? []) {
               payloadItems.push({
                 imaging_catalog_id: it.imaging_catalog_id,
                 quantity: 1,
@@ -940,15 +976,15 @@ export default function CashierEncounterDetail() {
             }
           }
         }
-        const labOrNumber = nLabs === 1 && openImagingRequests.length === 0 ? baseOr : `${baseOr}-L${i + 1}`;
+        const labOrNumber = nLabs === 1 && payImagingRequests.length === 0 ? baseOr : `${baseOr}-L${i + 1}`;
         const tenderedOnLab =
-          hasPhysicianFees ? null : i === 0 && openImagingRequests.length === 0 ? args.amountTendered : null;
-        const changeOnLab = hasPhysicianFees ? null : i === 0 && openImagingRequests.length === 0 ? args.changeAmount : null;
+          hasPhysicianFees ? null : i === 0 && payImagingRequests.length === 0 ? args.amountTendered : null;
+        const changeOnLab = hasPhysicianFees ? null : i === 0 && payImagingRequests.length === 0 ? args.changeAmount : null;
         const labDisc = (labDiscounts[i] ?? 0) + (i === 0 ? imagingDiscounts.reduce((a, b) => a + b, 0) : 0);
 
         const saleRes = await createLabSaleWithItems({
           labRequestId: req.id,
-          imagingRequestId: i === 0 && openImagingRequests[0] ? openImagingRequests[0].id : null,
+          imagingRequestId: i === 0 && payImagingRequests[0] ? payImagingRequests[0].id : null,
           patientId: patientIdNum(patient.patientId),
           orNumber: labOrNumber,
           paymentMethodId: args.paymentMethod.id,
@@ -962,9 +998,9 @@ export default function CashierEncounterDetail() {
       }
 
       if (openLabRequests.length === 0) {
-        for (let i = 0; i < openImagingRequests.length; i++) {
-          const req = openImagingRequests[i];
-          const items = imagingItemsByRequestId.get(req.id) ?? [];
+        for (let i = 0; i < payImagingRequests.length; i++) {
+          const req = payImagingRequests[i];
+          const items = payImagingItemsByRequestId.get(req.id) ?? [];
           const payloadItems = items.map((it) => ({
             imaging_catalog_id: it.imaging_catalog_id,
             quantity: 1,
@@ -972,7 +1008,7 @@ export default function CashierEncounterDetail() {
             discount: 0,
             notes: it.study_name,
           }));
-          const imgOrNumber = openImagingRequests.length === 1 ? baseOr : `${baseOr}-I${i + 1}`;
+          const imgOrNumber = payImagingRequests.length === 1 ? baseOr : `${baseOr}-I${i + 1}`;
           const saleRes = await createLabSaleWithItems({
             imagingRequestId: req.id,
             patientId: patientIdNum(patient.patientId),
@@ -992,7 +1028,7 @@ export default function CashierEncounterDetail() {
       let labQueueSlip:
         | { queueDisplay: string; queueTicketId: string | null }
         | null = null;
-      if (openLabRequests.length > 0 || openImagingRequests.length > 0) {
+      if (openLabRequests.length > 0 || payImagingRequests.length > 0) {
         const pid = patientIdNum(patient.patientId);
         if (pid == null) throw new Error("Patient id missing for diagnostic queue ticket.");
         const encSnap = await fetchEncounterSummaryByTransId(encounterId);
@@ -1003,7 +1039,7 @@ export default function CashierEncounterDetail() {
           body: JSON.stringify({
             encounterTransId: encounterId,
             labRequestIds: openLabRequests.map((r) => r.id),
-            imagingRequestIds: openImagingRequests.map((r) => r.id),
+            imagingRequestIds: payImagingRequests.map((r) => r.id),
             cashierPriorityId: args.labQueuePriorityId,
             patient: {
               id: pid,
@@ -1022,9 +1058,9 @@ export default function CashierEncounterDetail() {
         const tid = (qj.queueTicketId ?? "").trim();
         setLabReceiptQueueDisplay(qd);
         const dest =
-          openLabRequests.length > 0 && openImagingRequests.length > 0
+          openLabRequests.length > 0 && payImagingRequests.length > 0
             ? "Laboratory & imaging"
-            : openImagingRequests.length > 0
+            : payImagingRequests.length > 0
               ? "Imaging"
               : "Laboratory";
         labQueueLine = qd

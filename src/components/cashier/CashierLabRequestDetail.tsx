@@ -399,6 +399,39 @@ export default function CashierLabRequestDetail() {
         throw new Error(priceRes.error);
       }
 
+      let payImagingRequests = openImagingRequests;
+      let payImagingItemsByRequestId = imagingItemsByRequestId;
+      const encIdForEnsure = encounterTransId.trim();
+      if (encIdForEnsure && req.patient_id != null) {
+        const ensureRes = await authenticatedFetch("/api/cashier/ensure-package-imaging", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            encounterTransId: encIdForEnsure,
+            labRequestIds: [labRequestId],
+            patientId: req.patient_id,
+          }),
+        });
+        const ensureJson = (await ensureRes.json().catch(() => ({}))) as { error?: string };
+        if (!ensureRes.ok || ensureJson.error) {
+          throw new Error(ensureJson.error ?? "Could not prepare package imaging.");
+        }
+        const imgRefresh = await fetchImagingRequestsWithoutSaleForEncounters([encIdForEnsure]);
+        if (imgRefresh.error) throw new Error(imgRefresh.error);
+        payImagingRequests = imgRefresh.byEncounter.get(encIdForEnsure) ?? [];
+        const imgItemsRefresh = await fetchImagingRequestItemsForRequestIdsClient(
+          payImagingRequests.map((r) => r.id),
+        );
+        if (imgItemsRefresh.error) throw new Error(imgItemsRefresh.error);
+        const refreshedItemsByReq = new Map<string, ImagingRequestItemRow[]>();
+        for (const row of imgItemsRefresh.rows) {
+          const list = refreshedItemsByReq.get(row.imaging_request_id) ?? [];
+          list.push(row);
+          refreshedItemsByReq.set(row.imaging_request_id, list);
+        }
+        payImagingItemsByRequestId = refreshedItemsByReq;
+      }
+
       const pkgReq: LabRequestPackagePricing = {
         lab_packages: req.lab_packages,
         package_covered_test_ids: req.package_covered_test_ids,
@@ -411,9 +444,12 @@ export default function CashierLabRequestDetail() {
         notes: it.notes,
       }));
 
-      const imagingSubtotal = imagingItemRows.reduce((s, it) => s + Number(it.unit_price ?? 0), 0);
-      for (const imgReq of openImagingRequests) {
-        for (const it of imagingItemsByRequestId.get(imgReq.id) ?? []) {
+      const imagingSubtotal = payImagingRequests.reduce((sum, imgReq) => {
+        const imgItems = payImagingItemsByRequestId.get(imgReq.id) ?? [];
+        return sum + imgItems.reduce((s, it) => s + Number(it.unit_price ?? 0), 0);
+      }, 0);
+      for (const imgReq of payImagingRequests) {
+        for (const it of payImagingItemsByRequestId.get(imgReq.id) ?? []) {
           payloadItems.push({
             imaging_catalog_id: it.imaging_catalog_id,
             quantity: 1,
@@ -436,7 +472,7 @@ export default function CashierLabRequestDetail() {
 
       const res = await createLabSaleWithItems({
         labRequestId,
-        imagingRequestId: openImagingRequests[0]?.id ?? null,
+        imagingRequestId: payImagingRequests[0]?.id ?? null,
         patientId: req.patient_id ?? null,
         orNumber: args.orNumber,
         paymentMethodId: args.paymentMethod.id,
@@ -464,7 +500,7 @@ export default function CashierLabRequestDetail() {
           body: JSON.stringify({
             encounterTransId: encId,
             labRequestIds: [labRequestId],
-            imagingRequestIds: openImagingRequests.map((r) => r.id),
+            imagingRequestIds: payImagingRequests.map((r) => r.id),
             cashierPriorityId: args.labQueuePriorityId,
             patient: {
               id: pid,

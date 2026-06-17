@@ -5,7 +5,8 @@ import { resolvePackageCoveredImagingCatalogIds } from "@/lib/labPackages";
 import { supabase } from "@/lib/supabaseClient";
 import {
   buildImagingRequestLinesFromCatalog,
-  fetchActiveImagingCatalog,
+  fetchActiveImagingCatalogForDb,
+  imagingSelectionForCatalogIds,
   IMAGING_CATALOG_TABLE,
   type ImagingCatalogRow,
   type ImagingLineSelection,
@@ -169,7 +170,77 @@ export function imagingSelectionHasChecked(sel: Record<string, ImagingLineSelect
   return Object.values(sel).some((r) => r?.checked);
 }
 
-export async function createImagingRequestWithItems(
+async function unpaidImagingRequestIdsForEncounter(
+  db: SupabaseClient,
+  encounterId: string,
+): Promise<{ ids: string[]; error: string | null }> {
+  const enc = encounterId.trim();
+  if (!enc) return { ids: [], error: null };
+
+  const { data: soldRows, error: soldErr } = await db
+    .from("lab_sales")
+    .select("imaging_request_id")
+    .not("imaging_request_id", "is", null);
+  if (soldErr) return { ids: [], error: soldErr.message };
+
+  const paidReqIds = new Set(
+    ((soldRows ?? []) as Array<{ imaging_request_id?: string | null }>)
+      .map((r) => String(r.imaging_request_id ?? "").trim())
+      .filter(Boolean),
+  );
+
+  const { data: reqRows, error: reqErr } = await db
+    .from(IMAGING_REQUESTS_TABLE)
+    .select("id, created_at")
+    .eq("encounter_id", enc)
+    .order("created_at", { ascending: false });
+  if (reqErr) return { ids: [], error: reqErr.message };
+
+  const ids = ((reqRows ?? []) as Array<{ id?: string }>)
+    .map((r) => String(r.id ?? "").trim())
+    .filter((id) => id && !paidReqIds.has(id));
+  return { ids, error: null };
+}
+
+async function addMissingPackageImagingItemsToRequest(
+  db: SupabaseClient,
+  imagingRequestId: string,
+  catalog: ImagingCatalogRow[],
+  covered: Set<string>,
+): Promise<{ error: string | null }> {
+  const { data: existing, error } = await db
+    .from(IMAGING_REQUEST_ITEMS_TABLE)
+    .select("imaging_catalog_id")
+    .eq("imaging_request_id", imagingRequestId);
+  if (error) return { error: error.message };
+
+  const have = new Set(
+    ((existing ?? []) as Array<{ imaging_catalog_id?: string | null }>)
+      .map((r) => String(r.imaging_catalog_id ?? "").trim())
+      .filter(Boolean),
+  );
+
+  const itemRows: Array<Record<string, unknown>> = [];
+  for (const c of catalog) {
+    if (!covered.has(c.id) || have.has(c.id)) continue;
+    itemRows.push({
+      imaging_request_id: imagingRequestId,
+      imaging_catalog_id: c.id,
+      study_code: c.code,
+      study_name: c.name,
+      view_text: null,
+      unit_price: 0,
+      status: "Pending",
+    });
+  }
+
+  if (itemRows.length === 0) return { error: null };
+  const { error: insErr } = await db.from(IMAGING_REQUEST_ITEMS_TABLE).insert(itemRows);
+  return { error: insErr?.message ?? null };
+}
+
+async function createImagingRequestWithItemsOnDb(
+  db: SupabaseClient,
   input: CreateImagingRequestInput,
 ): Promise<{ imagingRequestId: string | null; error: string | null }> {
   if (!imagingSelectionHasChecked(input.selection)) {
@@ -178,14 +249,14 @@ export async function createImagingRequestWithItems(
 
   const catalog =
     input.catalog ??
-    (await fetchActiveImagingCatalog()).rows;
+    (await fetchActiveImagingCatalogForDb(db)).rows;
   const lines = buildImagingRequestLinesFromCatalog(catalog, input.selection);
   if (lines.length === 0) {
     return { imagingRequestId: null, error: "Select at least one imaging study." };
   }
 
   const packageIds = normalizeImagingPackageIds(input.packageIds ?? []);
-  const { covered, error: covErr } = await resolveCoveredCatalogIdsForImagingCreate(supabase, packageIds);
+  const { covered, error: covErr } = await resolveCoveredCatalogIdsForImagingCreate(db, packageIds);
   if (covErr) return { imagingRequestId: null, error: covErr };
 
   const enc = input.encounterId != null ? String(input.encounterId).trim() : "";
@@ -197,7 +268,7 @@ export async function createImagingRequestWithItems(
   }
 
   const now = new Date();
-  const { data: row, error: insErr } = await supabase
+  const { data: row, error: insErr } = await db
     .from(IMAGING_REQUESTS_TABLE)
     .insert({
       encounter_id: enc === "" ? null : enc,
@@ -230,22 +301,82 @@ export async function createImagingRequestWithItems(
   }
 
   if (itemRows.length === 0) {
-    await supabase.from(IMAGING_REQUESTS_TABLE).delete().eq("id", imagingRequestId);
+    await db.from(IMAGING_REQUESTS_TABLE).delete().eq("id", imagingRequestId);
     return { imagingRequestId: null, error: "No imaging studies to save." };
   }
 
-  const { error: itemsErr } = await supabase.from(IMAGING_REQUEST_ITEMS_TABLE).insert(itemRows);
+  const { error: itemsErr } = await db.from(IMAGING_REQUEST_ITEMS_TABLE).insert(itemRows);
   if (itemsErr) {
-    await supabase.from(IMAGING_REQUESTS_TABLE).delete().eq("id", imagingRequestId);
+    await db.from(IMAGING_REQUESTS_TABLE).delete().eq("id", imagingRequestId);
     return { imagingRequestId: null, error: itemsErr.message };
   }
 
   if (enc && packageIds.length > 0) {
-    const sync = await syncUnpaidImagingItemsToPackageCoverage(supabase, enc, packageIds);
+    const sync = await syncUnpaidImagingItemsToPackageCoverage(db, enc, packageIds);
     if (sync.error) return { imagingRequestId: null, error: sync.error };
   }
 
   return { imagingRequestId, error: null };
+}
+
+/**
+ * When a lab package includes imaging studies, ensure an unpaid imaging request exists on the visit.
+ * Creates a new request or adds missing package members to an existing unpaid request.
+ */
+export async function ensureImagingRequestForLabPackages(
+  db: SupabaseClient,
+  input: {
+    encounterId: string;
+    patientId: number | null;
+    packageIds: number[];
+    selection?: Record<string, ImagingLineSelection>;
+    remarks?: string | null;
+    priority?: string;
+  },
+): Promise<{ imagingRequestId: string | null; error: string | null }> {
+  const enc = input.encounterId.trim();
+  const packageIds = normalizeImagingPackageIds(input.packageIds);
+  if (!enc || packageIds.length === 0) return { imagingRequestId: null, error: null };
+
+  const { covered, error: covErr } = await resolvePackageCoveredImagingCatalogIds(db, packageIds);
+  if (covErr) return { imagingRequestId: null, error: covErr };
+  if (covered.size === 0) return { imagingRequestId: null, error: null };
+
+  const { rows: catalog, error: catErr } = await fetchActiveImagingCatalogForDb(db);
+  if (catErr) return { imagingRequestId: null, error: catErr };
+
+  const unpaid = await unpaidImagingRequestIdsForEncounter(db, enc);
+  if (unpaid.error) return { imagingRequestId: null, error: unpaid.error };
+
+  if (unpaid.ids.length > 0) {
+    const imagingRequestId = unpaid.ids[0];
+    const add = await addMissingPackageImagingItemsToRequest(db, imagingRequestId, catalog, covered);
+    if (add.error) return { imagingRequestId: null, error: add.error };
+    const sync = await syncUnpaidImagingItemsToPackageCoverage(db, enc, packageIds);
+    if (sync.error) return { imagingRequestId: null, error: sync.error };
+    return { imagingRequestId, error: null };
+  }
+
+  const selection = imagingSelectionForCatalogIds(catalog, covered, input.selection);
+  if (!imagingSelectionHasChecked(selection)) {
+    return { imagingRequestId: null, error: null };
+  }
+
+  return createImagingRequestWithItemsOnDb(db, {
+    encounterId: enc,
+    patientId: input.patientId,
+    priority: input.priority,
+    remarks: input.remarks ?? "Laboratory package imaging",
+    selection,
+    catalog,
+    packageIds,
+  });
+}
+
+export async function createImagingRequestWithItems(
+  input: CreateImagingRequestInput,
+): Promise<{ imagingRequestId: string | null; error: string | null }> {
+  return createImagingRequestWithItemsOnDb(supabase, input);
 }
 
 /** Service-role create (reception / server routes). */
@@ -253,72 +384,7 @@ export async function adminCreateImagingRequestWithItems(
   admin: SupabaseClient,
   input: CreateImagingRequestInput,
 ): Promise<{ imagingRequestId: string | null; error: string | null }> {
-  if (!imagingSelectionHasChecked(input.selection)) {
-    return { imagingRequestId: null, error: "Select at least one imaging study." };
-  }
-
-  const { rows: catalog, error: catErr } = await fetchActiveImagingCatalog();
-  if (catErr) return { imagingRequestId: null, error: catErr };
-
-  const lines = buildImagingRequestLinesFromCatalog(catalog, input.selection);
-  if (lines.length === 0) {
-    return { imagingRequestId: null, error: "Select at least one imaging study." };
-  }
-
-  const packageIds = normalizeImagingPackageIds(input.packageIds ?? []);
-  const { covered, error: covErr } = await resolveCoveredCatalogIdsForImagingCreate(admin, packageIds);
-  if (covErr) return { imagingRequestId: null, error: covErr };
-
-  const enc = input.encounterId != null ? String(input.encounterId).trim() : "";
-  if (input.encounterId != null && enc === "") {
-    return { imagingRequestId: null, error: "Invalid encounter." };
-  }
-
-  const now = new Date();
-  const { data: row, error: insErr } = await admin
-    .from(IMAGING_REQUESTS_TABLE)
-    .insert({
-      encounter_id: enc === "" ? null : enc,
-      patient_id: input.patientId,
-      request_date: localDateYmd(now),
-      request_time: localTimeHms(now),
-      priority: (input.priority ?? "Routine").trim() || "Routine",
-      remarks: input.remarks?.trim() ? input.remarks.trim() : null,
-      status: "Pending",
-    })
-    .select("id")
-    .single();
-
-  if (insErr) return { imagingRequestId: null, error: insErr.message };
-  const imagingRequestId = (row as { id: string }).id;
-
-  const itemRows: Array<Record<string, unknown>> = [];
-  for (const c of catalog) {
-    const sel = input.selection[c.code];
-    if (!sel?.checked) continue;
-    itemRows.push({
-      imaging_request_id: imagingRequestId,
-      imaging_catalog_id: c.id,
-      study_code: c.code,
-      study_name: c.name,
-      view_text: c.requires_view_field ? (sel.view?.trim() || null) : null,
-      unit_price: unitPriceForImagingCatalogItem(c.id, c.default_price, covered),
-      status: "Pending",
-    });
-  }
-
-  const { error: itemsErr } = await admin.from(IMAGING_REQUEST_ITEMS_TABLE).insert(itemRows);
-  if (itemsErr) {
-    await admin.from(IMAGING_REQUESTS_TABLE).delete().eq("id", imagingRequestId);
-    return { imagingRequestId: null, error: itemsErr.message };
-  }
-
-  if (enc && packageIds.length > 0) {
-    const sync = await syncUnpaidImagingItemsToPackageCoverage(admin, enc, packageIds);
-    if (sync.error) return { imagingRequestId: null, error: sync.error };
-  }
-
-  return { imagingRequestId, error: null };
+  return createImagingRequestWithItemsOnDb(admin, input);
 }
 
 export type EncounterImagingRequestSummary = {

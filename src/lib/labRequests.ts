@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchLabPackageDetailsMap, fetchLabPackageMemberTestIdsMap, type LabPackageDetail } from "@/lib/labPackages";
-import { syncUnpaidImagingItemsToPackageCoverage } from "@/lib/imagingRequests";
+import { syncUnpaidImagingItemsToPackageCoverage, ensureImagingRequestForLabPackages } from "@/lib/imagingRequests";
 import { attachPanelLinksToCatalogItems } from "@/lib/labTestPanelLinks";
 import {
   buildLabRequestItemRows,
@@ -182,6 +182,16 @@ export async function createLabRequestWithItems(
     if (sync.error) {
       await supabase.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
       return { labRequestId: null, error: sync.error };
+    }
+    const ensured = await ensureImagingRequestForLabPackages(supabase, {
+      encounterId: enc,
+      patientId: input.patientId,
+      packageIds,
+      remarks: "Laboratory package imaging",
+    });
+    if (ensured.error) {
+      await supabase.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
+      return { labRequestId: null, error: ensured.error };
     }
   }
 

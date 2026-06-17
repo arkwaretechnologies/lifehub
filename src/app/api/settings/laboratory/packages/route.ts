@@ -1,10 +1,7 @@
 import { NextResponse } from "next/server";
-import {
-  LAB_PACKAGES_TABLE,
-  LAB_PACKAGE_TESTS_TABLE,
-  type LabPackageWithTests,
-} from "@/lib/labPackages";
-import { LAB_REQUEST_PACKAGES_TABLE } from "@/lib/labRequests";
+import { LAB_PACKAGES_TABLE, LAB_PACKAGE_TESTS_TABLE, labPackageHasMembers } from "@/lib/labPackages";
+import { loadOnePackageAdmin, loadPackagesWithMembersAdmin } from "@/lib/labPackagesAdmin";
+import { normalizePackageImagingCatalogIdsForStorage } from "@/lib/imagingCatalog";
 import { normalizePackageLabTestIdsForStorage } from "@/lib/labTests";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
 
@@ -22,63 +19,7 @@ function adminOr500() {
   return { db, res: null as null };
 }
 
-function numPrice(v: unknown): number {
-  if (v == null) return 0;
-  const n = typeof v === "number" ? v : Number(String(v));
-  return Number.isFinite(n) ? n : 0;
-}
-
-async function loadPackagesWithTests(db: NonNullable<ReturnType<typeof supabaseAdminClient>>): Promise<{
-  packages: LabPackageWithTests[];
-  error: string | null;
-}> {
-  const { data: pkgRows, error: pErr } = await db
-    .from(LAB_PACKAGES_TABLE)
-    .select("id, name, description, is_active, sort_order, package_price")
-    .order("sort_order", { ascending: true, nullsFirst: false })
-    .order("name", { ascending: true });
-
-  if (pErr) return { packages: [], error: pErr.message };
-
-  const packagesRaw = (pkgRows ?? []) as Array<Record<string, unknown>>;
-  if (packagesRaw.length === 0) return { packages: [], error: null };
-
-  const pkgIds = packagesRaw.map((r) => String(r.id ?? "")).filter(Boolean);
-  const { data: linkRows, error: lErr } = await db
-    .from(LAB_PACKAGE_TESTS_TABLE)
-    .select("lab_package_id, lab_test_id, sort_order")
-    .in("lab_package_id", pkgIds)
-    .order("sort_order", { ascending: true, nullsFirst: false });
-
-  if (lErr) return { packages: [], error: lErr.message };
-
-  const byPkg = new Map<string, string[]>();
-  for (const row of (linkRows ?? []) as Array<{ lab_package_id: string | number; lab_test_id: string }>) {
-    const pid = String(row.lab_package_id ?? "");
-    const tid = String(row.lab_test_id ?? "").trim();
-    if (!pid || !tid) continue;
-    const list = byPkg.get(pid) ?? [];
-    list.push(tid);
-    byPkg.set(pid, list);
-  }
-
-  const packages: LabPackageWithTests[] = packagesRaw.map((r) => {
-    const id = String(r.id ?? "");
-    return {
-      id,
-      name: String(r.name ?? ""),
-      description: (r.description as string | null) ?? null,
-      is_active: r.is_active !== false,
-      sort_order: r.sort_order == null || r.sort_order === "" ? null : Number(r.sort_order),
-      package_price: numPrice(r.package_price),
-      labTestIds: byPkg.get(id) ?? [],
-    };
-  });
-
-  return { packages, error: null };
-}
-
-function dedupeTestIds(ids: string[]): string[] {
+function dedupeIds(ids: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const raw of ids) {
@@ -94,7 +35,7 @@ export async function GET() {
   const { db, res } = adminOr500();
   if (!db || res) return res!;
 
-  const { packages, error } = await loadPackagesWithTests(db);
+  const { packages, error } = await loadPackagesWithMembersAdmin(db);
   if (error) return NextResponse.json({ error }, { status: 400 });
   return NextResponse.json({ packages });
 }
@@ -110,6 +51,7 @@ export async function POST(req: Request) {
     is_active?: boolean;
     sort_order?: number | null;
     lab_test_ids?: string[];
+    imaging_catalog_ids?: string[];
   } | null;
 
   const name = body?.name?.trim();
@@ -133,10 +75,22 @@ export async function POST(req: Request) {
     body?.sort_order == null || body.sort_order === ("" as unknown)
       ? null
       : Number(body.sort_order);
-  const labTestIdsRaw = dedupeTestIds(Array.isArray(body?.lab_test_ids) ? body!.lab_test_ids! : []);
+  const labTestIdsRaw = dedupeIds(Array.isArray(body?.lab_test_ids) ? body!.lab_test_ids! : []);
   const normalized = await normalizePackageLabTestIdsForStorage(db, labTestIdsRaw);
   if (normalized.error) return NextResponse.json({ error: normalized.error }, { status: 400 });
   const labTestIds = normalized.testIds;
+
+  const imagingRaw = dedupeIds(Array.isArray(body?.imaging_catalog_ids) ? body!.imaging_catalog_ids! : []);
+  const imagingNorm = await normalizePackageImagingCatalogIdsForStorage(db, imagingRaw);
+  if (imagingNorm.error) return NextResponse.json({ error: imagingNorm.error }, { status: 400 });
+  const imagingCatalogIds = imagingNorm.catalogIds;
+
+  if (!labPackageHasMembers({ labTestIds, imagingCatalogIds })) {
+    return NextResponse.json(
+      { error: "Select at least one laboratory test or imaging study for the package." },
+      { status: 400 },
+    );
+  }
 
   const insertPkg: Record<string, unknown> = {
     name,
@@ -174,9 +128,21 @@ export async function POST(req: Request) {
     }
   }
 
-  const { packages, error: loadErr } = await loadPackagesWithTests(db);
+  if (imagingCatalogIds.length > 0) {
+    const imgRows = imagingCatalogIds.map((imaging_catalog_id, idx) => ({
+      lab_package_id: pkgId,
+      imaging_catalog_id,
+      sort_order: idx,
+    }));
+    const { error: imgErr } = await db.from("lab_package_imaging").insert(imgRows);
+    if (imgErr) {
+      await db.from(LAB_PACKAGES_TABLE).delete().eq("id", pkgId);
+      return NextResponse.json({ error: imgErr.message }, { status: 400 });
+    }
+  }
+
+  const { package: pkg, error: loadErr } = await loadOnePackageAdmin(db, pkgId);
   if (loadErr) return NextResponse.json({ error: loadErr }, { status: 400 });
-  const pkg = packages.find((p) => p.id === String(pkgId));
   if (!pkg) return NextResponse.json({ error: "Created package could not be reloaded." }, { status: 500 });
 
   return NextResponse.json({ package: pkg });

@@ -1,3 +1,4 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
 
 import type { ImagingResultTemplateResultLayout } from "@/lib/imagingResultTemplates";
@@ -248,4 +249,32 @@ export function priceForImagingLineLabel(label: string, catalog: ImagingCatalogR
     if (base.toLowerCase() === c.name.trim().toLowerCase()) return numPrice(c.default_price);
   }
   return 0;
+}
+
+/** Validate imaging catalog ids for package membership (admin settings). */
+export async function normalizePackageImagingCatalogIdsForStorage(
+  db: SupabaseClient,
+  rawIds: string[],
+): Promise<{ catalogIds: string[]; error: string | null }> {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const raw of rawIds) {
+    const id = String(raw ?? "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  if (ids.length === 0) return { catalogIds: [], error: null };
+
+  const { data, error } = await db.from(IMAGING_CATALOG_TABLE).select("id").in("id", ids);
+  if (error) return { catalogIds: [], error: error.message };
+
+  const found = new Set(
+    ((data ?? []) as Array<{ id?: string }>).map((r) => String(r.id ?? "").trim()).filter(Boolean),
+  );
+  const missing = ids.filter((id) => !found.has(id));
+  if (missing.length > 0) {
+    return { catalogIds: [], error: `Unknown imaging catalog id(s): ${missing.join(", ")}` };
+  }
+  return { catalogIds: ids, error: null };
 }

@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ImagingResultTemplateResultLayout } from "@/lib/imagingResultTemplates";
 import { parseTemplateResultLayout } from "@/lib/imagingResultTemplates";
+import { resolvePackageCoveredImagingCatalogIds } from "@/lib/labPackages";
 import { supabase } from "@/lib/supabaseClient";
 import {
   buildImagingRequestLinesFromCatalog,
@@ -49,7 +50,106 @@ export type CreateImagingRequestInput = {
   /** Catalog code → selection */
   selection: Record<string, ImagingLineSelection>;
   catalog?: ImagingCatalogRow[];
+  /** Package bundle ids — covered imaging catalog members are stored at unit_price 0. */
+  packageIds?: number[] | null;
 };
+
+function parseImagingPackageId(raw: unknown): number | null {
+  if (raw == null || raw === "") return null;
+  const n = typeof raw === "number" ? raw : Number(String(raw));
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.trunc(n);
+}
+
+function normalizeImagingPackageIds(raw: unknown[] | null | undefined): number[] {
+  const out: number[] = [];
+  const seen = new Set<number>();
+  for (const rawId of raw ?? []) {
+    const id = parseImagingPackageId(rawId);
+    if (id == null || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+async function resolveCoveredCatalogIdsForImagingCreate(
+  db: SupabaseClient | typeof supabase,
+  packageIds: number[],
+): Promise<{ covered: Set<string>; error: string | null }> {
+  if (packageIds.length === 0) return { covered: new Set(), error: null };
+  return resolvePackageCoveredImagingCatalogIds(db as SupabaseClient, packageIds);
+}
+
+function unitPriceForImagingCatalogItem(
+  catalogId: string,
+  defaultPrice: number,
+  covered: Set<string>,
+): number {
+  return covered.has(catalogId) ? 0 : defaultPrice;
+}
+
+/** Zero out unpaid imaging line prices for studies covered by packages on the same visit. */
+export async function syncUnpaidImagingItemsToPackageCoverage(
+  db: SupabaseClient,
+  encounterId: string,
+  packageIds: number[],
+): Promise<{ error: string | null }> {
+  const enc = encounterId.trim();
+  const ids = normalizeImagingPackageIds(packageIds);
+  if (!enc || ids.length === 0) return { error: null };
+
+  const { covered, error: covErr } = await resolvePackageCoveredImagingCatalogIds(db, ids);
+  if (covErr) return { error: covErr };
+  if (covered.size === 0) return { error: null };
+
+  const { data: soldRows, error: soldErr } = await db
+    .from("lab_sales")
+    .select("imaging_request_id")
+    .not("imaging_request_id", "is", null);
+  if (soldErr) return { error: soldErr.message };
+
+  const paidReqIds = new Set(
+    ((soldRows ?? []) as Array<{ imaging_request_id?: string | null }>)
+      .map((r) => String(r.imaging_request_id ?? "").trim())
+      .filter(Boolean),
+  );
+
+  const { data: reqRows, error: reqErr } = await db
+    .from(IMAGING_REQUESTS_TABLE)
+    .select("id")
+    .eq("encounter_id", enc);
+  if (reqErr) return { error: reqErr.message };
+
+  const unpaidReqIds = ((reqRows ?? []) as Array<{ id?: string }>)
+    .map((r) => String(r.id ?? "").trim())
+    .filter((id) => id && !paidReqIds.has(id));
+  if (unpaidReqIds.length === 0) return { error: null };
+
+  const { data: itemRows, error: itemErr } = await db
+    .from(IMAGING_REQUEST_ITEMS_TABLE)
+    .select("id, imaging_catalog_id, unit_price")
+    .in("imaging_request_id", unpaidReqIds);
+  if (itemErr) return { error: itemErr.message };
+
+  for (const row of (itemRows ?? []) as Array<{
+    id?: string;
+    imaging_catalog_id?: string;
+    unit_price?: number;
+  }>) {
+    const itemId = String(row.id ?? "").trim();
+    const cid = String(row.imaging_catalog_id ?? "").trim();
+    if (!itemId || !cid || !covered.has(cid)) continue;
+    if (Number(row.unit_price) === 0) continue;
+    const { error: upErr } = await db
+      .from(IMAGING_REQUEST_ITEMS_TABLE)
+      .update({ unit_price: 0 })
+      .eq("id", itemId);
+    if (upErr) return { error: upErr.message };
+  }
+
+  return { error: null };
+}
 
 function localDateYmd(d: Date): string {
   const y = d.getFullYear();
@@ -83,6 +183,10 @@ export async function createImagingRequestWithItems(
   if (lines.length === 0) {
     return { imagingRequestId: null, error: "Select at least one imaging study." };
   }
+
+  const packageIds = normalizeImagingPackageIds(input.packageIds ?? []);
+  const { covered, error: covErr } = await resolveCoveredCatalogIdsForImagingCreate(supabase, packageIds);
+  if (covErr) return { imagingRequestId: null, error: covErr };
 
   const enc = input.encounterId != null ? String(input.encounterId).trim() : "";
   if (input.encounterId != null && enc === "") {
@@ -120,7 +224,7 @@ export async function createImagingRequestWithItems(
       study_code: c.code,
       study_name: c.name,
       view_text: c.requires_view_field ? (sel.view?.trim() || null) : null,
-      unit_price: c.default_price,
+      unit_price: unitPriceForImagingCatalogItem(c.id, c.default_price, covered),
       status: "Pending",
     });
   }
@@ -134,6 +238,11 @@ export async function createImagingRequestWithItems(
   if (itemsErr) {
     await supabase.from(IMAGING_REQUESTS_TABLE).delete().eq("id", imagingRequestId);
     return { imagingRequestId: null, error: itemsErr.message };
+  }
+
+  if (enc && packageIds.length > 0) {
+    const sync = await syncUnpaidImagingItemsToPackageCoverage(supabase, enc, packageIds);
+    if (sync.error) return { imagingRequestId: null, error: sync.error };
   }
 
   return { imagingRequestId, error: null };
@@ -155,6 +264,10 @@ export async function adminCreateImagingRequestWithItems(
   if (lines.length === 0) {
     return { imagingRequestId: null, error: "Select at least one imaging study." };
   }
+
+  const packageIds = normalizeImagingPackageIds(input.packageIds ?? []);
+  const { covered, error: covErr } = await resolveCoveredCatalogIdsForImagingCreate(admin, packageIds);
+  if (covErr) return { imagingRequestId: null, error: covErr };
 
   const enc = input.encounterId != null ? String(input.encounterId).trim() : "";
   if (input.encounterId != null && enc === "") {
@@ -189,7 +302,7 @@ export async function adminCreateImagingRequestWithItems(
       study_code: c.code,
       study_name: c.name,
       view_text: c.requires_view_field ? (sel.view?.trim() || null) : null,
-      unit_price: c.default_price,
+      unit_price: unitPriceForImagingCatalogItem(c.id, c.default_price, covered),
       status: "Pending",
     });
   }
@@ -198,6 +311,11 @@ export async function adminCreateImagingRequestWithItems(
   if (itemsErr) {
     await admin.from(IMAGING_REQUESTS_TABLE).delete().eq("id", imagingRequestId);
     return { imagingRequestId: null, error: itemsErr.message };
+  }
+
+  if (enc && packageIds.length > 0) {
+    const sync = await syncUnpaidImagingItemsToPackageCoverage(admin, enc, packageIds);
+    if (sync.error) return { imagingRequestId: null, error: sync.error };
   }
 
   return { imagingRequestId, error: null };

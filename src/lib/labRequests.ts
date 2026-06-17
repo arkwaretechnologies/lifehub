@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchLabPackageDetailsMap, fetchLabPackageMemberTestIdsMap, type LabPackageDetail } from "@/lib/labPackages";
+import { syncUnpaidImagingItemsToPackageCoverage } from "@/lib/imagingRequests";
 import { attachPanelLinksToCatalogItems } from "@/lib/labTestPanelLinks";
 import {
   buildLabRequestItemRows,
@@ -77,8 +78,9 @@ export async function createLabRequestWithItems(
   input: CreateLabRequestInput,
 ): Promise<{ labRequestId: string | null; error: string | null }> {
   const ids = [...new Set(input.labTestIds.map((x) => x.trim()).filter(Boolean))];
-  if (ids.length === 0) {
-    return { labRequestId: null, error: "Select at least one lab test." };
+  const packageIds = normalizeLabRequestPackageIdList(input.packageIds ?? []);
+  if (ids.length === 0 && packageIds.length === 0) {
+    return { labRequestId: null, error: "Select at least one lab test or package." };
   }
 
   const enc = input.encounterId != null ? String(input.encounterId).trim() : "";
@@ -103,8 +105,6 @@ export async function createLabRequestWithItems(
     input.clinicalDiagnosis != null && input.clinicalDiagnosis.trim() !== ""
       ? input.clinicalDiagnosis.trim()
       : null;
-
-  const packageIds = normalizeLabRequestPackageIdList(input.packageIds ?? []);
 
   const { data: row, error: insErr } = await supabase
     .from(LAB_REQUESTS_TABLE)
@@ -146,33 +146,43 @@ export async function createLabRequestWithItems(
 
   const itemPriority = input.itemPriority ?? null;
 
-  const catalogFetch = await fetchLabTestCatalogRows(supabase);
-  if (catalogFetch.error) {
-    await supabase.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
-    return { labRequestId: null, error: catalogFetch.error };
+  if (ids.length > 0) {
+    const catalogFetch = await fetchLabTestCatalogRows(supabase);
+    if (catalogFetch.error) {
+      await supabase.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
+      return { labRequestId: null, error: catalogFetch.error };
+    }
+    let catalog = catalogFetch.rows.map((raw) => mapLabTestCatalogItem(raw));
+    const attached = await attachPanelLinksToCatalogItems(supabase, catalog);
+    if (attached.error) {
+      await supabase.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
+      return { labRequestId: null, error: attached.error };
+    }
+    catalog = attached.tests;
+
+    const itemSpecs = buildLabRequestItemRows(ids, catalog);
+    const items = itemSpecs.map((row) => ({
+      lab_request_id: labRequestId,
+      lab_test_id: row.lab_test_id,
+      notes: null as string | null,
+      priority: itemPriority,
+      is_billable: row.is_billable,
+    }));
+
+    const { error: itemsErr } = await supabase.from(LAB_REQUEST_ITEMS_TABLE).insert(items);
+
+    if (itemsErr) {
+      await supabase.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
+      return { labRequestId: null, error: itemsErr.message };
+    }
   }
-  let catalog = catalogFetch.rows.map((raw) => mapLabTestCatalogItem(raw));
-  const attached = await attachPanelLinksToCatalogItems(supabase, catalog);
-  if (attached.error) {
-    await supabase.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
-    return { labRequestId: null, error: attached.error };
-  }
-  catalog = attached.tests;
 
-  const itemSpecs = buildLabRequestItemRows(ids, catalog);
-  const items = itemSpecs.map((row) => ({
-    lab_request_id: labRequestId,
-    lab_test_id: row.lab_test_id,
-    notes: null as string | null,
-    priority: itemPriority,
-    is_billable: row.is_billable,
-  }));
-
-  const { error: itemsErr } = await supabase.from(LAB_REQUEST_ITEMS_TABLE).insert(items);
-
-  if (itemsErr) {
-    await supabase.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
-    return { labRequestId: null, error: itemsErr.message };
+  if (enc && packageIds.length > 0) {
+    const sync = await syncUnpaidImagingItemsToPackageCoverage(supabase, enc, packageIds);
+    if (sync.error) {
+      await supabase.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
+      return { labRequestId: null, error: sync.error };
+    }
   }
 
   return { labRequestId, error: null };

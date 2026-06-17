@@ -77,7 +77,13 @@ import {
   type LabTestCatalogItem,
 } from "@/lib/labTests";
 import { fetchActiveLabPricesByTestIds } from "@/lib/labServicePrices";
-import { fetchActiveLabPackagesWithTests, type LabPackageWithTests } from "@/lib/labPackages";
+import {
+  applyPackageImagingSelection,
+  fetchActiveLabPackagesWithTests,
+  imagingCatalogCodesCoveredByPackages,
+  labPackageHasMembers,
+  type LabPackageWithTests,
+} from "@/lib/labPackages";
 import {
   buildImagingRequestLinesFromCatalog,
   emptyImagingSelection,
@@ -510,6 +516,11 @@ export default function ReceptionDesk() {
     return s;
   }, [labPackages, selectedLabPackageIds, labCatalogTests]);
 
+  const imagingCoveredByPackages = useMemo(
+    () => imagingCatalogCodesCoveredByPackages(labPackages, selectedLabPackageIds, imagingCatalog),
+    [labPackages, selectedLabPackageIds, imagingCatalog],
+  );
+
   const toggleLabTestSelection = useCallback(
     (testId: string) => {
       setSelectedLabTestIds((prev) => {
@@ -527,7 +538,7 @@ export default function ReceptionDesk() {
 
   const toggleLabPackageSelection = useCallback(
     (pkg: LabPackageWithTests) => {
-      if (pkg.labTestIds.length === 0) return;
+      if (!labPackageHasMembers(pkg)) return;
       const wasOn = selectedLabPackageIds.has(pkg.id);
       setSelectedLabPackageIds((prev) => {
         const next = new Set(prev);
@@ -535,27 +546,32 @@ export default function ReceptionDesk() {
         else next.add(pkg.id);
         return next;
       });
-      setSelectedLabTestIds((sel) => {
-        const n2 = new Set(sel);
-        if (wasOn) {
-          for (const tid of pkg.labTestIds) {
-            n2.delete(tid);
-            if (testHasPanelComponents(labCatalogTests, tid)) {
-              for (const cid of getComponentTestIds(labCatalogTests, tid)) n2.delete(cid);
+      if (pkg.labTestIds.length > 0) {
+        setSelectedLabTestIds((sel) => {
+          const n2 = new Set(sel);
+          if (wasOn) {
+            for (const tid of pkg.labTestIds) {
+              n2.delete(tid);
+              if (testHasPanelComponents(labCatalogTests, tid)) {
+                for (const cid of getComponentTestIds(labCatalogTests, tid)) n2.delete(cid);
+              }
+            }
+          } else {
+            for (const tid of pkg.labTestIds) {
+              n2.add(tid);
+              if (testHasPanelComponents(labCatalogTests, tid)) {
+                for (const cid of getComponentTestIds(labCatalogTests, tid)) n2.delete(cid);
+              }
             }
           }
-        } else {
-          for (const tid of pkg.labTestIds) {
-            n2.add(tid);
-            if (testHasPanelComponents(labCatalogTests, tid)) {
-              for (const cid of getComponentTestIds(labCatalogTests, tid)) n2.delete(cid);
-            }
-          }
-        }
-        return n2;
-      });
+          return n2;
+        });
+      }
+      setImagingForm((prev) =>
+        applyPackageImagingSelection(pkg.imagingCatalogIds, imagingCatalog, prev, !wasOn),
+      );
     },
-    [selectedLabPackageIds, labCatalogTests],
+    [selectedLabPackageIds, labCatalogTests, imagingCatalog],
   );
 
   const clearLaboratoryTriageSelections = useCallback(() => {
@@ -852,7 +868,8 @@ export default function ReceptionDesk() {
             }
           }
           const hasImaging = Object.values(imagingForm).some((r) => r?.checked);
-          if (merged.size === 0 && !hasImaging) {
+          const hasSelectedPackage = selectedLabPackageIds.size > 0;
+          if (merged.size === 0 && !hasImaging && !hasSelectedPackage) {
             setPatientError("Select at least one laboratory test, package, or imaging study.");
             return;
           }
@@ -1544,6 +1561,7 @@ export default function ReceptionDesk() {
                               <Stack spacing={1.5}>
                                 {imagingCatalog.map((c) => {
                                   const row = imagingForm[c.code] ?? { checked: false, view: "" };
+                                  const coveredByPackage = imagingCoveredByPackages.has(c.code);
                                   const label = (c.view_field_label ?? "VIEW").trim() || "VIEW";
                                   return (
                                     <Box key={c.code}>
@@ -1565,8 +1583,18 @@ export default function ReceptionDesk() {
                                             <Typography variant="body2" sx={{ textTransform: "uppercase" }}>
                                               {c.name}
                                             </Typography>
-                                            <Typography variant="caption" fontWeight={800} color="text.secondary" sx={{ whiteSpace: "nowrap" }}>
-                                              {formatMoney2(c.default_price)}
+                                            <Typography
+                                              variant="caption"
+                                              fontWeight={800}
+                                              color="text.secondary"
+                                              sx={{
+                                                whiteSpace: "nowrap",
+                                                fontStyle: coveredByPackage ? "italic" : undefined,
+                                              }}
+                                            >
+                                              {coveredByPackage
+                                                ? "Included in package"
+                                                : formatMoney2(c.default_price)}
                                             </Typography>
                                           </Stack>
                                         }

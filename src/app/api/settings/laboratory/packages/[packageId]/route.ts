@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server";
 import {
   LAB_PACKAGES_TABLE,
+  LAB_PACKAGE_IMAGING_TABLE,
   LAB_PACKAGE_TESTS_TABLE,
-  type LabPackageWithTests,
 } from "@/lib/labPackages";
+import {
+  loadOnePackageAdmin,
+  replacePackageImagingLinks,
+} from "@/lib/labPackagesAdmin";
 import { LAB_REQUEST_PACKAGES_TABLE } from "@/lib/labRequests";
+import { normalizePackageImagingCatalogIdsForStorage } from "@/lib/imagingCatalog";
 import { normalizePackageLabTestIdsForStorage } from "@/lib/labTests";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
 
@@ -27,13 +32,7 @@ function parsePackageId(raw: string): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-function numPrice(v: unknown): number {
-  if (v == null) return 0;
-  const n = typeof v === "number" ? v : Number(String(v));
-  return Number.isFinite(n) ? n : 0;
-}
-
-function dedupeTestIds(ids: string[]): string[] {
+function dedupeIds(ids: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const raw of ids) {
@@ -43,47 +42,6 @@ function dedupeTestIds(ids: string[]): string[] {
     out.push(id);
   }
   return out;
-}
-
-async function loadOnePackage(
-  db: NonNullable<ReturnType<typeof supabaseAdminClient>>,
-  packageId: number,
-): Promise<{ package: LabPackageWithTests | null; error: string | null }> {
-  const { data: row, error: pErr } = await db
-    .from(LAB_PACKAGES_TABLE)
-    .select("id, name, description, is_active, sort_order, package_price")
-    .eq("id", packageId)
-    .maybeSingle();
-
-  if (pErr) return { package: null, error: pErr.message };
-  if (!row) return { package: null, error: null };
-
-  const r = row as Record<string, unknown>;
-  const id = String(r.id ?? "");
-
-  const { data: linkRows, error: lErr } = await db
-    .from(LAB_PACKAGE_TESTS_TABLE)
-    .select("lab_test_id, sort_order")
-    .eq("lab_package_id", packageId)
-    .order("sort_order", { ascending: true, nullsFirst: false });
-
-  if (lErr) return { package: null, error: lErr.message };
-
-  const labTestIds = ((linkRows ?? []) as Array<{ lab_test_id: string }>)
-    .map((x) => String(x.lab_test_id ?? "").trim())
-    .filter(Boolean);
-
-  const pkg: LabPackageWithTests = {
-    id,
-    name: String(r.name ?? ""),
-    description: (r.description as string | null) ?? null,
-    is_active: r.is_active !== false,
-    sort_order: r.sort_order == null || r.sort_order === "" ? null : Number(r.sort_order),
-    package_price: numPrice(r.package_price),
-    labTestIds,
-  };
-
-  return { package: pkg, error: null };
 }
 
 export async function GET(
@@ -99,7 +57,7 @@ export async function GET(
     return NextResponse.json({ error: "Invalid package id." }, { status: 400 });
   }
 
-  const { package: pkg, error } = await loadOnePackage(db, packageId);
+  const { package: pkg, error } = await loadOnePackageAdmin(db, packageId);
   if (error) return NextResponse.json({ error }, { status: 400 });
   if (!pkg) return NextResponse.json({ error: "Package not found." }, { status: 404 });
 
@@ -126,6 +84,7 @@ export async function PATCH(
     is_active?: boolean;
     sort_order?: number | null;
     lab_test_ids?: string[];
+    imaging_catalog_ids?: string[];
   } | null;
 
   if (!body || Object.keys(body).length === 0) {
@@ -172,7 +131,7 @@ export async function PATCH(
   }
 
   if (body.lab_test_ids !== undefined) {
-    const labTestIdsRaw = dedupeTestIds(Array.isArray(body.lab_test_ids) ? body.lab_test_ids : []);
+    const labTestIdsRaw = dedupeIds(Array.isArray(body.lab_test_ids) ? body.lab_test_ids : []);
     const normalized = await normalizePackageLabTestIdsForStorage(db, labTestIdsRaw);
     if (normalized.error) return NextResponse.json({ error: normalized.error }, { status: 400 });
     const labTestIds = normalized.testIds;
@@ -190,7 +149,15 @@ export async function PATCH(
     }
   }
 
-  const { package: pkg, error: loadErr } = await loadOnePackage(db, packageId);
+  if (body.imaging_catalog_ids !== undefined) {
+    const imagingRaw = dedupeIds(Array.isArray(body.imaging_catalog_ids) ? body.imaging_catalog_ids : []);
+    const imagingNorm = await normalizePackageImagingCatalogIdsForStorage(db, imagingRaw);
+    if (imagingNorm.error) return NextResponse.json({ error: imagingNorm.error }, { status: 400 });
+    const replaced = await replacePackageImagingLinks(db, packageId, imagingNorm.catalogIds);
+    if (replaced.error) return NextResponse.json({ error: replaced.error }, { status: 400 });
+  }
+
+  const { package: pkg, error: loadErr } = await loadOnePackageAdmin(db, packageId);
   if (loadErr) return NextResponse.json({ error: loadErr }, { status: 400 });
   if (!pkg) return NextResponse.json({ error: "Package not found." }, { status: 404 });
 
@@ -225,6 +192,9 @@ export async function DELETE(
       { status: 409 },
     );
   }
+
+  const { error: imgErr } = await db.from(LAB_PACKAGE_IMAGING_TABLE).delete().eq("lab_package_id", packageId);
+  if (imgErr) return NextResponse.json({ error: imgErr.message }, { status: 400 });
 
   const { error: lErr } = await db.from(LAB_PACKAGE_TESTS_TABLE).delete().eq("lab_package_id", packageId);
   if (lErr) return NextResponse.json({ error: lErr.message }, { status: 400 });

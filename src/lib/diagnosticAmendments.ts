@@ -18,6 +18,7 @@ import {
   type LabRequestItemStoredRow,
 } from "@/lib/labRequests";
 import type { ImagingCatalogRow, ImagingLineSelection } from "@/lib/imagingCatalog";
+import { resolvePackageCoveredImagingCatalogIds } from "@/lib/labPackages";
 import {
   fetchImagingRequestItemsForRequestIds,
   IMAGING_REQUEST_ITEMS_TABLE,
@@ -216,9 +217,10 @@ async function computeImagingAmendmentBillingAgainstPaidSale(
   imagingRequestId: string,
   catalog: ImagingCatalogRow[],
   selection: Record<string, ImagingLineSelection>,
+  packageCoveredCatalogIds: Set<string> = new Set(),
 ): Promise<{ amountDelta: number; summary: AmendmentSummaryJson; error: string | null }> {
   const reqId = imagingRequestId.trim();
-  const desiredLines = desiredImagingLinesFromSelection(catalog, selection);
+  const desiredLines = desiredImagingLinesFromSelection(catalog, selection, packageCoveredCatalogIds);
   const desiredCatalogIds = new Set(desiredLines.map((l) => l.imaging_catalog_id));
   const salePrices = await fetchImagingSalePricesByCatalogId(db, reqId);
   const baselineCatalogIds = new Set(salePrices.keys());
@@ -649,6 +651,7 @@ export type ImagingAmendmentPlan = {
 function desiredImagingLinesFromSelection(
   catalog: ImagingCatalogRow[],
   selection: Record<string, ImagingLineSelection>,
+  packageCoveredCatalogIds: Set<string> = new Set(),
 ): ImagingAmendmentPlan["toAdd"] {
   const out: ImagingAmendmentPlan["toAdd"] = [];
   for (const c of catalog) {
@@ -659,7 +662,7 @@ function desiredImagingLinesFromSelection(
       study_code: c.code,
       study_name: c.name,
       view_text: c.requires_view_field ? (sel.view?.trim() || null) : null,
-      unit_price: roundMoney2(c.default_price),
+      unit_price: packageCoveredCatalogIds.has(c.id) ? 0 : roundMoney2(c.default_price),
     });
   }
   return out;
@@ -670,9 +673,13 @@ export async function computeImagingAmendmentPlan(
   imagingRequestId: string,
   catalog: ImagingCatalogRow[],
   selection: Record<string, ImagingLineSelection>,
+  packageIds: number[] = [],
 ): Promise<{ plan: ImagingAmendmentPlan | null; error: string | null }> {
   const reqId = imagingRequestId.trim();
-  const desiredLines = desiredImagingLinesFromSelection(catalog, selection);
+  const normalizedPackageIds = normalizeLabRequestPackageIdList(packageIds);
+  const { covered, error: covErr } = await resolvePackageCoveredImagingCatalogIds(db, normalizedPackageIds);
+  if (covErr) return { plan: null, error: covErr };
+  const desiredLines = desiredImagingLinesFromSelection(catalog, selection, covered);
   const desiredCatalogIds = new Set(desiredLines.map((l) => l.imaging_catalog_id));
 
   const { rows: current, error: cErr } = await fetchImagingRequestItemsForRequestIds(db, [reqId]);
@@ -747,6 +754,7 @@ export async function applyImagingAmendment(
     catalog: ImagingCatalogRow[];
     selection: Record<string, ImagingLineSelection>;
     acknowledgedWarnings?: boolean;
+    packageIds?: number[] | null;
   },
 ): Promise<{
   amendmentId: string | null;
@@ -782,7 +790,17 @@ export async function applyImagingAmendment(
     return { amendmentId: null, amountDelta: 0, warnings: [], error: "Imaging request does not belong to this visit." };
   }
 
-  const { plan, error: pErr } = await computeImagingAmendmentPlan(db, reqId, input.catalog, input.selection);
+  const normalizedPackageIds = normalizeLabRequestPackageIdList(input.packageIds ?? []);
+  const { covered, error: covErr } = await resolvePackageCoveredImagingCatalogIds(db, normalizedPackageIds);
+  if (covErr) return { amendmentId: null, amountDelta: 0, warnings: [], error: covErr };
+
+  const { plan, error: pErr } = await computeImagingAmendmentPlan(
+    db,
+    reqId,
+    input.catalog,
+    input.selection,
+    normalizedPackageIds,
+  );
   if (pErr || !plan) return { amendmentId: null, amountDelta: 0, warnings: [], error: pErr ?? "Could not compute amendment." };
 
   if (plan.warnings.length > 0 && !input.acknowledgedWarnings) {
@@ -823,6 +841,7 @@ export async function applyImagingAmendment(
     reqId,
     input.catalog,
     input.selection,
+    covered,
   );
   if (billing.error) return { amendmentId: null, amountDelta: 0, warnings: [], error: billing.error };
 

@@ -38,7 +38,11 @@ import {
   imagingQueueCode,
   labQueueCode,
 } from "@/lib/diagnosticQueueServer";
-import { adminCreateImagingRequestWithItems, imagingSelectionHasChecked } from "@/lib/imagingRequests";
+import {
+  adminCreateImagingRequestWithItems,
+  imagingSelectionHasChecked,
+  syncUnpaidImagingItemsToPackageCoverage,
+} from "@/lib/imagingRequests";
 import type { ImagingLineSelection } from "@/lib/imagingCatalog";
 
 const ACTIVE_STATUSES: QueueTicketStatus[] = ["Waiting", "Called", "Serving"];
@@ -554,34 +558,45 @@ async function adminCreateLabRequestWithItems(input: {
   const linePriority = input.itemPriority ?? "Routine";
 
   const testIds = [...new Set(input.labTestIds.map((x) => x.trim()).filter(Boolean))];
-  const { data: testRows, error: catErr } = await admin
-    .from(LAB_TESTS_TABLE)
-    .select(LAB_TEST_CATALOG_SELECT);
-  if (catErr) {
-    await admin.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
-    return { labRequestId: null, error: catErr.message };
-  }
-  let catalog = ((testRows ?? []) as Record<string, unknown>[]).map((raw) => mapLabTestCatalogItem(raw));
-  const attached = await attachPanelLinksToCatalogItems(admin, catalog);
-  if (attached.error) {
-    await admin.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
-    return { labRequestId: null, error: attached.error };
-  }
-  catalog = attached.tests;
+  if (testIds.length > 0) {
+    const { data: testRows, error: catErr } = await admin
+      .from(LAB_TESTS_TABLE)
+      .select(LAB_TEST_CATALOG_SELECT);
+    if (catErr) {
+      await admin.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
+      return { labRequestId: null, error: catErr.message };
+    }
+    let catalog = ((testRows ?? []) as Record<string, unknown>[]).map((raw) => mapLabTestCatalogItem(raw));
+    const attached = await attachPanelLinksToCatalogItems(admin, catalog);
+    if (attached.error) {
+      await admin.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
+      return { labRequestId: null, error: attached.error };
+    }
+    catalog = attached.tests;
 
-  const itemSpecs = buildLabRequestItemRows(testIds, catalog);
-  const items = itemSpecs.map((row) => ({
-    lab_request_id: labRequestId,
-    lab_test_id: row.lab_test_id,
-    notes: null,
-    priority: linePriority,
-    is_billable: row.is_billable,
-  }));
+    const itemSpecs = buildLabRequestItemRows(testIds, catalog);
+    const items = itemSpecs.map((row) => ({
+      lab_request_id: labRequestId,
+      lab_test_id: row.lab_test_id,
+      notes: null,
+      priority: linePriority,
+      is_billable: row.is_billable,
+    }));
 
-  const { error: itemsErr } = await admin.from(LAB_REQUEST_ITEMS_TABLE).insert(items);
-  if (itemsErr) {
-    await admin.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
-    return { labRequestId: null, error: itemsErr.message };
+    const { error: itemsErr } = await admin.from(LAB_REQUEST_ITEMS_TABLE).insert(items);
+    if (itemsErr) {
+      await admin.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
+      return { labRequestId: null, error: itemsErr.message };
+    }
+  }
+
+  const enc = input.encounterId != null ? String(input.encounterId).trim() : "";
+  if (enc && packageIds.length > 0) {
+    const sync = await syncUnpaidImagingItemsToPackageCoverage(admin, enc, packageIds);
+    if (sync.error) {
+      await admin.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
+      return { labRequestId: null, error: sync.error };
+    }
   }
 
   return { labRequestId, error: null };
@@ -1663,8 +1678,9 @@ export async function adminPrepareLaboratoryCheckin(
   if (!admin) return { error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." };
 
   const ids = [...new Set(input.labTestIds.map((x) => x.trim()).filter(Boolean))];
+  const packageIds = normalizeLabRequestPackageIdList(input.packageIds ?? []);
   const hasImaging = imagingSelectionHasChecked(input.imagingSelection ?? {});
-  if (ids.length === 0 && !hasImaging) {
+  if (ids.length === 0 && !hasImaging && packageIds.length === 0) {
     return { error: "Select at least one laboratory test, package, or imaging study." };
   }
 
@@ -1679,7 +1695,7 @@ export async function adminPrepareLaboratoryCheckin(
   if (encErr || !encounterId) return { error: encErr ?? "No encounter." };
 
   let labRequestId: string | null = null;
-  if (ids.length > 0) {
+  if (ids.length > 0 || packageIds.length > 0) {
     const lab = await adminCreateLabRequestWithItems({
       encounterId,
       patientId: input.patient.id,
@@ -1689,7 +1705,7 @@ export async function adminPrepareLaboratoryCheckin(
       clinicalDiagnosis: null,
       remarks: "Reception diagnostic intake (pending payment)",
       labTestIds: ids,
-      packageIds: input.packageIds ?? [],
+      packageIds,
     });
     if (lab.error || !lab.labRequestId) return { error: lab.error ?? "Could not create lab request." };
     labRequestId = lab.labRequestId;
@@ -1703,6 +1719,7 @@ export async function adminPrepareLaboratoryCheckin(
       priority: "Routine",
       remarks: "Reception imaging intake (pending payment)",
       selection: input.imagingSelection ?? {},
+      packageIds,
     });
     if (img.error || !img.imagingRequestId) return { error: img.error ?? "Could not create imaging request." };
     imagingRequestId = img.imagingRequestId;

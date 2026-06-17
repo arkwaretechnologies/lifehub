@@ -47,6 +47,7 @@ import SearchIcon from "@mui/icons-material/Search";
 import type { LabPackageWithTests } from "@/lib/labPackages";
 import type { LabCategoryRow, LabTestCatalogItem } from "@/lib/labTests";
 import { collapseComponentsToPanel, labTestCategoryPickerLabel } from "@/lib/labTests";
+import { fetchActiveImagingCatalog, type ImagingCatalogRow } from "@/lib/imagingCatalog";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 
 type TestOption = { id: string; label: string };
@@ -58,6 +59,7 @@ type PackageForm = {
   sort_order: string;
   is_active: boolean;
   lab_test_ids: string[];
+  imaging_catalog_ids: string[];
 };
 
 const emptyForm = (): PackageForm => ({
@@ -67,6 +69,7 @@ const emptyForm = (): PackageForm => ({
   sort_order: "",
   is_active: true,
   lab_test_ids: [],
+  imaging_catalog_ids: [],
 });
 
 function rowToForm(r: LabPackageWithTests): PackageForm {
@@ -77,6 +80,7 @@ function rowToForm(r: LabPackageWithTests): PackageForm {
     sort_order: r.sort_order == null ? "" : String(r.sort_order),
     is_active: r.is_active !== false,
     lab_test_ids: [...(r.labTestIds ?? [])],
+    imaging_catalog_ids: [...(r.imagingCatalogIds ?? [])],
   };
 }
 
@@ -114,16 +118,20 @@ function toggleId(ids: string[], id: string): string[] {
   return ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
 }
 
-function LabTestTransferList({
+function MemberTransferList({
   options,
   value,
   onChange,
   disabled,
+  sectionTitle,
+  emptyMessage,
 }: {
   options: TestOption[];
   value: string[];
   onChange: (ids: string[]) => void;
   disabled: boolean;
+  sectionTitle: string;
+  emptyMessage: string;
 }) {
   const [leftFilter, setLeftFilter] = useState("");
   const [rightFilter, setRightFilter] = useState("");
@@ -213,7 +221,7 @@ function LabTestTransferList({
   if (options.length === 0) {
     return (
       <Typography variant="body2" color="text.secondary">
-        No lab tests loaded — save package details after tests exist in Lab tests.
+        {emptyMessage}
       </Typography>
     );
   }
@@ -221,7 +229,7 @@ function LabTestTransferList({
   return (
     <Box>
       <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
-        Included lab tests
+        {sectionTitle}
       </Typography>
       <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} alignItems="stretch">
         <Paper variant="outlined" sx={listPaperSx}>
@@ -380,6 +388,7 @@ function LabTestTransferList({
 export default function SettingsLabPackagesPage() {
   const [packages, setPackages] = useState<LabPackageWithTests[]>([]);
   const [tests, setTests] = useState<LabTestCatalogItem[]>([]);
+  const [imagingCatalog, setImagingCatalog] = useState<ImagingCatalogRow[]>([]);
   const [categories, setCategories] = useState<LabCategoryRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState("");
@@ -434,6 +443,15 @@ export default function SettingsLabPackagesPage() {
     [packagePickerTests, categoryNameById],
   );
 
+  const imagingOptions: TestOption[] = useMemo(
+    () =>
+      imagingCatalog.map((c) => ({
+        id: c.id,
+        label: c.code ? `${c.name} (${c.code})` : c.name,
+      })),
+    [imagingCatalog],
+  );
+
   const filteredPackages = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     if (!q) return packages;
@@ -445,6 +463,7 @@ export default function SettingsLabPackagesPage() {
         String(p.package_price),
         p.sort_order != null ? String(p.sort_order) : "",
         String(p.labTestIds?.length ?? 0),
+        String(p.imagingCatalogIds?.length ?? 0),
       ]
         .filter(Boolean)
         .join(" ")
@@ -471,10 +490,11 @@ export default function SettingsLabPackagesPage() {
     setListError("");
     setLoading(true);
     try {
-      const [pRes, tRes, cRes] = await Promise.all([
+      const [pRes, tRes, cRes, imgRes] = await Promise.all([
         authenticatedFetch("/api/settings/laboratory/packages"),
         authenticatedFetch("/api/settings/laboratory/lab-tests"),
         authenticatedFetch("/api/settings/laboratory/categories"),
+        fetchActiveImagingCatalog(),
       ]);
       const pJson = (await pRes.json().catch(() => null)) as
         | { packages?: LabPackageWithTests[]; error?: string }
@@ -507,12 +527,20 @@ export default function SettingsLabPackagesPage() {
       } else {
         setCategories(cJson?.categories ?? []);
       }
+
+      if (imgRes.error) {
+        errMsg = errMsg || imgRes.error;
+        setImagingCatalog([]);
+      } else {
+        setImagingCatalog(imgRes.rows);
+      }
       setListError(errMsg);
     } catch {
       setListError("Failed to load data.");
       setPackages([]);
       setTests([]);
       setCategories([]);
+      setImagingCatalog([]);
     } finally {
       setLoading(false);
     }
@@ -553,6 +581,9 @@ export default function SettingsLabPackagesPage() {
     }
     const { value: package_price, error: priceErr } = parsePrice(f.package_price);
     if (priceErr) return { error: priceErr };
+    if (f.lab_test_ids.length === 0 && f.imaging_catalog_ids.length === 0) {
+      return { error: "Select at least one laboratory test or imaging study." };
+    }
     return {
       body: {
         name,
@@ -561,6 +592,7 @@ export default function SettingsLabPackagesPage() {
         sort_order,
         is_active: f.is_active,
         lab_test_ids: f.lab_test_ids,
+        imaging_catalog_ids: f.imaging_catalog_ids,
       },
     };
   };
@@ -692,11 +724,21 @@ export default function SettingsLabPackagesPage() {
         }
         label="Active"
       />
-      <LabTestTransferList
+      <MemberTransferList
         options={testOptions}
         value={form.lab_test_ids}
         onChange={(ids) => setForm((f) => ({ ...f, lab_test_ids: ids }))}
         disabled={tests.length === 0}
+        sectionTitle="Included lab tests"
+        emptyMessage="No lab tests loaded — save package details after tests exist in Lab tests."
+      />
+      <MemberTransferList
+        options={imagingOptions}
+        value={form.imaging_catalog_ids}
+        onChange={(ids) => setForm((f) => ({ ...f, imaging_catalog_ids: ids }))}
+        disabled={imagingCatalog.length === 0}
+        sectionTitle="Included imaging studies"
+        emptyMessage="No imaging studies loaded — add studies in Imaging catalog settings first."
       />
     </Stack>
   );
@@ -707,8 +749,8 @@ export default function SettingsLabPackagesPage() {
         Laboratory — Packages
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Bundle catalog lab tests into named packages with a package price. Packages linked to existing lab
-        requests cannot be deleted; deactivate them instead.
+        Bundle catalog lab tests and imaging studies into named packages with a single package price.
+        Packages linked to existing lab requests cannot be deleted; deactivate them instead.
       </Typography>
 
       <Card>
@@ -792,7 +834,8 @@ export default function SettingsLabPackagesPage() {
                     <TableCell>Name</TableCell>
                     <TableCell>Description</TableCell>
                     <TableCell align="right">Price</TableCell>
-                    <TableCell align="center">Tests</TableCell>
+                    <TableCell align="center">Lab tests</TableCell>
+                    <TableCell align="center">Imaging</TableCell>
                     <TableCell align="right">Sort</TableCell>
                     <TableCell>Status</TableCell>
                     <TableCell align="right" width={100}>
@@ -803,15 +846,15 @@ export default function SettingsLabPackagesPage() {
                 <TableBody>
                   {packages.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7}>
+                      <TableCell colSpan={8}>
                         <Typography variant="body2" color="text.secondary">
-                          No packages yet. Add one and attach lab tests.
+                          No packages yet. Add one and attach lab tests or imaging studies.
                         </Typography>
                       </TableCell>
                     </TableRow>
                   ) : filteredPackages.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7}>
+                      <TableCell colSpan={8}>
                         <Typography variant="body2" color="text.secondary">
                           No packages match your search.
                         </Typography>
@@ -836,6 +879,9 @@ export default function SettingsLabPackagesPage() {
                         </TableCell>
                         <TableCell align="center">
                           <Chip label={p.labTestIds?.length ?? 0} size="small" variant="outlined" />
+                        </TableCell>
+                        <TableCell align="center">
+                          <Chip label={p.imagingCatalogIds?.length ?? 0} size="small" variant="outlined" />
                         </TableCell>
                         <TableCell align="right">{p.sort_order ?? "—"}</TableCell>
                         <TableCell>

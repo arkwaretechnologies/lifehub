@@ -14,6 +14,7 @@ export async function POST(req: Request) {
     encounterId?: string;
     imagingRequestId?: string;
     selection?: Record<string, ImagingLineSelection>;
+    packageIds?: number[] | null;
     acknowledgedWarnings?: boolean;
     patient?: { id?: number; name?: string; contact_no?: string | null };
   };
@@ -34,6 +35,7 @@ export async function POST(req: Request) {
     imagingRequestId,
     catalog,
     selection,
+    packageIds: Array.isArray(body.packageIds) ? body.packageIds : [],
     acknowledgedWarnings: body.acknowledgedWarnings === true,
   });
 

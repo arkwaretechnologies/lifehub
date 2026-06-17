@@ -57,6 +57,7 @@ export async function POST(req: Request) {
     priority?: string;
     remarks?: string | null;
     selection?: Record<string, ImagingLineSelection>;
+    packageIds?: number[] | null;
   };
 
   const encounterId =
@@ -64,6 +65,7 @@ export async function POST(req: Request) {
   const patientId =
     body.patientId != null && Number.isFinite(body.patientId) && body.patientId > 0 ? body.patientId : null;
   const selection = body.selection ?? {};
+  const packageIds = Array.isArray(body.packageIds) ? body.packageIds : [];
 
   if (!encounterId && patientId == null) {
     return NextResponse.json({ error: "encounterId or patientId is required." }, { status: 400 });
@@ -75,6 +77,7 @@ export async function POST(req: Request) {
     priority: typeof body.priority === "string" ? body.priority : "Routine",
     remarks: typeof body.remarks === "string" ? body.remarks : null,
     selection,
+    packageIds,
   });
 
   if (error) {

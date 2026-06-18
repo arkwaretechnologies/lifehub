@@ -18,6 +18,10 @@ import {
   type LabRequestItemStoredRow,
 } from "@/lib/labRequests";
 import type { ImagingCatalogRow, ImagingLineSelection } from "@/lib/imagingCatalog";
+import {
+  validateEncounterImagingAmendAdds,
+  validateEncounterLabAmendAdds,
+} from "@/lib/encounterDiagnosticOrderState";
 import { resolvePackageCoveredImagingCatalogIds } from "@/lib/labPackages";
 import {
   fetchImagingRequestItemsForRequestIds,
@@ -576,6 +580,24 @@ export async function applyLabAmendment(
     return { amendmentId: null, amountDelta: 0, warnings: [], error: "No changes to save." };
   }
 
+  const { map: currentPkgMap } = await fetchLabRequestPackageIdsByRequestIdMap(db, [reqId]);
+  const currentPkgSet = new Set(currentPkgMap.get(reqId) ?? []);
+  const pkgIdsToAdd = normalizeLabRequestPackageIdList(input.packageIds).filter((id) => !currentPkgSet.has(id));
+
+  if (plan.toAddRows.length > 0 || pkgIdsToAdd.length > 0) {
+    const crossDup = await validateEncounterLabAmendAdds(
+      db,
+      enc,
+      reqId,
+      plan.toAddRows.map((r) => r.lab_test_id),
+      pkgIdsToAdd,
+      input.catalog,
+    );
+    if (crossDup.error) {
+      return { amendmentId: null, amountDelta: 0, warnings: [], error: crossDup.error };
+    }
+  }
+
   const removeItemIds = plan.toRemoveItems.map((i) => i.id).filter(Boolean);
   if (removeItemIds.length > 0) {
     const { error: delResErr } = await db.from("lab_results").delete().in("lab_request_item_id", removeItemIds);
@@ -814,6 +836,19 @@ export async function applyImagingAmendment(
 
   if (plan.toRemove.length === 0 && plan.toAdd.length === 0 && plan.amountDelta === 0) {
     return { amendmentId: null, amountDelta: 0, warnings: [], error: "No changes to save." };
+  }
+
+  if (plan.toAdd.length > 0) {
+    const crossDup = await validateEncounterImagingAmendAdds(
+      db,
+      enc,
+      reqId,
+      plan.toAdd.map((r) => r.imaging_catalog_id),
+      input.catalog,
+    );
+    if (crossDup.error) {
+      return { amendmentId: null, amountDelta: 0, warnings: [], error: crossDup.error };
+    }
   }
 
   if (plan.toRemove.length > 0) {

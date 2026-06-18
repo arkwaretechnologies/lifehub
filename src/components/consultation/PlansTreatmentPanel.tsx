@@ -114,6 +114,11 @@ import {
   type ImagingCatalogRow,
   type ImagingLineSelection,
 } from "@/lib/imagingCatalog";
+import {
+  filterNewImagingSelection,
+  filterNewLabTestIds,
+  filterNewPackageIds,
+} from "@/lib/encounterDiagnosticOrderState";
 import { imagingSelectionHasChecked, fetchImagingRequestItemsForRequestIdsClient } from "@/lib/imagingRequests";
 import type { LabRequestItemView } from "@/app/api/laboratory/lab-request/route";
 
@@ -437,6 +442,7 @@ export default function PlansTreatmentPanel({
   const [labToastMessage, setLabToastMessage] = useState("");
   const [encounterLabRequests, setEncounterLabRequests] = useState<EncounterLabRequestSummary[]>([]);
   const [requestedTestIdSet, setRequestedTestIdSet] = useState<Set<string>>(() => new Set());
+  const [requestedPackageIdSet, setRequestedPackageIdSet] = useState<Set<number>>(() => new Set());
   const [labEncounterError, setLabEncounterError] = useState("");
   const [labPriceByTestId, setLabPriceByTestId] = useState<Map<string, number>>(() => new Map());
   const [labPackages, setLabPackages] = useState<LabPackageWithTests[]>([]);
@@ -445,8 +451,8 @@ export default function PlansTreatmentPanel({
   const [paidImagingRequestIds, setPaidImagingRequestIds] = useState<Set<string>>(() => new Set());
   const [primaryPaidImagingRequestId, setPrimaryPaidImagingRequestId] = useState("");
   const [encounterImagingRequestIds, setEncounterImagingRequestIds] = useState<string[]>([]);
-  /** Catalog codes already on a saved imaging_request (paid or unpaid). */
-  const [savedImagingCatalogCodes, setSavedImagingCatalogCodes] = useState<Set<string>>(() => new Set());
+  /** Union of imaging catalog codes on all imaging_requests for this encounter. */
+  const [encounterImagingCatalogCodes, setEncounterImagingCatalogCodes] = useState<Set<string>>(() => new Set());
   /** Lab requests that have at least one saved `lab_results` row (payment not required). */
   const [labRequestIdsWithResults, setLabRequestIdsWithResults] = useState<Set<string>>(() => new Set());
 
@@ -859,6 +865,10 @@ export default function PlansTreatmentPanel({
   );
   const labPackagePruneSelectedKey = useMemo(() => [...selectedLabTestIds].sort().join(","), [selectedLabTestIds]);
   const labPackagePruneRequestedKey = useMemo(() => [...requestedTestIdSet].sort().join(","), [requestedTestIdSet]);
+  const labPackagePruneRequestedPkgKey = useMemo(
+    () => [...requestedPackageIdSet].sort((a, b) => a - b).join(","),
+    [requestedPackageIdSet],
+  );
   const labPackagePruneCatalogSig = useMemo(
     () =>
       labPackages
@@ -872,6 +882,7 @@ export default function PlansTreatmentPanel({
     labPackages,
     selectedLabTestIds,
     requestedTestIdSet,
+    requestedPackageIdSet,
     labCatalogTests,
     imagingForm,
     imagingCatalog,
@@ -880,6 +891,7 @@ export default function PlansTreatmentPanel({
     labPackages,
     selectedLabTestIds,
     requestedTestIdSet,
+    requestedPackageIdSet,
     labCatalogTests,
     imagingForm,
     imagingCatalog,
@@ -891,6 +903,7 @@ export default function PlansTreatmentPanel({
       labPackages: pkgs,
       selectedLabTestIds: sel,
       requestedTestIdSet: req,
+      requestedPackageIdSet: reqPkgs,
       labCatalogTests: catalog,
       imagingForm: imgForm,
       imagingCatalog: imgCatalog,
@@ -913,7 +926,9 @@ export default function PlansTreatmentPanel({
             const row = catalogForImaging.find((c) => c.id === cid);
             return Boolean(row?.code && imgForm[row.code]?.checked);
           });
-        if (pkg && labOk && imagingOk) {
+        const pkgNum = parseLabRequestPackageId(id);
+        const alreadyOnEncounter = pkgNum != null && reqPkgs.has(pkgNum);
+        if (pkg && labOk && imagingOk && !alreadyOnEncounter) {
           next.add(id);
         }
       }
@@ -933,6 +948,7 @@ export default function PlansTreatmentPanel({
     labsModalOpen,
     labPackagePruneSelectedKey,
     labPackagePruneRequestedKey,
+    labPackagePruneRequestedPkgKey,
     labPackagePruneCatalogSig,
     labPackagePruneImagingKey,
     labCatalogTests,
@@ -978,23 +994,28 @@ export default function PlansTreatmentPanel({
     setLabRequestIdsWithResults(withResults);
   }, []);
 
-  const refreshSavedImagingCatalogCodes = useCallback(async (imagingRequestId?: string) => {
-    const reqId = (imagingRequestId ?? primaryPaidImagingRequestId).trim();
-    if (!reqId) {
-      setSavedImagingCatalogCodes(new Set());
+  const refreshEncounterImagingCatalogCodes = useCallback(async (imagingRequestIds: string[]) => {
+    const reqIds = imagingRequestIds.map((x) => x.trim()).filter(Boolean);
+    if (reqIds.length === 0) {
+      setEncounterImagingCatalogCodes(new Set());
       return;
     }
     const catalog =
       imagingCatalogRef.current.length > 0
         ? imagingCatalogRef.current
         : (await fetchActiveImagingCatalog()).rows;
-    const { rows: items, error } = await fetchImagingRequestItemsForRequestIdsClient([reqId]);
+    const { rows: items, error } = await fetchImagingRequestItemsForRequestIdsClient(reqIds);
     if (error) return;
-    const sel = imagingSelectionFromRequestItems(catalog, items);
-    setSavedImagingCatalogCodes(
-      new Set(Object.keys(sel).filter((code) => sel[code]?.checked)),
-    );
-  }, [primaryPaidImagingRequestId]);
+    const catalogById = new Map(catalog.map((c) => [String(c.id).trim(), c.code] as const));
+    const codes = new Set<string>();
+    for (const row of items) {
+      const code = String(row.study_code ?? "").trim();
+      if (code) codes.add(code);
+      const fromCatalog = catalogById.get(String(row.imaging_catalog_id ?? "").trim());
+      if (fromCatalog) codes.add(fromCatalog);
+    }
+    setEncounterImagingCatalogCodes(codes);
+  }, []);
 
   const syncPaidImagingForEncounter = useCallback(async () => {
     const { data: reqRows, error: rErr } = await supabase
@@ -1006,6 +1027,7 @@ export default function PlansTreatmentPanel({
       setPaidImagingRequestIds(new Set());
       setPrimaryPaidImagingRequestId("");
       setEncounterImagingRequestIds([]);
+      setEncounterImagingCatalogCodes(new Set());
       return;
     }
     const reqIds = ((reqRows ?? []) as Array<{ id: string }>).map((r) => r.id).filter(Boolean);
@@ -1013,6 +1035,7 @@ export default function PlansTreatmentPanel({
       setPaidImagingRequestIds(new Set());
       setPrimaryPaidImagingRequestId("");
       setEncounterImagingRequestIds([]);
+      setEncounterImagingCatalogCodes(new Set());
       return;
     }
     setEncounterImagingRequestIds(reqIds);
@@ -1031,10 +1054,8 @@ export default function PlansTreatmentPanel({
     setPaidImagingRequestIds(paid);
     const primaryPaid = reqIds.find((id) => paid.has(id)) ?? "";
     setPrimaryPaidImagingRequestId(primaryPaid);
-    const primaryReq = primaryPaid || reqIds[0] || "";
-    if (primaryReq) await refreshSavedImagingCatalogCodes(primaryReq);
-    else setSavedImagingCatalogCodes(new Set());
-  }, [transId, refreshSavedImagingCatalogCodes]);
+    await refreshEncounterImagingCatalogCodes(reqIds);
+  }, [transId, refreshEncounterImagingCatalogCodes]);
 
   useEffect(() => {
     if (!labsModalOpen) return;
@@ -1078,12 +1099,14 @@ export default function PlansTreatmentPanel({
           setLabEncounterError(enc.error);
           setEncounterLabRequests([]);
           setRequestedTestIdSet(new Set());
+          setRequestedPackageIdSet(new Set());
           setPaidLabRequestIds(new Set());
           setLabRequestIdsWithResults(new Set());
           setSelectedLabPackageIds(new Set());
         } else {
           setEncounterLabRequests(enc.requests);
           setRequestedTestIdSet(new Set(enc.requestedTestIds));
+          setRequestedPackageIdSet(new Set(enc.requestedPackageIds));
           if (isNew) {
             // In a new consultation, allow editing/removal of previously saved lab selections.
             setSelectedLabTestIds(new Set(enc.requestedTestIds));
@@ -1127,6 +1150,7 @@ export default function PlansTreatmentPanel({
         setLabEncounterError(enc.error);
         setEncounterLabRequests([]);
         setRequestedTestIdSet(new Set());
+        setRequestedPackageIdSet(new Set());
         setPaidLabRequestIds(new Set());
         setLabRequestIdsWithResults(new Set());
         return;
@@ -1134,6 +1158,7 @@ export default function PlansTreatmentPanel({
       setLabEncounterError("");
       setEncounterLabRequests(enc.requests);
       setRequestedTestIdSet(new Set(enc.requestedTestIds));
+      setRequestedPackageIdSet(new Set(enc.requestedPackageIds));
       const reqIds = enc.requests.map((r) => r.id).filter(Boolean);
       if (cancelled) return;
       await syncPaidAndResultsFromRequestIds(reqIds);
@@ -1153,6 +1178,7 @@ export default function PlansTreatmentPanel({
         if (enc.error) return;
         setEncounterLabRequests(enc.requests);
         setRequestedTestIdSet(new Set(enc.requestedTestIds));
+        setRequestedPackageIdSet(new Set(enc.requestedPackageIds));
         await syncPaidAndResultsFromRequestIds(enc.requests.map((r) => r.id).filter(Boolean));
         await syncPaidImagingForEncounter();
       })();
@@ -1179,6 +1205,15 @@ export default function PlansTreatmentPanel({
   const toggleLabPackageSelection = useCallback(
     (pkg: LabPackageWithTests) => {
       if (!labPackageHasMembers(pkg)) return;
+      const pkgNum = parseLabRequestPackageId(pkg.id);
+      if (
+        labsModalMode === "order" &&
+        pkgNum != null &&
+        requestedPackageIdSet.has(pkgNum) &&
+        !selectedLabPackageIds.has(pkg.id)
+      ) {
+        return;
+      }
       const wasOn = selectedLabPackageIds.has(pkg.id);
       setSelectedLabPackageIds((prev) => {
         const next = new Set(prev);
@@ -1209,7 +1244,7 @@ export default function PlansTreatmentPanel({
       }
       applyPackageImagingToConsultation(pkg, !wasOn);
     },
-    [selectedLabPackageIds, labCatalogTests, applyPackageImagingToConsultation],
+    [selectedLabPackageIds, labCatalogTests, applyPackageImagingToConsultation, labsModalMode, requestedPackageIdSet],
   );
 
   const addLabPackageFromDropdown = useCallback(
@@ -1217,6 +1252,8 @@ export default function PlansTreatmentPanel({
       const pkg = labPackages.find((p) => p.id === packageId);
       if (!pkg || !labPackageHasMembers(pkg)) return;
       if (selectedLabPackageIds.has(pkg.id)) return;
+      const pkgNum = parseLabRequestPackageId(pkg.id);
+      if (labsModalMode === "order" && pkgNum != null && requestedPackageIdSet.has(pkgNum)) return;
       setSelectedLabPackageIds((prev) => new Set(prev).add(pkg.id));
       if (pkg.labTestIds.length > 0) {
         setSelectedLabTestIds((sel) => {
@@ -1232,7 +1269,7 @@ export default function PlansTreatmentPanel({
       }
       applyPackageImagingToConsultation(pkg, true);
     },
-    [labPackages, selectedLabPackageIds, labCatalogTests, applyPackageImagingToConsultation],
+    [labPackages, selectedLabPackageIds, labCatalogTests, applyPackageImagingToConsultation, labsModalMode, requestedPackageIdSet],
   );
 
   const syncStructuredPrescription = useCallback(async () => {
@@ -1478,7 +1515,7 @@ export default function PlansTreatmentPanel({
       imagingCatalog.length > 0 ? imagingCatalog : imagingCatalogRef.current;
     for (const c of catalogForDraft) {
       if (!c.code || !imagingForm[c.code]?.checked) continue;
-      if (savedImagingCatalogCodes.has(c.code)) continue;
+      if (encounterImagingCatalogCodes.has(c.code)) continue;
       if (imagingCoveredByPackages.has(c.code)) continue;
       unstagedImaging.push({ name: c.name, price: Math.round(c.default_price * 100) / 100 });
     }
@@ -1500,7 +1537,7 @@ export default function PlansTreatmentPanel({
     imagingCoveredByPackages,
     imagingCatalog,
     imagingForm,
-    savedImagingCatalogCodes,
+    encounterImagingCatalogCodes,
   ]);
 
   /** Paid at cashier OR lab already has saved result rows (results may exist without `lab_sales`). */
@@ -1663,6 +1700,7 @@ export default function PlansTreatmentPanel({
         if (!encRefresh.error) {
           setEncounterLabRequests(encRefresh.requests);
           setRequestedTestIdSet(new Set(encRefresh.requestedTestIds));
+          setRequestedPackageIdSet(new Set(encRefresh.requestedPackageIds));
           await syncPaidAndResultsFromRequestIds(encRefresh.requests.map((r) => r.id).filter(Boolean));
         }
         window.dispatchEvent(new CustomEvent("lifehub:lab-requests-updated", { detail: { transId } }));
@@ -1749,7 +1787,7 @@ export default function PlansTreatmentPanel({
         setAmendSaveReminderOpen(true);
         imagingBaselineRef.current = { ...imagingForm };
         await syncPaidImagingForEncounter();
-        await refreshSavedImagingCatalogCodes(imagingRequestId);
+        await refreshEncounterImagingCatalogCodes(encounterImagingRequestIds);
         window.dispatchEvent(new CustomEvent("lifehub:imaging-updated", { detail: { transId } }));
         setUnsavedCloseDialog(null);
         setImagingModalOpen(false);
@@ -1765,7 +1803,8 @@ export default function PlansTreatmentPanel({
       patientPayloadForAmend,
       transId,
       syncPaidImagingForEncounter,
-      refreshSavedImagingCatalogCodes,
+      refreshEncounterImagingCatalogCodes,
+      encounterImagingRequestIds,
     ],
   );
 
@@ -1826,9 +1865,6 @@ export default function PlansTreatmentPanel({
       setImagingCatalog(catalog);
       setImagingForm(next);
       imagingBaselineRef.current = { ...next };
-      setSavedImagingCatalogCodes(
-        new Set(Object.keys(next).filter((code) => next[code]?.checked)),
-      );
       setImagingModalOpen(true);
     } catch {
       setImagingCatalogError("Could not load imaging order.");
@@ -1859,6 +1895,20 @@ export default function PlansTreatmentPanel({
       .map((pid) => parseLabRequestPackageId(pid))
       .filter((n): n is number => n != null);
 
+    const encounterOrderState = {
+      labTestIds: requestedTestIdSet,
+      packageIds: requestedPackageIdSet,
+      imagingCatalogIds: new Set<string>(),
+      imagingCatalogCodes: encounterImagingCatalogCodes,
+    };
+    const labTestIdsToSave = filterNewLabTestIds(selectedLabTestIds, encounterOrderState, labCatalogTests);
+    const packageIdsToSave = filterNewPackageIds(packageIds, encounterOrderState);
+    if (labTestIdsToSave.length === 0 && packageIdsToSave.length === 0) {
+      setLabSubmitting(false);
+      setLabDialogError("All selected tests and packages are already ordered on this visit.");
+      return;
+    }
+
     const { labRequestId, error } = await createLabRequestWithItems({
       encounterId: transId,
       patientId: parsePatientIdForLab(patient.patientId),
@@ -1867,9 +1917,9 @@ export default function PlansTreatmentPanel({
       priority: labRequestPriority,
       clinicalDiagnosis: diagTrim !== "" ? diagTrim : null,
       remarks: remarksTrim !== "" ? remarksTrim : null,
-      labTestIds: [...selectedLabTestIds],
+      labTestIds: labTestIdsToSave,
       itemPriority: labRequestPriority,
-      packageIds,
+      packageIds: packageIdsToSave,
     });
     setLabSubmitting(false);
     if (error) {
@@ -1884,6 +1934,7 @@ export default function PlansTreatmentPanel({
     if (!encRefresh.error) {
       setEncounterLabRequests(encRefresh.requests);
       setRequestedTestIdSet(new Set(encRefresh.requestedTestIds));
+      setRequestedPackageIdSet(new Set(encRefresh.requestedPackageIds));
       setLabEncounterError("");
       await syncPaidAndResultsFromRequestIds(encRefresh.requests.map((r) => r.id).filter(Boolean));
       window.dispatchEvent(new CustomEvent("lifehub:lab-requests-updated", { detail: { transId } }));
@@ -1906,6 +1957,9 @@ export default function PlansTreatmentPanel({
     labRequestPriority,
     selectedLabPackageIds,
     labCatalogTests,
+    requestedTestIdSet,
+    requestedPackageIdSet,
+    encounterImagingCatalogCodes,
   ]);
 
   const closeLabsModal = useCallback(() => {
@@ -2487,11 +2541,17 @@ export default function PlansTreatmentPanel({
                       <MenuItem value="" disabled>
                         <em>Select a package…</em>
                       </MenuItem>
-                      {labPackages.map((pkg) => (
+                      {labPackages.map((pkg) => {
+                        const pkgNum = parseLabRequestPackageId(pkg.id);
+                        const alreadyOnEncounter =
+                          labsModalMode === "order" &&
+                          pkgNum != null &&
+                          requestedPackageIdSet.has(pkgNum);
+                        return (
                         <MenuItem
                           key={pkg.id}
                           value={pkg.id}
-                          disabled={selectedLabPackageIds.has(pkg.id)}
+                          disabled={selectedLabPackageIds.has(pkg.id) || alreadyOnEncounter}
                           sx={{ alignItems: "flex-start", whiteSpace: "normal", py: 1 }}
                         >
                           <Box sx={{ display: "flex", justifyContent: "space-between", gap: 2, width: "100%" }}>
@@ -2499,13 +2559,19 @@ export default function PlansTreatmentPanel({
                               <Typography variant="body2" fontWeight={700}>
                                 {pkg.name}
                               </Typography>
+                              {alreadyOnEncounter ? (
+                                <Typography variant="caption" color="text.secondary">
+                                  Already ordered on this visit
+                                </Typography>
+                              ) : null}
                             </Box>
                             <Typography variant="caption" fontWeight={800} sx={{ flexShrink: 0 }}>
                               {money2(pkg.package_price)}
                             </Typography>
                           </Box>
                         </MenuItem>
-                      ))}
+                        );
+                      })}
                     </Select>
                   </FormControl>
                   {selectedLabPackageIds.size > 0 ? (
@@ -2739,6 +2805,8 @@ export default function PlansTreatmentPanel({
               {imagingCatalog.map((c) => {
                 const row = imagingForm[c.code] ?? { checked: false, view: "" };
                 const coveredByPackage = imagingCoveredByPackages.has(c.code);
+                const alreadyOnEncounter =
+                  imagingModalMode === "order" && encounterImagingCatalogCodes.has(c.code);
                 const label = (c.view_field_label ?? "VIEW").trim() || "VIEW";
                 return (
                   <Box key={c.code}>
@@ -2747,13 +2815,15 @@ export default function PlansTreatmentPanel({
                       control={
                         <Checkbox
                           size="small"
-                          checked={row.checked}
-                          onChange={(_, checked) =>
+                          checked={row.checked || alreadyOnEncounter}
+                          disabled={alreadyOnEncounter}
+                          onChange={(_, checked) => {
+                            if (alreadyOnEncounter) return;
                             setImagingForm((prev) => ({
                               ...prev,
                               [c.code]: { ...(prev[c.code] ?? { checked: false, view: "" }), checked },
-                            }))
-                          }
+                            }));
+                          }}
                         />
                       }
                       label={
@@ -2770,11 +2840,15 @@ export default function PlansTreatmentPanel({
                             sx={{
                               fontWeight: 800,
                               whiteSpace: "nowrap",
-                              color: coveredByPackage ? "text.secondary" : undefined,
-                              fontStyle: coveredByPackage ? "italic" : undefined,
+                              color: coveredByPackage || alreadyOnEncounter ? "text.secondary" : undefined,
+                              fontStyle: coveredByPackage || alreadyOnEncounter ? "italic" : undefined,
                             }}
                           >
-                            {coveredByPackage ? "Included in package" : money2(Number(c.default_price))}
+                            {alreadyOnEncounter
+                              ? "Already ordered on this visit"
+                              : coveredByPackage
+                                ? "Included in package"
+                                : money2(Number(c.default_price))}
                           </Typography>
                         </Box>
                       }
@@ -2830,8 +2904,21 @@ export default function PlansTreatmentPanel({
                 return;
               }
               void (async () => {
-                const lines = buildImagingRequestLinesFromCatalog(imagingCatalog, imagingForm);
-                if (lines.length > 0 && imagingSelectionHasChecked(imagingForm)) {
+                const catalogForSave =
+                  imagingCatalog.length > 0 ? imagingCatalog : imagingCatalogRef.current;
+                const encounterOrderState = {
+                  labTestIds: requestedTestIdSet,
+                  packageIds: requestedPackageIdSet,
+                  imagingCatalogIds: new Set<string>(),
+                  imagingCatalogCodes: encounterImagingCatalogCodes,
+                };
+                const selectionToSave = filterNewImagingSelection(
+                  imagingForm,
+                  encounterOrderState,
+                  catalogForSave,
+                );
+                const lines = buildImagingRequestLinesFromCatalog(catalogForSave, selectionToSave);
+                if (lines.length > 0 && imagingSelectionHasChecked(selectionToSave)) {
                   const patientId = Number(patient.patientId);
                   if (Number.isFinite(patientId)) {
                     const packageIds = [...selectedLabPackageIds]
@@ -2843,7 +2930,7 @@ export default function PlansTreatmentPanel({
                       body: JSON.stringify({
                         encounterId: transId,
                         patientId,
-                        selection: imagingForm,
+                        selection: selectionToSave,
                         remarks: "Consultation imaging order",
                         packageIds,
                       }),
@@ -2854,6 +2941,9 @@ export default function PlansTreatmentPanel({
                       return;
                     }
                   }
+                } else if (imagingModalMode === "order" && imagingSelectionHasChecked(imagingForm)) {
+                  setImagingCatalogError("All selected imaging studies are already ordered on this visit.");
+                  return;
                 }
                 setForm((f) => ({
                   ...f,

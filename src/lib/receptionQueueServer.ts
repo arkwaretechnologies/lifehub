@@ -18,6 +18,7 @@ import { applyPartialLabReleaseToNotes } from "@/lib/labPartialCollection";
 import { insertLabQueueNewRequestNotifications } from "@/lib/labQueueNotificationServer";
 import { computeLabRequestQueueCollectionState } from "@/lib/labQueueTicketSync";
 import { applyActiveDeptToNotes } from "@/lib/queueActiveDept";
+import { validateEncounterLabCreate } from "@/lib/encounterDiagnosticOrderState";
 import {
   fetchLabRequestPackageIdsByRequestIdMap,
   LAB_REQUEST_ITEMS_TABLE,
@@ -524,6 +525,30 @@ async function adminCreateLabRequestWithItems(input: {
       : null;
 
   const packageIds = normalizeLabRequestPackageIdList(input.packageIds ?? []);
+  const testIdsRaw = [...new Set(input.labTestIds.map((x) => x.trim()).filter(Boolean))];
+  const enc = input.encounterId != null ? String(input.encounterId).trim() : "";
+
+  let packageIdsToSave = packageIds;
+  let testIds = testIdsRaw;
+
+  if (enc) {
+    const { data: testRows, error: catErr } = await admin
+      .from(LAB_TESTS_TABLE)
+      .select(LAB_TEST_CATALOG_SELECT);
+    if (catErr) return { labRequestId: null, error: catErr.message };
+    let catalog = ((testRows ?? []) as Record<string, unknown>[]).map((raw) => mapLabTestCatalogItem(raw));
+    const attached = await attachPanelLinksToCatalogItems(admin, catalog);
+    if (attached.error) return { labRequestId: null, error: attached.error };
+    catalog = attached.tests;
+    const validated = await validateEncounterLabCreate(admin, enc, testIdsRaw, packageIds, catalog);
+    if (validated.error) return { labRequestId: null, error: validated.error };
+    testIds = validated.labTestIds;
+    packageIdsToSave = validated.packageIds;
+  }
+
+  if (testIds.length === 0 && packageIdsToSave.length === 0) {
+    return { labRequestId: null, error: "Select at least one lab test or package." };
+  }
 
   const { data: row, error: insErr } = await admin
     .from(LAB_REQUESTS_TABLE)
@@ -544,8 +569,8 @@ async function adminCreateLabRequestWithItems(input: {
   if (insErr) return { labRequestId: null, error: insErr.message };
   const labRequestId = (row as { id: string }).id;
 
-  if (packageIds.length > 0) {
-    const pkgRows = packageIds.map((lab_package_id, sort_order) => ({
+  if (packageIdsToSave.length > 0) {
+    const pkgRows = packageIdsToSave.map((lab_package_id, sort_order) => ({
       lab_request_id: labRequestId,
       lab_package_id,
       sort_order,
@@ -559,7 +584,6 @@ async function adminCreateLabRequestWithItems(input: {
 
   const linePriority = input.itemPriority ?? "Routine";
 
-  const testIds = [...new Set(input.labTestIds.map((x) => x.trim()).filter(Boolean))];
   if (testIds.length > 0) {
     const { data: testRows, error: catErr } = await admin
       .from(LAB_TESTS_TABLE)
@@ -592,9 +616,8 @@ async function adminCreateLabRequestWithItems(input: {
     }
   }
 
-  const enc = input.encounterId != null ? String(input.encounterId).trim() : "";
-  if (enc && packageIds.length > 0) {
-    const sync = await syncUnpaidImagingItemsToPackageCoverage(admin, enc, packageIds);
+  if (enc && packageIdsToSave.length > 0) {
+    const sync = await syncUnpaidImagingItemsToPackageCoverage(admin, enc, packageIdsToSave);
     if (sync.error) {
       await admin.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
       return { labRequestId: null, error: sync.error };
@@ -602,7 +625,7 @@ async function adminCreateLabRequestWithItems(input: {
     const ensured = await ensureImagingRequestForLabPackages(admin, {
       encounterId: enc,
       patientId: input.patientId,
-      packageIds,
+      packageIds: packageIdsToSave,
       remarks: "Laboratory package imaging",
     });
     if (ensured.error) {
@@ -2069,10 +2092,13 @@ export async function adminCreatePatient(input: {
   name: string;
   sex: string;
   date_of_birth: string;
+  civil_status: string;
   address: string;
   contact_no: string;
   email_address?: string | null;
   occupation?: string | null;
+  referring_physician?: string | number | null;
+  philhealth_no?: number | null;
 }): Promise<{ patient: ReceptionPatientSearchRow | null; error: string | null }> {
   const admin = queueAdminClient();
   if (!admin) return { patient: null, error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." };
@@ -2081,10 +2107,13 @@ export async function adminCreatePatient(input: {
     name: input.name.trim().toUpperCase(),
     sex: input.sex.trim().toUpperCase(),
     date_of_birth: input.date_of_birth || null,
+    civil_status: input.civil_status.trim().toUpperCase() || null,
     address: input.address.trim().toUpperCase() || null,
     contact_no: input.contact_no.trim() || null,
     email_address: input.email_address?.trim() ? input.email_address.trim().toLowerCase() : null,
     occupation: input.occupation?.trim() ? input.occupation.trim().toUpperCase() : "N/A",
+    referring_physician: input.referring_physician ?? null,
+    philhealth_no: input.philhealth_no ?? null,
   };
 
   const { data, error } = await admin

@@ -44,6 +44,8 @@ import ReplayIcon from "@mui/icons-material/Replay";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import SearchIcon from "@mui/icons-material/Search";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
+import CloseIcon from "@mui/icons-material/Close";
+import SummarizeOutlinedIcon from "@mui/icons-material/SummarizeOutlined";
 import {
   completeEntranceAfterLabIntakeFromApi,
   createPatientFromApi,
@@ -93,9 +95,18 @@ import {
   type ImagingCatalogRow,
   type ImagingLineSelection,
 } from "@/lib/imagingCatalog";
+import { fetchLabRequestsForEncounter, parseLabRequestPackageId } from "@/lib/labRequests";
+import {
+  fetchEncounterDiagnosticOrderState,
+  filterNewImagingSelection,
+  filterNewLabTestIds,
+  filterNewPackageIds,
+} from "@/lib/encounterDiagnosticOrderState";
+import { supabase } from "@/lib/supabaseClient";
 import { openReceptionQueueReceiptPrint } from "@/lib/receptionQueueReceiptPrint";
 import { sanitizePatientSearchQuery } from "@/lib/patientsCatalog";
 import { BpSplitInput } from "@/components/BpSplitInput";
+import { consultFormControlLabelSx } from "@/components/consultation/ConsultationSectionTitle";
 
 /** `NEXT_PUBLIC_RECEPTION_DOCTOR_QUEUES`: segments `CODE|Label` separated by `;` (e.g. `CLINIC 1|Dr. Mark;CLINIC 2|Dr. Ralph`). */
 function parseReceptionDoctorQueueOptions(): { code: string; label: string }[] {
@@ -118,6 +129,157 @@ function parseReceptionDoctorQueueOptions(): { code: string; label: string }[] {
 function formatMoney2(n: number): string {
   return new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(
     Number.isFinite(n) ? n : 0,
+  );
+}
+
+const receptionCheckboxLabelSx = {
+  ...consultFormControlLabelSx,
+  display: "flex",
+  flexDirection: "row",
+  alignItems: "center",
+  ml: 0,
+  mr: 0,
+  gap: 0.5,
+  width: "100%",
+  "& .MuiFormControlLabel-label": {
+    display: "inline-flex",
+    alignItems: "center",
+    lineHeight: 1.35,
+    flex: 1,
+    minWidth: 0,
+  },
+} as const;
+
+type ReceptionDiagnosticSummary = {
+  packages: Array<{
+    key: string;
+    label: string;
+    priceLabel: string;
+    labTests: string[];
+    imagingStudies: string[];
+  }>;
+  tests: Array<{ key: string; label: string; priceLabel: string }>;
+  imaging: Array<{ key: string; label: string; priceLabel: string; covered: boolean }>;
+  total: number;
+  hasAny: boolean;
+};
+
+function ReceptionDiagnosticOrderSummaryBody({ summary }: { summary: ReceptionDiagnosticSummary }) {
+  if (!summary.hasAny) {
+    return (
+      <Typography variant="body2" color="text.secondary" sx={{ py: 2, textAlign: "center" }}>
+        No laboratory tests, packages, or imaging selected yet.
+      </Typography>
+    );
+  }
+
+  return (
+    <Stack spacing={2}>
+      {summary.packages.length > 0 ? (
+        <Box>
+          <Typography
+            variant="caption"
+            fontWeight={700}
+            color="text.secondary"
+            sx={{ textTransform: "uppercase", letterSpacing: "0.04em" }}
+          >
+            Packages
+          </Typography>
+          <Stack spacing={1} sx={{ mt: 0.75 }}>
+            {summary.packages.map((line) => (
+              <Box key={line.key}>
+                <Stack direction="row" alignItems="baseline" justifyContent="space-between" spacing={1}>
+                  <Typography variant="body1" fontWeight={600}>
+                    {line.label}
+                  </Typography>
+                  <Typography variant="body2" fontWeight={800} color="text.secondary" sx={{ whiteSpace: "nowrap" }}>
+                    {line.priceLabel}
+                  </Typography>
+                </Stack>
+                {line.labTests.length > 0 || line.imagingStudies.length > 0 ? (
+                  <Stack spacing={0.35} sx={{ mt: 0.5, pl: 1.5 }}>
+                    {line.labTests.map((name) => (
+                      <Typography key={`${line.key}-lab-${name}`} variant="body2" color="text.secondary">
+                        • {name}
+                      </Typography>
+                    ))}
+                    {line.imagingStudies.map((name) => (
+                      <Typography key={`${line.key}-img-${name}`} variant="body2" color="text.secondary" sx={{ textTransform: "uppercase" }}>
+                        • {name}
+                      </Typography>
+                    ))}
+                  </Stack>
+                ) : (
+                  <Typography variant="caption" color="text.disabled" sx={{ display: "block", mt: 0.35, pl: 1.5 }}>
+                    No members configured for this package.
+                  </Typography>
+                )}
+              </Box>
+            ))}
+          </Stack>
+        </Box>
+      ) : null}
+      {summary.tests.length > 0 ? (
+        <Box>
+          <Typography
+            variant="caption"
+            fontWeight={700}
+            color="text.secondary"
+            sx={{ textTransform: "uppercase", letterSpacing: "0.04em" }}
+          >
+            Individual tests
+          </Typography>
+          <Stack spacing={0.5} sx={{ mt: 0.75 }}>
+            {summary.tests.map((line) => (
+              <Stack key={line.key} direction="row" alignItems="baseline" justifyContent="space-between" spacing={1}>
+                <Typography variant="body1">{line.label}</Typography>
+                <Typography variant="body2" fontWeight={800} color="text.secondary" sx={{ whiteSpace: "nowrap" }}>
+                  {line.priceLabel}
+                </Typography>
+              </Stack>
+            ))}
+          </Stack>
+        </Box>
+      ) : null}
+      {summary.imaging.length > 0 ? (
+        <Box>
+          <Typography
+            variant="caption"
+            fontWeight={700}
+            color="text.secondary"
+            sx={{ textTransform: "uppercase", letterSpacing: "0.04em" }}
+          >
+            Imaging
+          </Typography>
+          <Stack spacing={0.5} sx={{ mt: 0.75 }}>
+            {summary.imaging.map((line) => (
+              <Stack key={line.key} direction="row" alignItems="baseline" justifyContent="space-between" spacing={1}>
+                <Typography variant="body1" sx={{ textTransform: "uppercase" }}>
+                  {line.label}
+                </Typography>
+                <Typography
+                  variant="body2"
+                  fontWeight={800}
+                  color="text.secondary"
+                  sx={{ whiteSpace: "nowrap", fontStyle: line.covered ? "italic" : undefined }}
+                >
+                  {line.priceLabel}
+                </Typography>
+              </Stack>
+            ))}
+          </Stack>
+        </Box>
+      ) : null}
+      <Divider />
+      <Stack direction="row" alignItems="baseline" justifyContent="space-between" spacing={1}>
+        <Typography variant="subtitle1" fontWeight={700}>
+          Estimated total
+        </Typography>
+        <Typography variant="h6" fontWeight={800}>
+          {formatMoney2(summary.total)}
+        </Typography>
+      </Stack>
+    </Stack>
   );
 }
 
@@ -499,6 +661,10 @@ export default function ReceptionDesk() {
   const [imagingCatalog, setImagingCatalog] = useState<ImagingCatalogRow[]>([]);
   const [imagingForm, setImagingForm] = useState<Record<string, ImagingLineSelection>>({});
   const [imagingCatalogError, setImagingCatalogError] = useState("");
+  const [encounterRequestedTestIds, setEncounterRequestedTestIds] = useState<Set<string>>(() => new Set());
+  const [encounterRequestedPackageIds, setEncounterRequestedPackageIds] = useState<Set<number>>(() => new Set());
+  const [encounterImagingCatalogCodes, setEncounterImagingCatalogCodes] = useState<Set<string>>(() => new Set());
+  const [orderSummaryOpen, setOrderSummaryOpen] = useState(false);
   const labDataLoadedTicketIdRef = useRef<string | null>(null);
   const labCatalogTests = useMemo(
     (): LabTestCatalogItem[] => labSections.flatMap((s) => s.tests),
@@ -521,6 +687,85 @@ export default function ReceptionDesk() {
     [labPackages, selectedLabPackageIds, imagingCatalog],
   );
 
+  const receptionDiagnosticSummary = useMemo(() => {
+    const packages: Array<{
+      key: string;
+      label: string;
+      priceLabel: string;
+      labTests: string[];
+      imagingStudies: string[];
+    }> = [];
+    const tests: Array<{ key: string; label: string; priceLabel: string }> = [];
+    const imaging: Array<{ key: string; label: string; priceLabel: string; covered: boolean }> = [];
+    let total = 0;
+
+    for (const pkg of labPackages) {
+      if (!selectedLabPackageIds.has(pkg.id)) continue;
+      const labTests = collapseComponentsToPanel(pkg.labTestIds, labCatalogTests)
+        .map((id) => labCatalogTests.find((t) => t.id === id)?.name?.trim() || "Lab test")
+        .filter(Boolean);
+      const imagingStudies = (pkg.imagingCatalogIds ?? [])
+        .map((catalogId) => imagingCatalog.find((c) => c.id === catalogId)?.name?.trim())
+        .filter((name): name is string => Boolean(name));
+      packages.push({
+        key: pkg.id,
+        label: pkg.name,
+        priceLabel: formatMoney2(pkg.package_price),
+        labTests,
+        imagingStudies,
+      });
+      total += pkg.package_price;
+    }
+
+    const alaCarteTestIds = collapseComponentsToPanel(
+      [...selectedLabTestIds].filter((id) => !testsCoveredBySelectedPackages.has(id)),
+      labCatalogTests,
+    );
+    for (const id of alaCarteTestIds) {
+      const t = labCatalogTests.find((x) => x.id === id);
+      const price = labPriceByTestId.get(id) ?? 0;
+      tests.push({
+        key: id,
+        label: t?.name ?? "Lab test",
+        priceLabel: formatMoney2(price),
+      });
+      total += price;
+    }
+
+    for (const c of imagingCatalog) {
+      if (!c.code || !imagingForm[c.code]?.checked) continue;
+      const covered = imagingCoveredByPackages.has(c.code);
+      if (covered) continue;
+      const view = imagingForm[c.code]?.view?.trim();
+      const label = view ? `${c.name} (${view})` : c.name;
+      total += c.default_price;
+      imaging.push({
+        key: c.code,
+        label,
+        priceLabel: formatMoney2(c.default_price),
+        covered: false,
+      });
+    }
+
+    return {
+      packages,
+      tests,
+      imaging,
+      total,
+      hasAny: packages.length > 0 || tests.length > 0 || imaging.length > 0,
+    };
+  }, [
+    labPackages,
+    selectedLabPackageIds,
+    selectedLabTestIds,
+    testsCoveredBySelectedPackages,
+    labCatalogTests,
+    labPriceByTestId,
+    imagingCatalog,
+    imagingForm,
+    imagingCoveredByPackages,
+  ]);
+
   const toggleLabTestSelection = useCallback(
     (testId: string) => {
       setSelectedLabTestIds((prev) => {
@@ -539,6 +784,14 @@ export default function ReceptionDesk() {
   const toggleLabPackageSelection = useCallback(
     (pkg: LabPackageWithTests) => {
       if (!labPackageHasMembers(pkg)) return;
+      const pkgNum = parseLabRequestPackageId(pkg.id);
+      if (
+        pkgNum != null &&
+        encounterRequestedPackageIds.has(pkgNum) &&
+        !selectedLabPackageIds.has(pkg.id)
+      ) {
+        return;
+      }
       const wasOn = selectedLabPackageIds.has(pkg.id);
       setSelectedLabPackageIds((prev) => {
         const next = new Set(prev);
@@ -571,7 +824,7 @@ export default function ReceptionDesk() {
         applyPackageImagingSelection(pkg.imagingCatalogIds, imagingCatalog, prev, !wasOn),
       );
     },
-    [selectedLabPackageIds, labCatalogTests, imagingCatalog],
+    [selectedLabPackageIds, labCatalogTests, imagingCatalog, encounterRequestedPackageIds],
   );
 
   const clearLaboratoryTriageSelections = useCallback(() => {
@@ -748,6 +1001,9 @@ export default function ReceptionDesk() {
     setImagingCatalog([]);
     setImagingForm({});
     setImagingCatalogError("");
+    setEncounterRequestedTestIds(new Set());
+    setEncounterRequestedPackageIds(new Set());
+    setEncounterImagingCatalogCodes(new Set());
     labDataLoadedTicketIdRef.current = null;
     setLabSections([]);
     setDoctorCounterCode(doctorQueueOptions[0]?.code ?? "CLINIC 1");
@@ -755,6 +1011,7 @@ export default function ReceptionDesk() {
 
   const closeTriage = () => {
     if (triageSaving) return;
+    setOrderSummaryOpen(false);
     setTriageTicket(null);
   };
 
@@ -789,6 +1046,27 @@ export default function ReceptionDesk() {
           setImagingCatalog([]);
           setImagingForm({});
           setImagingCatalogError(imgRes.error);
+        }
+        const encId = triageTicket.encounter_id?.trim() ?? "";
+        if (encId) {
+          const imgCatalogRows = !imgRes.error ? imgRes.rows : [];
+          const [labEnc, imgState] = await Promise.all([
+            fetchLabRequestsForEncounter(encId),
+            fetchEncounterDiagnosticOrderState(supabase, encId, { imagingCatalog: imgCatalogRows }),
+          ]);
+          if (!cancelled) {
+            if (!labEnc.error) {
+              setEncounterRequestedTestIds(new Set(labEnc.requestedTestIds));
+              setEncounterRequestedPackageIds(new Set(labEnc.requestedPackageIds));
+            }
+            if (!imgState.error) {
+              setEncounterImagingCatalogCodes(new Set(imgState.state.imagingCatalogCodes));
+            }
+          }
+        } else if (!cancelled) {
+          setEncounterRequestedTestIds(new Set());
+          setEncounterRequestedPackageIds(new Set());
+          setEncounterImagingCatalogCodes(new Set());
         }
         labDataLoadedTicketIdRef.current = triageTicket.id;
       } finally {
@@ -880,7 +1158,32 @@ export default function ReceptionDesk() {
             .map((sid) => Number.parseInt(sid, 10))
             .filter((n) => Number.isFinite(n) && n > 0);
 
-          const imagingLines = buildImagingRequestLinesFromCatalog(imagingCatalog, imagingForm);
+          const encounterOrderState = {
+            labTestIds: encounterRequestedTestIds,
+            packageIds: encounterRequestedPackageIds,
+            imagingCatalogIds: new Set<string>(),
+            imagingCatalogCodes: encounterImagingCatalogCodes,
+          };
+          const filteredLabTestIds = filterNewLabTestIds(labTestIds, encounterOrderState, labCatalogTests);
+          const filteredPackageIds = filterNewPackageIds(labPackageIds, encounterOrderState);
+          const filteredImagingForm = filterNewImagingSelection(
+            imagingForm,
+            encounterOrderState,
+            imagingCatalog,
+          );
+          const filteredHasImaging = Object.values(filteredImagingForm).some((r) => r?.checked);
+          if (
+            filteredLabTestIds.length === 0 &&
+            !filteredHasImaging &&
+            filteredPackageIds.length === 0
+          ) {
+            setPatientError(
+              "All selected tests, packages, and imaging studies are already ordered on this visit.",
+            );
+            return;
+          }
+
+          const imagingLines = buildImagingRequestLinesFromCatalog(imagingCatalog, filteredImagingForm);
           const imagingBlock =
             imagingLines.length > 0
               ? [IMAGING_NOTES_START, "IMAGING REQUEST:", ...imagingLines, IMAGING_NOTES_END].join("\n")
@@ -898,9 +1201,9 @@ export default function ReceptionDesk() {
               name: selectedPatient.name ?? "",
               contact_no: selectedPatient.contact_no,
             },
-            labTestIds,
-            labPackageIds,
-            imagingSelection: imagingForm,
+            labTestIds: filteredLabTestIds,
+            labPackageIds: filteredPackageIds,
+            imagingSelection: filteredImagingForm,
           });
           if (prep.error) {
             setLoadError(prep.error);
@@ -1314,19 +1617,7 @@ export default function ReceptionDesk() {
                   name: triageTicket.patient_name?.trim() ?? "",
                   contactNo: triageTicket.contact_no?.trim() ?? "",
                 }}
-                createPatient={async (payload) => {
-                  // Map to our service-role API (expects snake_case).
-                  const { patient, error } = await createPatientFromApi({
-                    name: String(payload.name ?? ""),
-                    sex: String(payload.sex ?? ""),
-                    date_of_birth: String(payload.date_of_birth ?? ""),
-                    address: String(payload.address ?? ""),
-                    contact_no: String(payload.contact_no ?? ""),
-                    email_address: (payload.email_address as string | null) ?? null,
-                    occupation: (payload.occupation as string | null) ?? null,
-                  });
-                  return { patient, error };
-                }}
+                createPatient={createPatientFromApi}
                 onCreated={(patient) => {
                   setSelectedPatient(patient);
                   setAddPatientOpen(false);
@@ -1462,9 +1753,28 @@ export default function ReceptionDesk() {
               ) : null}
               {triageRoute === "laboratory" ? (
                 <Box sx={{ mt: 1 }}>
-                  <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 1 }}>
-                    Laboratory &amp; imaging
-                  </Typography>
+                  <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ mb: 1 }}>
+                    <Typography variant="subtitle2" fontWeight={800}>
+                      Laboratory &amp; imaging
+                    </Typography>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={<SummarizeOutlinedIcon fontSize="small" />}
+                      onClick={() => setOrderSummaryOpen(true)}
+                      disabled={labLoading || triageSaving}
+                      sx={{ textTransform: "none", fontWeight: 700, flexShrink: 0 }}
+                    >
+                      Order Summary
+                      {receptionDiagnosticSummary.hasAny ? (
+                        <Chip
+                          size="small"
+                          label={formatMoney2(receptionDiagnosticSummary.total)}
+                          sx={{ ml: 0.75, height: 22, fontWeight: 800, "& .MuiChip-label": { px: 0.75 } }}
+                        />
+                      ) : null}
+                    </Button>
+                  </Stack>
                   <TextField
                     label="Notes (optional)"
                     value={triageComplaint}
@@ -1511,6 +1821,9 @@ export default function ReceptionDesk() {
                             onToggleTest={toggleLabTestSelection}
                             priceByTestId={labPriceByTestId}
                             testsCoveredByPackages={testsCoveredBySelectedPackages}
+                            requestedTestIds={
+                              encounterRequestedTestIds.size > 0 ? encounterRequestedTestIds : undefined
+                            }
                           />
                         ) : null}
                         {labSubTab === 1 ? (
@@ -1521,30 +1834,65 @@ export default function ReceptionDesk() {
                               </Typography>
                             ) : (
                               <Grid container spacing={1}>
-                                {labPackages.map((pkg) => (
+                                {labPackages.map((pkg) => {
+                                  const pkgNum = parseLabRequestPackageId(pkg.id);
+                                  const alreadyOnEncounter =
+                                    pkgNum != null && encounterRequestedPackageIds.has(pkgNum);
+                                  return (
                                   <Grid size={{ xs: 12 }} key={pkg.id}>
                                     <FormControlLabel
                                       control={
                                         <Checkbox
                                           size="small"
                                           checked={selectedLabPackageIds.has(pkg.id)}
+                                          disabled={alreadyOnEncounter}
                                           onChange={() => toggleLabPackageSelection(pkg)}
                                         />
                                       }
                                       label={
-                                        <Stack direction="row" alignItems="baseline" justifyContent="space-between" spacing={1} sx={{ width: "100%", pr: 1 }}>
-                                          <Typography variant="body2" fontWeight={600}>
-                                            {pkg.name}
-                                          </Typography>
-                                          <Typography variant="caption" fontWeight={800} color="text.secondary" sx={{ whiteSpace: "nowrap" }}>
+                                        <Box
+                                          component="span"
+                                          sx={{
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            justifyContent: "space-between",
+                                            gap: 1,
+                                            width: "100%",
+                                            minWidth: 0,
+                                            pr: 1,
+                                          }}
+                                        >
+                                          <Box component="span" sx={{ minWidth: 0 }}>
+                                            <Typography component="span" variant="body2" fontWeight={600}>
+                                              {pkg.name}
+                                            </Typography>
+                                            {alreadyOnEncounter ? (
+                                              <Typography
+                                                component="span"
+                                                variant="caption"
+                                                color="text.secondary"
+                                                sx={{ display: "block" }}
+                                              >
+                                                Already ordered on this visit
+                                              </Typography>
+                                            ) : null}
+                                          </Box>
+                                          <Typography
+                                            component="span"
+                                            variant="caption"
+                                            fontWeight={800}
+                                            color="text.secondary"
+                                            sx={{ whiteSpace: "nowrap" }}
+                                          >
                                             {formatMoney2(pkg.package_price)}
                                           </Typography>
-                                        </Stack>
+                                        </Box>
                                       }
-                                      sx={{ ml: 0, alignItems: "flex-start", width: "100%", mr: 0 }}
+                                      sx={receptionCheckboxLabelSx}
                                     />
                                   </Grid>
-                                ))}
+                                  );
+                                })}
                               </Grid>
                             )}
                           </>
@@ -1562,59 +1910,89 @@ export default function ReceptionDesk() {
                                 {imagingCatalog.map((c) => {
                                   const row = imagingForm[c.code] ?? { checked: false, view: "" };
                                   const coveredByPackage = imagingCoveredByPackages.has(c.code);
+                                  const alreadyOnEncounter = encounterImagingCatalogCodes.has(c.code);
                                   const label = (c.view_field_label ?? "VIEW").trim() || "VIEW";
                                   return (
                                     <Box key={c.code}>
                                       <FormControlLabel
+                                        sx={receptionCheckboxLabelSx}
                                         control={
                                           <Checkbox
                                             size="small"
-                                            checked={row.checked}
-                                            onChange={(_, checked) =>
+                                            checked={row.checked || alreadyOnEncounter}
+                                            disabled={alreadyOnEncounter}
+                                            onChange={(_, checked) => {
+                                              if (alreadyOnEncounter) return;
                                               setImagingForm((prev) => ({
                                                 ...prev,
                                                 [c.code]: { ...(prev[c.code] ?? { checked: false, view: "" }), checked },
-                                              }))
-                                            }
+                                              }));
+                                            }}
                                           />
                                         }
                                         label={
-                                          <Stack direction="row" alignItems="baseline" justifyContent="space-between" spacing={1} sx={{ flex: 1, pr: 0.5 }}>
-                                            <Typography variant="body2" sx={{ textTransform: "uppercase" }}>
+                                          <Box
+                                            component="span"
+                                            sx={{
+                                              display: "inline-flex",
+                                              alignItems: "center",
+                                              justifyContent: "space-between",
+                                              gap: 1,
+                                              width: "100%",
+                                              minWidth: 0,
+                                              pr: 0.5,
+                                            }}
+                                          >
+                                            <Typography component="span" variant="body2" sx={{ textTransform: "uppercase" }}>
                                               {c.name}
                                             </Typography>
                                             <Typography
+                                              component="span"
                                               variant="caption"
                                               fontWeight={800}
                                               color="text.secondary"
                                               sx={{
                                                 whiteSpace: "nowrap",
-                                                fontStyle: coveredByPackage ? "italic" : undefined,
+                                                fontStyle: coveredByPackage || alreadyOnEncounter ? "italic" : undefined,
                                               }}
                                             >
-                                              {coveredByPackage
-                                                ? "Included in package"
-                                                : formatMoney2(c.default_price)}
+                                              {alreadyOnEncounter
+                                                ? "Already ordered on this visit"
+                                                : coveredByPackage
+                                                  ? "Included in package"
+                                                  : formatMoney2(c.default_price)}
                                             </Typography>
-                                          </Stack>
+                                          </Box>
                                         }
-                                        sx={{ ml: 0, alignItems: "flex-start", width: "100%", mr: 0 }}
                                       />
                                       {c.requires_view_field ? (
-                                        <TextField
-                                          size="small"
-                                          label={label}
-                                          value={row.view}
-                                          onChange={(e) =>
-                                            setImagingForm((prev) => ({
-                                              ...prev,
-                                              [c.code]: { ...(prev[c.code] ?? { checked: false, view: "" }), view: e.target.value },
-                                            }))
-                                          }
-                                          fullWidth
-                                          sx={{ mt: 0.5, pl: { xs: 0, sm: 4 } }}
-                                          InputLabelProps={{ shrink: true }}
-                                        />
+                                        <Box
+                                          sx={{
+                                            display: "flex",
+                                            flexWrap: "wrap",
+                                            alignItems: "center",
+                                            gap: 1,
+                                            pl: { xs: 0, sm: 4 },
+                                            mt: 0.5,
+                                          }}
+                                        >
+                                          <Typography variant="body2" sx={{ textTransform: "uppercase", fontWeight: 600 }}>
+                                            {label}:
+                                          </Typography>
+                                          <TextField
+                                            size="small"
+                                            placeholder=" "
+                                            hiddenLabel
+                                            value={row.view}
+                                            onChange={(e) =>
+                                              setImagingForm((prev) => ({
+                                                ...prev,
+                                                [c.code]: { ...(prev[c.code] ?? { checked: false, view: "" }), view: e.target.value },
+                                              }))
+                                            }
+                                            sx={{ flex: 1, minWidth: 120 }}
+                                          />
+                                        </Box>
                                       ) : null}
                                     </Box>
                                   );
@@ -1667,6 +2045,39 @@ export default function ReceptionDesk() {
           </Button>
           <Button variant="contained" onClick={submitTriage} disabled={triageSaving}>
             {triageSaving ? "Saving…" : "Confirm check-in"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={orderSummaryOpen}
+        onClose={() => setOrderSummaryOpen(false)}
+        fullWidth
+        maxWidth="sm"
+        disableEscapeKeyDown={triageSaving}
+      >
+        <DialogTitle
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 1,
+            pr: 1,
+          }}
+        >
+          <Typography variant="subtitle1" fontWeight={800} component="span">
+            Order Summary
+          </Typography>
+          <IconButton aria-label="Close order summary" onClick={() => setOrderSummaryOpen(false)} edge="end" size="small">
+            <CloseIcon />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent dividers>
+          <ReceptionDiagnosticOrderSummaryBody summary={receptionDiagnosticSummary} />
+        </DialogContent>
+        <DialogActions sx={{ px: 2, py: 1.5 }}>
+          <Button variant="contained" onClick={() => setOrderSummaryOpen(false)} sx={{ textTransform: "none", fontWeight: 700 }}>
+            Close
           </Button>
         </DialogActions>
       </Dialog>

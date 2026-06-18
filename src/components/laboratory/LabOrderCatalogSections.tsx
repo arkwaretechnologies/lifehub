@@ -305,6 +305,11 @@ export function LabOrderCatalogSections({
                         Included in package (bundle price)
                       </Typography>
                     ) : null}
+                    {alreadyRequested ? (
+                      <Typography variant="caption" color="text.secondary" sx={labTestMetaIndentSx}>
+                        Already ordered on this visit
+                      </Typography>
+                    ) : null}
                     {metaLine ? (
                       <Typography variant="caption" color="text.secondary" sx={labTestMetaIndentSx}>
                         {metaLine}

@@ -359,11 +359,14 @@ export async function searchPatientsFromApi(q: string): Promise<{ rows: Receptio
 export async function createPatientFromApi(input: {
   name: string;
   sex: string;
-  date_of_birth: string;
-  address: string;
-  contact_no: string;
+  date_of_birth: string | null;
+  civil_status?: string | null;
+  address: string | null;
+  contact_no: string | null;
   email_address?: string | null;
   occupation?: string | null;
+  referring_physician?: string | number | null;
+  philhealth_no?: number | null;
 }): Promise<{ patient: ReceptionPatientSearchRow | null; error: string | null }> {
   const res = await authenticatedFetch("/api/reception/patient-create", {
     method: "POST",

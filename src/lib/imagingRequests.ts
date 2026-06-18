@@ -2,6 +2,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ImagingResultTemplateResultLayout } from "@/lib/imagingResultTemplates";
 import { parseTemplateResultLayout } from "@/lib/imagingResultTemplates";
 import { resolvePackageCoveredImagingCatalogIds } from "@/lib/labPackages";
+import {
+  fetchEncounterDiagnosticOrderState,
+  validateEncounterImagingCreate,
+} from "@/lib/encounterDiagnosticOrderState";
 import { supabase } from "@/lib/supabaseClient";
 import {
   buildImagingRequestLinesFromCatalog,
@@ -207,6 +211,7 @@ async function addMissingPackageImagingItemsToRequest(
   imagingRequestId: string,
   catalog: ImagingCatalogRow[],
   covered: Set<string>,
+  alreadyOnEncounter?: Set<string>,
 ): Promise<{ error: string | null }> {
   const { data: existing, error } = await db
     .from(IMAGING_REQUEST_ITEMS_TABLE)
@@ -219,10 +224,11 @@ async function addMissingPackageImagingItemsToRequest(
       .map((r) => String(r.imaging_catalog_id ?? "").trim())
       .filter(Boolean),
   );
+  const onEncounter = alreadyOnEncounter ?? new Set<string>();
 
   const itemRows: Array<Record<string, unknown>> = [];
   for (const c of catalog) {
-    if (!covered.has(c.id) || have.has(c.id)) continue;
+    if (!covered.has(c.id) || have.has(c.id) || onEncounter.has(c.id)) continue;
     itemRows.push({
       imaging_request_id: imagingRequestId,
       imaging_catalog_id: c.id,
@@ -250,7 +256,16 @@ async function createImagingRequestWithItemsOnDb(
   const catalog =
     input.catalog ??
     (await fetchActiveImagingCatalogForDb(db)).rows;
-  const lines = buildImagingRequestLinesFromCatalog(catalog, input.selection);
+
+  const enc = input.encounterId != null ? String(input.encounterId).trim() : "";
+  let selection = input.selection;
+  if (enc) {
+    const validated = await validateEncounterImagingCreate(db, enc, selection, catalog);
+    if (validated.error) return { imagingRequestId: null, error: validated.error };
+    selection = validated.selection;
+  }
+
+  const lines = buildImagingRequestLinesFromCatalog(catalog, selection);
   if (lines.length === 0) {
     return { imagingRequestId: null, error: "Select at least one imaging study." };
   }
@@ -259,7 +274,6 @@ async function createImagingRequestWithItemsOnDb(
   const { covered, error: covErr } = await resolveCoveredCatalogIdsForImagingCreate(db, packageIds);
   if (covErr) return { imagingRequestId: null, error: covErr };
 
-  const enc = input.encounterId != null ? String(input.encounterId).trim() : "";
   if (input.encounterId != null && enc === "") {
     return { imagingRequestId: null, error: "Invalid encounter." };
   }
@@ -287,7 +301,7 @@ async function createImagingRequestWithItemsOnDb(
 
   const itemRows: Array<Record<string, unknown>> = [];
   for (const c of catalog) {
-    const sel = input.selection[c.code];
+    const sel = selection[c.code];
     if (!sel?.checked) continue;
     itemRows.push({
       imaging_request_id: imagingRequestId,
@@ -345,19 +359,36 @@ export async function ensureImagingRequestForLabPackages(
   const { rows: catalog, error: catErr } = await fetchActiveImagingCatalogForDb(db);
   if (catErr) return { imagingRequestId: null, error: catErr };
 
+  const { state: encounterState, error: stateErr } = await fetchEncounterDiagnosticOrderState(db, enc, {
+    imagingCatalog: catalog,
+  });
+  if (stateErr) return { imagingRequestId: null, error: stateErr };
+
+  const missingCovered = new Set<string>();
+  for (const cid of covered) {
+    if (!encounterState.imagingCatalogIds.has(cid)) missingCovered.add(cid);
+  }
+  if (missingCovered.size === 0) return { imagingRequestId: null, error: null };
+
   const unpaid = await unpaidImagingRequestIdsForEncounter(db, enc);
   if (unpaid.error) return { imagingRequestId: null, error: unpaid.error };
 
   if (unpaid.ids.length > 0) {
     const imagingRequestId = unpaid.ids[0];
-    const add = await addMissingPackageImagingItemsToRequest(db, imagingRequestId, catalog, covered);
+    const add = await addMissingPackageImagingItemsToRequest(
+      db,
+      imagingRequestId,
+      catalog,
+      missingCovered,
+      encounterState.imagingCatalogIds,
+    );
     if (add.error) return { imagingRequestId: null, error: add.error };
     const sync = await syncUnpaidImagingItemsToPackageCoverage(db, enc, packageIds);
     if (sync.error) return { imagingRequestId: null, error: sync.error };
     return { imagingRequestId, error: null };
   }
 
-  const selection = imagingSelectionForCatalogIds(catalog, covered, input.selection);
+  const selection = imagingSelectionForCatalogIds(catalog, missingCovered, input.selection);
   if (!imagingSelectionHasChecked(selection)) {
     return { imagingRequestId: null, error: null };
   }

@@ -1206,11 +1206,11 @@ export default function ReceptionDesk() {
             imagingSelection: filteredImagingForm,
           });
           if (prep.error) {
-            setLoadError(prep.error);
+            setPatientError(prep.error);
             return;
           }
           if (!prep.transId || (!prep.includesLab && !prep.includesImaging)) {
-            setLoadError("Server did not return checkout identifiers.");
+            setPatientError("Server did not return checkout identifiers.");
             return;
           }
 
@@ -1230,7 +1230,7 @@ export default function ReceptionDesk() {
             },
           });
           if (completeRes.error) {
-            setLoadError(completeRes.error);
+            setPatientError(completeRes.error);
             return;
           }
 

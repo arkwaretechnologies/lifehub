@@ -74,6 +74,41 @@ export function getEntranceCounterCode(): string {
   return (process.env.NEXT_PUBLIC_RECEPTION_ENTRANCE_COUNTER_CODE ?? "ENTRANCE").trim().toUpperCase();
 }
 
+/** `NEXT_PUBLIC_RECEPTION_DOCTOR_QUEUES`: segments `CODE|Label` separated by `;`. */
+export function parseReceptionDoctorQueueCodes(): string[] {
+  const raw = process.env.NEXT_PUBLIC_RECEPTION_DOCTOR_QUEUES?.trim() ?? "";
+  if (!raw) return ["CLINIC 1"];
+  const out: string[] = [];
+  for (const part of raw.split(";")) {
+    const seg = part.trim();
+    if (!seg) continue;
+    const pipe = seg.indexOf("|");
+    const code = (pipe >= 0 ? seg.slice(0, pipe) : seg).trim().toUpperCase();
+    if (code) out.push(code);
+  }
+  return out.length > 0 ? out : ["CLINIC 1"];
+}
+
+export function getLabQueueCode(): string {
+  return (process.env.NEXT_PUBLIC_RECEPTION_LAB_QUEUE_CODE ?? "LAB").trim().toUpperCase();
+}
+
+export function getImagingQueueCode(): string {
+  return (process.env.NEXT_PUBLIC_RECEPTION_IMAGING_QUEUE_CODE ?? "IMAG").trim().toUpperCase();
+}
+
+export type ReceptionDepartmentCounters = {
+  consultation: QueueCounterRow[];
+  laboratory: QueueCounterRow | null;
+  imaging: QueueCounterRow | null;
+};
+
+const EMPTY_DEPARTMENT_COUNTERS: ReceptionDepartmentCounters = {
+  consultation: [],
+  laboratory: null,
+  imaging: null,
+};
+
 export async function fetchQueueCounterByCode(
   code: string,
 ): Promise<{ counter: QueueCounterRow | null; error: string | null }> {
@@ -300,6 +335,7 @@ export type ReceptionQueueApiResult = {
   warnings: string[];
   counters: QueueCounterRow[];
   entranceCounter: QueueCounterRow | null;
+  departmentCounters: ReceptionDepartmentCounters;
   priorities: QueuePriorityRow[];
   tickets: QueueTicketRow[];
 };
@@ -310,6 +346,7 @@ export async function fetchReceptionQueueStateFromApi(): Promise<ReceptionQueueA
     warnings: [],
     counters: [],
     entranceCounter: null,
+    departmentCounters: EMPTY_DEPARTMENT_COUNTERS,
     priorities: [],
     tickets: [],
   };
@@ -325,11 +362,21 @@ export async function fetchReceptionQueueStateFromApi(): Promise<ReceptionQueueA
     };
   }
 
+  const rawDept = json.departmentCounters as ReceptionDepartmentCounters | undefined;
+  const departmentCounters: ReceptionDepartmentCounters = rawDept
+    ? {
+        consultation: Array.isArray(rawDept.consultation) ? rawDept.consultation : [],
+        laboratory: rawDept.laboratory ?? null,
+        imaging: rawDept.imaging ?? null,
+      }
+    : EMPTY_DEPARTMENT_COUNTERS;
+
   return {
     error: null,
     warnings: Array.isArray(json.warnings) ? (json.warnings as string[]) : [],
     counters: (json.counters as QueueCounterRow[]) ?? [],
     entranceCounter: (json.entranceCounter as QueueCounterRow | null) ?? null,
+    departmentCounters,
     priorities: (json.priorities as QueuePriorityRow[]) ?? [],
     tickets: (json.tickets as QueueTicketRow[]) ?? [],
   };

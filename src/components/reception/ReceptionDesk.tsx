@@ -41,6 +41,7 @@ import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import MeetingRoomOutlinedIcon from "@mui/icons-material/MeetingRoomOutlined";
 import PlayCircleOutlineIcon from "@mui/icons-material/PlayCircleOutline";
 import ReplayIcon from "@mui/icons-material/Replay";
+import PrintOutlinedIcon from "@mui/icons-material/PrintOutlined";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import SearchIcon from "@mui/icons-material/Search";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
@@ -52,6 +53,9 @@ import {
   fetchReceptionQueueStateFromApi,
   fetchReceptionQueueTicketsFromApi,
   getEntranceCounterCode,
+  getImagingQueueCode,
+  getLabQueueCode,
+  parseReceptionDoctorQueueCodes,
   parseReceptionRouteFromNotes,
   patchReceptionQueueTicket,
   prepareReceptionLabCheckinFromApi,
@@ -60,6 +64,7 @@ import {
   subscribeQueueTickets,
   type QueueCounterRow,
   type QueuePriorityRow,
+  type ReceptionDepartmentCounters,
   type ReceptionPatientSearchRow,
   type QueueTicketRow,
   type QueueTicketStatus,
@@ -103,7 +108,7 @@ import {
   filterNewPackageIds,
 } from "@/lib/encounterDiagnosticOrderState";
 import { supabase } from "@/lib/supabaseClient";
-import { openReceptionQueueReceiptPrint } from "@/lib/receptionQueueReceiptPrint";
+import { openCashierQueueReceiptReprintByTicketId, openReceptionQueueReceiptPrint } from "@/lib/receptionQueueReceiptPrint";
 import { sanitizePatientSearchQuery } from "@/lib/patientsCatalog";
 import { BpSplitInput } from "@/components/BpSplitInput";
 import { consultFormControlLabelSx } from "@/components/consultation/ConsultationSectionTitle";
@@ -371,6 +376,65 @@ function sortTicketsForDisplay(tickets: QueueTicketRow[]): QueueTicketRow[] {
   });
 }
 
+function matchesQueueTicketSearch(ticket: QueueTicketRow, rawQuery: string): boolean {
+  const q = rawQuery.trim().toLowerCase();
+  if (!q) return true;
+  const display = (ticket.queue_display ?? "").trim().toLowerCase();
+  const name = (ticket.patient_name ?? "").trim().toLowerCase();
+  const num = String(ticket.queue_number ?? "");
+  return display.includes(q) || name.includes(q) || num.includes(q);
+}
+
+function filterTicketsBySearch(tickets: QueueTicketRow[], query: string): QueueTicketRow[] {
+  if (!query.trim()) return tickets;
+  return tickets.filter((t) => matchesQueueTicketSearch(t, query));
+}
+
+function QueueViewSearchField({
+  value,
+  onChange,
+  ariaLabel,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  ariaLabel: string;
+}) {
+  const theme = useTheme();
+  return (
+    <Box
+      sx={{
+        display: "flex",
+        alignItems: "center",
+        gap: 1,
+        px: 1.25,
+        py: 0.65,
+        borderRadius: 1.5,
+        border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
+        bgcolor: alpha(theme.palette.background.paper, 0.85),
+        transition: "box-shadow 0.2s ease, border-color 0.2s ease",
+        "&:focus-within": {
+          borderColor: "primary.main",
+          boxShadow: `0 0 0 3px ${alpha(theme.palette.primary.main, 0.12)}`,
+        },
+      }}
+    >
+      <SearchIcon sx={{ color: "text.secondary", fontSize: 20, flexShrink: 0 }} />
+      <InputBase
+        fullWidth
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Search name or queue no."
+        inputProps={{ "aria-label": ariaLabel }}
+        sx={{
+          fontSize: "0.8125rem",
+          "& .MuiInputBase-input": { py: 0.25 },
+          "& .MuiInputBase-input::placeholder": { opacity: 0.55 },
+        }}
+      />
+    </Box>
+  );
+}
+
 function CounterQueueCard({
   counter,
   tickets,
@@ -394,9 +458,17 @@ function CounterQueueCard({
   entranceHighlight?: boolean;
 }) {
   const theme = useTheme();
+  const [searchQuery, setSearchQuery] = useState("");
   const sorted = useMemo(() => sortTicketsForDisplay(tickets), [tickets]);
-  const active = sorted.filter((t) => t.status === "Serving" || t.status === "Called");
-  const waiting = sorted.filter((t) => t.status === "Waiting");
+  const active = useMemo(
+    () => filterTicketsBySearch(sorted.filter((t) => t.status === "Serving" || t.status === "Called"), searchQuery),
+    [sorted, searchQuery],
+  );
+  const waiting = useMemo(
+    () => filterTicketsBySearch(sorted.filter((t) => t.status === "Waiting"), searchQuery),
+    [sorted, searchQuery],
+  );
+  const hasSearch = searchQuery.trim().length > 0;
 
   return (
     <Card
@@ -437,6 +509,11 @@ function CounterQueueCard({
       </Box>
 
       <CardContent sx={{ flex: 1, pt: 2, display: "flex", flexDirection: "column", gap: 2 }}>
+        <QueueViewSearchField
+          value={searchQuery}
+          onChange={setSearchQuery}
+          ariaLabel={`Search ${entranceHighlight ? "entrance" : counter.code} queue by name or queue number`}
+        />
         <Box>
           <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ textTransform: "uppercase" }}>
             Now serving
@@ -453,7 +530,9 @@ function CounterQueueCard({
               }}
             >
               <Typography variant="body2" color="text.secondary">
-                No active ticket — call the next waiting number
+                {hasSearch && sorted.some((t) => t.status === "Serving" || t.status === "Called")
+                  ? "No active tickets match your search"
+                  : "No active ticket — call the next waiting number"}
               </Typography>
             </Box>
           ) : (
@@ -547,9 +626,11 @@ function CounterQueueCard({
           </Typography>
           {waiting.length === 0 ? (
             <Typography variant="body2" color="text.secondary" sx={{ mt: 2, textAlign: "center" }}>
-              {entranceHighlight
-                ? "No lobby tickets waiting — new numbers appear when issued at the kiosk."
-                : "Queue is clear"}
+              {hasSearch && sorted.some((t) => t.status === "Waiting")
+                ? "No waiting tickets match your search"
+                : entranceHighlight
+                  ? "No lobby tickets waiting — new numbers appear when issued at the kiosk."
+                  : "Queue is clear"}
             </Typography>
           ) : (
             <Stack spacing={entranceHighlight ? 1.25 : 1} sx={{ mt: 1 }}>
@@ -620,15 +701,166 @@ function CounterQueueCard({
   );
 }
 
+const EMPTY_DEPARTMENT_COUNTERS: ReceptionDepartmentCounters = {
+  consultation: [],
+  laboratory: null,
+  imaging: null,
+};
+
+function DepartmentQueuePanel({
+  title,
+  counters,
+  tickets,
+  missingCounterHint,
+  reprintBusyId,
+  onReprint,
+}: {
+  title: string;
+  counters: QueueCounterRow[];
+  tickets: QueueTicketRow[];
+  missingCounterHint?: string | null;
+  reprintBusyId: string | null;
+  onReprint: (t: QueueTicketRow) => void;
+}) {
+  const theme = useTheme();
+  const [searchQuery, setSearchQuery] = useState("");
+  const counterById = useMemo(() => new Map(counters.map((c) => [String(c.id), c])), [counters]);
+  const sorted = useMemo(() => sortTicketsForDisplay(tickets), [tickets]);
+  const filtered = useMemo(() => filterTicketsBySearch(sorted, searchQuery), [sorted, searchQuery]);
+  const subtitle =
+    counters.length === 0
+      ? null
+      : counters.length === 1
+        ? `${counters[0]!.code}${counters[0]!.name ? ` · ${counters[0]!.name}` : ""}`
+        : counters.map((c) => c.code).join(", ");
+
+  return (
+    <Card
+      elevation={0}
+      sx={{
+        height: "100%",
+        border: `1px solid ${alpha(theme.palette.divider, 0.12)}`,
+        borderRadius: 2,
+        overflow: "hidden",
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      <Box
+        sx={{
+          px: 2,
+          py: 1.5,
+          background: `linear-gradient(90deg, ${alpha(theme.palette.info.main, 0.06)} 0%, transparent 100%)`,
+          borderBottom: `1px solid ${alpha(theme.palette.divider, 0.08)}`,
+        }}
+      >
+        <Typography variant="subtitle1" fontWeight={700}>
+          {title}
+        </Typography>
+        {subtitle ? (
+          <Typography variant="caption" color="text.secondary">
+            {subtitle}
+          </Typography>
+        ) : null}
+      </Box>
+      <CardContent sx={{ flex: 1, pt: 1.5, pb: 2, display: "flex", flexDirection: "column", gap: 1.5 }}>
+        <QueueViewSearchField
+          value={searchQuery}
+          onChange={setSearchQuery}
+          ariaLabel={`Search ${title} queue by name or queue number`}
+        />
+        {missingCounterHint ? (
+          <Alert severity="info" sx={{ py: 0.5 }}>
+            <Typography variant="caption">{missingCounterHint}</Typography>
+          </Alert>
+        ) : null}
+        {sorted.length === 0 ? (
+          <Typography variant="body2" color="text.secondary" sx={{ py: 2, textAlign: "center" }}>
+            No patients in queue
+          </Typography>
+        ) : filtered.length === 0 ? (
+          <Typography variant="body2" color="text.secondary" sx={{ py: 2, textAlign: "center" }}>
+            No tickets match your search
+          </Typography>
+        ) : (
+          <Stack spacing={1}>
+            {filtered.map((t) => {
+              const counter = counterById.get(String(t.counter_id));
+              const canReprint = Boolean(t.encounter_id?.trim());
+              return (
+                <Box
+                  key={t.id}
+                  sx={{
+                    px: 1.5,
+                    py: 1.25,
+                    borderRadius: 1.5,
+                    border: `1px solid ${alpha(theme.palette.divider, 0.1)}`,
+                    bgcolor: alpha(theme.palette.background.paper, 0.6),
+                  }}
+                >
+                  <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap>
+                    <Typography
+                      variant="h6"
+                      fontWeight={800}
+                      sx={{ fontVariantNumeric: "tabular-nums", minWidth: 72 }}
+                    >
+                      {t.queue_display}
+                    </Typography>
+                    <Typography variant="body2" fontWeight={600} sx={{ flex: 1, minWidth: 100 }} noWrap>
+                      {t.patient_name?.trim() || "No name on ticket"}
+                    </Typography>
+                    <Chip
+                      size="small"
+                      label={t.status}
+                      color={t.status === "Serving" ? "success" : "info"}
+                      sx={{ fontWeight: 600 }}
+                    />
+                    {counters.length > 1 && counter ? (
+                      <Chip size="small" variant="outlined" label={counter.code} />
+                    ) : null}
+                    <Tooltip title={canReprint ? "Reprint queue ticket" : "Visit not linked — cannot reprint"}>
+                      <span>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          startIcon={
+                            reprintBusyId === t.id ? (
+                              <CircularProgress size={14} color="inherit" />
+                            ) : (
+                              <PrintOutlinedIcon fontSize="small" />
+                            )
+                          }
+                          onClick={() => onReprint(t)}
+                          disabled={!canReprint || reprintBusyId !== null}
+                          sx={{ textTransform: "none", fontWeight: 700 }}
+                        >
+                          Reprint
+                        </Button>
+                      </span>
+                    </Tooltip>
+                  </Stack>
+                </Box>
+              );
+            })}
+          </Stack>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function ReceptionDesk() {
   const theme = useTheme();
   const [counters, setCounters] = useState<QueueCounterRow[]>([]);
   const [entranceCounter, setEntranceCounter] = useState<QueueCounterRow | null>(null);
+  const [departmentCounters, setDepartmentCounters] = useState<ReceptionDepartmentCounters>(EMPTY_DEPARTMENT_COUNTERS);
   const [priorities, setPriorities] = useState<QueuePriorityRow[]>([]);
   const [tickets, setTickets] = useState<QueueTicketRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [reprintBusyId, setReprintBusyId] = useState<string | null>(null);
+  const [reprintError, setReprintError] = useState("");
   const [rtConnected, setRtConnected] = useState(false);
   const [apiWarnings, setApiWarnings] = useState<string[]>([]);
   const [triageTicket, setTriageTicket] = useState<QueueTicketRow | null>(null);
@@ -881,6 +1113,7 @@ export default function ReceptionDesk() {
     setApiWarnings(data.warnings);
     setCounters(data.counters);
     setEntranceCounter(data.entranceCounter);
+    setDepartmentCounters(data.departmentCounters);
     setPriorities(data.priorities);
     applyTickets(data.tickets);
   }, [applyTickets]);
@@ -907,6 +1140,9 @@ export default function ReceptionDesk() {
   useEffect(() => {
     const ids = new Set<string>(counters.map((c) => String(c.id)));
     if (entranceCounter) ids.add(String(entranceCounter.id));
+    for (const c of departmentCounters.consultation) ids.add(String(c.id));
+    if (departmentCounters.laboratory) ids.add(String(departmentCounters.laboratory.id));
+    if (departmentCounters.imaging) ids.add(String(departmentCounters.imaging.id));
     const idList = [...ids];
     if (idList.length === 0) return () => {};
 
@@ -917,7 +1153,7 @@ export default function ReceptionDesk() {
       },
       (subscribed) => setRtConnected(subscribed),
     );
-  }, [counters, entranceCounter, refreshTicketsOnly]);
+  }, [counters, entranceCounter, departmentCounters, refreshTicketsOnly]);
 
   useEffect(() => {
     const pollMs = rtConnected ? 60_000 : 8_000;
@@ -937,6 +1173,48 @@ export default function ReceptionDesk() {
     }
     return m;
   }, [tickets]);
+
+  const consultationTickets = useMemo(() => {
+    const ids = new Set(departmentCounters.consultation.map((c) => String(c.id)));
+    return tickets.filter((t) => ids.has(String(t.counter_id)));
+  }, [tickets, departmentCounters.consultation]);
+
+  const laboratoryTickets = useMemo(() => {
+    if (!departmentCounters.laboratory) return [];
+    const id = String(departmentCounters.laboratory.id);
+    return tickets.filter((t) => String(t.counter_id) === id);
+  }, [tickets, departmentCounters.laboratory]);
+
+  const imagingTickets = useMemo(() => {
+    if (!departmentCounters.imaging) return [];
+    const id = String(departmentCounters.imaging.id);
+    return tickets.filter((t) => String(t.counter_id) === id);
+  }, [tickets, departmentCounters.imaging]);
+
+  const consultationMissingHint =
+    departmentCounters.consultation.length === 0
+      ? `No consultation counter matched ${parseReceptionDoctorQueueCodes().join(", ")}. Set NEXT_PUBLIC_RECEPTION_DOCTOR_QUEUES in .env.local.`
+      : null;
+
+  const laboratoryMissingHint = !departmentCounters.laboratory
+    ? `No laboratory counter matched ${getLabQueueCode()}. Set NEXT_PUBLIC_RECEPTION_LAB_QUEUE_CODE in .env.local.`
+    : null;
+
+  const imagingMissingHint = !departmentCounters.imaging
+    ? `No imaging counter matched ${getImagingQueueCode()}. Set NEXT_PUBLIC_RECEPTION_IMAGING_QUEUE_CODE in .env.local.`
+    : null;
+
+  const handleDepartmentReprint = useCallback((t: QueueTicketRow) => {
+    void (async () => {
+      setReprintBusyId(t.id);
+      setReprintError("");
+      const r = await openCashierQueueReceiptReprintByTicketId(t.id);
+      setReprintBusyId(null);
+      if (!r.ok) {
+        setReprintError(r.error ?? "Could not reprint queue ticket.");
+      }
+    })();
+  }, []);
 
   const runTicketAction = async (ticketId: string, action: "complete") => {
     setBusyId(ticketId);
@@ -2083,7 +2361,7 @@ export default function ReceptionDesk() {
       </Dialog>
 
       {entranceCounter ? (
-        <Box>
+        <Box sx={{ mb: 3 }}>
           <CounterQueueCard
             counter={entranceCounter}
             tickets={ticketsByCounter.get(String(entranceCounter.id)) ?? []}
@@ -2097,12 +2375,51 @@ export default function ReceptionDesk() {
           />
         </Box>
       ) : !loadError ? (
-        <Alert severity="info">
+        <Alert severity="info" sx={{ mb: 3 }}>
           No entrance counter matched <code>{getEntranceCounterCode()}</code>. Set{" "}
           <code>NEXT_PUBLIC_RECEPTION_ENTRANCE_COUNTER_CODE</code> in <code>.env.local</code> if needed, then restart the
           dev server.
         </Alert>
       ) : null}
+
+      {reprintError ? (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setReprintError("")}>
+          {reprintError}
+        </Alert>
+      ) : null}
+
+      <Grid container spacing={2}>
+        <Grid size={{ xs: 12, md: 4 }}>
+          <DepartmentQueuePanel
+            title="Consultation"
+            counters={departmentCounters.consultation}
+            tickets={consultationTickets}
+            missingCounterHint={consultationMissingHint}
+            reprintBusyId={reprintBusyId}
+            onReprint={handleDepartmentReprint}
+          />
+        </Grid>
+        <Grid size={{ xs: 12, md: 4 }}>
+          <DepartmentQueuePanel
+            title="Laboratory"
+            counters={departmentCounters.laboratory ? [departmentCounters.laboratory] : []}
+            tickets={laboratoryTickets}
+            missingCounterHint={laboratoryMissingHint}
+            reprintBusyId={reprintBusyId}
+            onReprint={handleDepartmentReprint}
+          />
+        </Grid>
+        <Grid size={{ xs: 12, md: 4 }}>
+          <DepartmentQueuePanel
+            title="Imaging"
+            counters={departmentCounters.imaging ? [departmentCounters.imaging] : []}
+            tickets={imagingTickets}
+            missingCounterHint={imagingMissingHint}
+            reprintBusyId={reprintBusyId}
+            onReprint={handleDepartmentReprint}
+          />
+        </Grid>
+      </Grid>
     </Box>
   );
 }

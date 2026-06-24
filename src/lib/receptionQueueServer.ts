@@ -5,11 +5,13 @@ import {
   type PatientPickerRow,
 } from "@/lib/patientsCatalog";
 import {
+  parseReceptionDoctorQueueCodes,
   QUEUE_TICKET_RECEPTION_SELECT,
   type QueueCounterRow,
   type QueuePriorityRow,
   type QueueTicketRow,
   type QueueTicketStatus,
+  type ReceptionDepartmentCounters,
 } from "@/lib/queueReception";
 import { numericIdFromUnknown } from "@/lib/sessionUserId";
 import { parseBp } from "@/lib/bpInput";
@@ -122,9 +124,24 @@ function pickEntranceByNameHint(rows: QueueCounterRow[]): QueueCounterRow | null
   return rows.find((c) => re.test(`${c.name ?? ""} ${c.code ?? ""}`)) ?? null;
 }
 
+function resolveDepartmentCounters(allCounters: QueueCounterRow[]): ReceptionDepartmentCounters {
+  const byCode = new Map(allCounters.map((r) => [r.code.trim().toUpperCase(), r]));
+  const consultation: QueueCounterRow[] = [];
+  for (const code of parseReceptionDoctorQueueCodes()) {
+    const hit = byCode.get(code);
+    if (hit) consultation.push(hit);
+  }
+  return {
+    consultation,
+    laboratory: byCode.get(labQueueCode()) ?? null,
+    imaging: byCode.get(imagingQueueCode()) ?? null,
+  };
+}
+
 export type ReceptionQueueStatePayload = {
   counters: QueueCounterRow[];
   entranceCounter: QueueCounterRow | null;
+  departmentCounters: ReceptionDepartmentCounters;
   priorities: QueuePriorityRow[];
   tickets: QueueTicketRow[];
   warnings: string[];
@@ -216,8 +233,13 @@ export async function loadReceptionQueueState(): Promise<
     }
   }
 
+  const departmentCounters = resolveDepartmentCounters(allCounters);
+
   const visibleCounterIds = new Set(counters.map((c) => counterKey(c.id)));
   if (entrance) visibleCounterIds.add(counterKey(entrance.id));
+  for (const c of departmentCounters.consultation) visibleCounterIds.add(counterKey(c.id));
+  if (departmentCounters.laboratory) visibleCounterIds.add(counterKey(departmentCounters.laboratory.id));
+  if (departmentCounters.imaging) visibleCounterIds.add(counterKey(departmentCounters.imaging.id));
   const tickets = allTodayTickets.filter((t) => visibleCounterIds.has(counterKey(t.counter_id)));
 
   const { data: priData, error: priErr } = await admin
@@ -230,7 +252,7 @@ export async function loadReceptionQueueState(): Promise<
   }
   const priorities = (priData ?? []) as QueuePriorityRow[];
 
-  return { ok: true, counters, entranceCounter: entrance, priorities, tickets, warnings };
+  return { ok: true, counters, entranceCounter: entrance, departmentCounters, priorities, tickets, warnings };
 }
 
 export async function loadReceptionQueueTickets(): Promise<

@@ -21,10 +21,11 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  TextField,
   Typography,
 } from "@mui/material";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
+import { DatePickerField } from "@/components/DatePickerField";
+import { filterToolbarButtonSx } from "@/components/fieldInputStyles";
 import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
 import type {
   RadiologistInterpretationDetailRow,
@@ -185,28 +186,26 @@ export default function RadiologistInterpretationReportPage() {
       <Card sx={{ mb: 3 }}>
         <CardContent>
           <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2, alignItems: "flex-end" }}>
-            <TextField
+            <DatePickerField
+              id="radiologist-interpretation-from"
               label="From"
-              type="date"
-              size="small"
+              width={180}
               value={startDate}
               onChange={(e) => setStartDate(e.target.value)}
-              InputLabelProps={{ shrink: true }}
             />
-            <TextField
+            <DatePickerField
+              id="radiologist-interpretation-to"
               label="To"
-              type="date"
-              size="small"
+              width={180}
               value={endDate}
               onChange={(e) => setEndDate(e.target.value)}
-              InputLabelProps={{ shrink: true }}
             />
             <Button
               variant="outlined"
               startIcon={<RefreshOutlinedIcon />}
               onClick={() => void loadSummary()}
               disabled={loading}
-              sx={{ textTransform: "none" }}
+              sx={{ ...filterToolbarButtonSx, textTransform: "none" }}
             >
               Refresh
             </Button>
@@ -216,7 +215,7 @@ export default function RadiologistInterpretationReportPage() {
               startIcon={<FileDownloadOutlinedIcon />}
               onClick={exportSummary}
               disabled={loading || rows.length === 0}
-              sx={{ textTransform: "none" }}
+              sx={{ ...filterToolbarButtonSx, textTransform: "none" }}
             >
               Export to Excel
             </Button>

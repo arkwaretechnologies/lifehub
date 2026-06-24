@@ -22,6 +22,7 @@ import {
   fieldInputSx,
   menuItemSx,
 } from "@/components/fieldInputStyles";
+import { DatePickerField } from "@/components/DatePickerField";
 
 type PatientForm = {
   name: string;
@@ -197,14 +198,12 @@ export default function PatientAddDialog({
               </TextField>
             </Grid>
             <Grid size={{ xs: 12, md: 3 }}>
-              <Typography variant="caption" fontWeight={700}>Date of birth *</Typography>
-              <TextField
-                {...commonFieldProps}
-                type="date"
+              <DatePickerField
+                id="patient-add-dob"
+                label="Date of birth"
+                required
                 value={form.dob}
                 onChange={(e) => setField("dob")(e.target.value)}
-                InputLabelProps={{ shrink: true }}
-                sx={{ "& .MuiInputBase-root": { height: 40 } }}
               />
             </Grid>
 

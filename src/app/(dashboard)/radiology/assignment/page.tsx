@@ -25,6 +25,7 @@ import {
 } from "@mui/material";
 import { commonFieldProps, fieldInputSx, menuItemSx } from "@/components/fieldInputStyles";
 import { FormFieldLabel } from "@/components/FormFieldLabel";
+import { DatePickerField } from "@/components/DatePickerField";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { formatDateMMDDYYYY, formatLabTime } from "@/lib/dateDisplay";
 import { imagingItemStatusLabel } from "@/lib/imagingQueueSync";
@@ -152,21 +153,17 @@ export default function RadiologyAssignmentPage() {
       <Card sx={{ mb: 2 }}>
         <CardContent sx={{ p: 3 }}>
           <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2, alignItems: "flex-end" }}>
-            <Box sx={{ minWidth: 180 }}>
-              <FormFieldLabel htmlFor="radiology-assignment-date">Date</FormFieldLabel>
-              <TextField
-                {...commonFieldProps}
-                id="radiology-assignment-date"
-                type="date"
-                value={date}
-                disabled={scope === "all"}
-                onChange={(e) => {
-                  setDate(e.target.value);
-                  setPage(0);
-                }}
-                sx={{ ...fieldInputSx, "& .MuiInputBase-input": { textTransform: "none" } }}
-              />
-            </Box>
+            <DatePickerField
+              id="radiology-assignment-date"
+              label="Date"
+              width={180}
+              value={date}
+              disabled={scope === "all"}
+              onChange={(e) => {
+                setDate(e.target.value);
+                setPage(0);
+              }}
+            />
             <Box sx={{ minWidth: 160 }}>
               <FormFieldLabel htmlFor="radiology-assignment-scope">Scope</FormFieldLabel>
               <FormControl fullWidth size="small">

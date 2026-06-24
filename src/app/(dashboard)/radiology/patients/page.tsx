@@ -25,6 +25,7 @@ import {
 } from "@mui/material";
 import { commonFieldProps, fieldInputSx, imagingReportFieldSx, menuItemSx } from "@/components/fieldInputStyles";
 import { FormFieldLabel } from "@/components/FormFieldLabel";
+import { DatePickerField } from "@/components/DatePickerField";
 import ImagingStudyImageUpload from "@/components/imaging/ImagingStudyImageUpload";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { formatDateMMDDYYYY, formatLabTime } from "@/lib/dateDisplay";
@@ -352,22 +353,18 @@ export default function RadiologyPatientsPage() {
           </Select>
         </FormControl>
       </Box>
-      <Box sx={{ minWidth: 180 }}>
-        <FormFieldLabel htmlFor="radiology-patients-date">Date</FormFieldLabel>
-        <TextField
-          {...commonFieldProps}
-          id="radiology-patients-date"
-          type="date"
-          value={queueDate}
-          disabled={dateScopeIsAll}
-          onChange={(e) => {
-            setQueueDate(e.target.value);
-            setPage(0);
-            clearPatientSelection();
-          }}
-          sx={{ ...fieldInputSx, "& .MuiInputBase-input": { textTransform: "none" } }}
-        />
-      </Box>
+      <DatePickerField
+        id="radiology-patients-date"
+        label="Date"
+        width={180}
+        value={queueDate}
+        disabled={dateScopeIsAll}
+        onChange={(e) => {
+          setQueueDate(e.target.value);
+          setPage(0);
+          clearPatientSelection();
+        }}
+      />
     </Box>
   );
 

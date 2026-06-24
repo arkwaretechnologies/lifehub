@@ -37,6 +37,7 @@ import { formatDateMMDDYYYY, isoDateFromUnknown } from "@/lib/dateDisplay";
 import { buildPatientSearchOrFilter, PATIENT_DIRECTORY_SELECT } from "@/lib/patientsCatalog";
 import { supabase } from "@/lib/supabaseClient";
 import { FormFieldLabel } from "@/components/FormFieldLabel";
+import { DatePickerField } from "@/components/DatePickerField";
 import {
   commonFieldProps,
   emailFieldInputSx,
@@ -313,16 +314,10 @@ function PatientFormFields({
           </TextField>
         </Grid>
         <Grid size={{ xs: 12, md: 3 }}>
-          <FormFieldLabel htmlFor={id("dob")} required>
-            Date of birth
-          </FormFieldLabel>
-          <TextField
+          <DatePickerField
             id={id("dob")}
-            hiddenLabel
+            label="Date of birth"
             required
-            type="date"
-            {...commonFieldProps}
-            sx={fieldInputSx}
             value={form.dob}
             onChange={onChange("dob")}
             inputProps={{ "aria-required": true }}

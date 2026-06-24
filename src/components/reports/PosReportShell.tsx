@@ -7,11 +7,12 @@ import {
   Button,
   CircularProgress,
   Stack,
-  TextField,
   Typography,
 } from "@mui/material";
 import RefreshOutlinedIcon from "@mui/icons-material/RefreshOutlined";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
+import { DatePickerField } from "@/components/DatePickerField";
+import { filterToolbarButtonSx } from "@/components/fieldInputStyles";
 import {
   DEFAULT_REPORT_PAGE_SIZE,
   defaultDateRange,
@@ -123,29 +124,27 @@ export default function PosReportShell({
         {title}
       </Typography>
 
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ sm: "center" }} sx={{ mb: 3 }}>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ sm: "flex-end" }} sx={{ mb: 3 }}>
         {!dateRangeDisabled ? (
-          <>
-            <TextField
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "flex-end" }}>
+            <DatePickerField
+              id={`${reportKey}-range-from`}
               label="From"
-              type="date"
-              size="small"
+              width={{ xs: "100%", sm: 180 }}
               value={startDate}
               onChange={(e) => setStartDate(e.target.value)}
-              InputLabelProps={{ shrink: true }}
             />
-            <TextField
+            <DatePickerField
+              id={`${reportKey}-range-to`}
               label="To"
-              type="date"
-              size="small"
+              width={{ xs: "100%", sm: 180 }}
               value={endDate}
               onChange={(e) => setEndDate(e.target.value)}
-              InputLabelProps={{ shrink: true }}
             />
-          </>
+          </Stack>
         ) : null}
         {extraControls}
-        <Button variant="outlined" startIcon={<RefreshOutlinedIcon />} onClick={reload} disabled={loading}>
+        <Button variant="outlined" sx={filterToolbarButtonSx} startIcon={<RefreshOutlinedIcon />} onClick={reload} disabled={loading}>
           Refresh
         </Button>
       </Stack>

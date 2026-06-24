@@ -11,11 +11,12 @@ import {
   Divider,
   Grid,
   Stack,
-  TextField,
   Typography,
 } from "@mui/material";
 import RefreshOutlinedIcon from "@mui/icons-material/RefreshOutlined";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
+import { DatePickerField } from "@/components/DatePickerField";
+import { filterToolbarButtonSx } from "@/components/fieldInputStyles";
 import type {
   EncounterSummaryDepartmentRow,
   EncounterSummaryPeriod,
@@ -124,12 +125,13 @@ export default function EncounterSummaryReportPage() {
         Encounter Summary
       </Typography>
 
-      <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ md: "center" }} sx={{ mb: 3 }}>
-        <Stack direction="row" spacing={1} flexWrap="wrap">
+      <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ md: "flex-end" }} sx={{ mb: 3 }}>
+        <Stack direction="row" spacing={1} flexWrap="wrap" alignItems="flex-end">
           {PERIOD_OPTIONS.map((opt) => (
             <Button
               key={opt.id}
               size="small"
+              sx={filterToolbarButtonSx}
               variant={period === opt.id ? "contained" : "outlined"}
               onClick={() => setPeriod(opt.id)}
             >
@@ -139,28 +141,27 @@ export default function EncounterSummaryReportPage() {
         </Stack>
 
         {period === "custom" ? (
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
-            <TextField
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "flex-end" }}>
+            <DatePickerField
+              id="encounter-summary-range-from"
               label="From"
-              type="date"
-              size="small"
+              width={{ xs: "100%", sm: 180 }}
               value={startDate}
               onChange={(e) => setStartDate(e.target.value)}
-              InputLabelProps={{ shrink: true }}
             />
-            <TextField
+            <DatePickerField
+              id="encounter-summary-range-to"
               label="To"
-              type="date"
-              size="small"
+              width={{ xs: "100%", sm: 180 }}
               value={endDate}
               onChange={(e) => setEndDate(e.target.value)}
-              InputLabelProps={{ shrink: true }}
             />
           </Stack>
         ) : null}
 
         <Button
           size="small"
+          sx={filterToolbarButtonSx}
           variant="outlined"
           startIcon={<RefreshOutlinedIcon />}
           onClick={() => setReloadToken((t) => t + 1)}

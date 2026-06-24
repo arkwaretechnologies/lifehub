@@ -20,6 +20,7 @@ import {
 } from "@mui/material";
 import { BpSplitInput } from "@/components/BpSplitInput";
 import { FormFieldLabel } from "@/components/FormFieldLabel";
+import { DatePickerField } from "@/components/DatePickerField";
 import { useConsultationDebouncedSave } from "@/components/consultation/useConsultationDebouncedSave";
 import {
   commonFieldProps,
@@ -1672,18 +1673,13 @@ function ObstetricHistorySection({ transId, idPrefix }: { transId: string; idPre
       />
       <Grid container spacing={2} sx={{ mb: 1 }}>
         <Grid size={{ xs: 6 }}>
-          <FormFieldLabel htmlFor={`${idPrefix}-obs-lmp`} variant="consultation">
-            LMP
-          </FormFieldLabel>
-          <TextField
+          <DatePickerField
             id={`${idPrefix}-obs-lmp`}
-            hiddenLabel
-            type="date"
+            label="LMP"
+            labelVariant="consultation"
             value={form.lmp}
             onChange={(e) => setForm((p) => ({ ...p, lmp: e.target.value, not_applicable: false }))}
             disabled={off}
-            {...commonFieldProps}
-            sx={fieldInputSx}
             slotProps={{ htmlInput: { max: "9999-12-31" } }}
           />
         </Grid>
@@ -1728,18 +1724,13 @@ function ObstetricHistorySection({ transId, idPrefix }: { transId: string; idPre
       </Grid>
       <Grid container spacing={1} sx={{ mb: 1, alignItems: "flex-end" }}>
         <Grid size={{ xs: 4 }}>
-          <FormFieldLabel htmlFor={`${idPrefix}-obs-edc`} variant="consultation">
-            EDC
-          </FormFieldLabel>
-          <TextField
+          <DatePickerField
             id={`${idPrefix}-obs-edc`}
-            hiddenLabel
-            type="date"
+            label="EDC"
+            labelVariant="consultation"
             value={form.edc}
             onChange={(e) => setForm((p) => ({ ...p, edc: e.target.value, not_applicable: false }))}
             disabled={off}
-            {...commonFieldProps}
-            sx={fieldInputSx}
             slotProps={{ htmlInput: { max: "9999-12-31" } }}
           />
         </Grid>

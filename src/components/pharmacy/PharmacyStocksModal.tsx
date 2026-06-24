@@ -38,6 +38,7 @@ import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import { alpha } from "@mui/material/styles";
 import { useAuth } from "@/components/AuthProvider";
+import { DatePickerField } from "@/components/DatePickerField";
 import type { ProductPosRow } from "@/lib/pharmacyPosDb";
 import {
   applyPharmacyStockIn,
@@ -807,18 +808,14 @@ export default function PharmacyStocksModal({ open, onClose }: Props) {
 
               {flow === "in" ? (
                 <Stack spacing={2}>
-                  <TextField
-                    variant="outlined"
+                  <DatePickerField
+                    id="pharmacy-stock-expiry"
                     label="Expiry date"
-                    type="date"
+                    required
                     value={expiryYmd}
                     onChange={(e) => setExpiryYmd(e.target.value)}
-                    fullWidth
-                    required
-                    InputLabelProps={{ shrink: true }}
                     slotProps={{ htmlInput: { min: localDateYmd() } }}
                     helperText="Cannot be earlier than today"
-                    sx={STOCK_ADJ_OUTLINED_SX}
                   />
                   <TextField
                     variant="outlined"
@@ -861,15 +858,11 @@ export default function PharmacyStocksModal({ open, onClose }: Props) {
                     helperText="Delivery Receipt document number from the supplier"
                     sx={STOCK_ADJ_OUTLINED_SX}
                   />
-                  <TextField
-                    variant="outlined"
+                  <DatePickerField
+                    id="pharmacy-stock-dr-date"
                     label="DR date (optional)"
-                    type="date"
                     value={drDate}
                     onChange={(e) => setDrDate(e.target.value)}
-                    fullWidth
-                    InputLabelProps={{ shrink: true }}
-                    sx={STOCK_ADJ_OUTLINED_SX}
                   />
                   {suppliersLoadErr && (
                     <Alert severity="warning" onClose={() => setSuppliersLoadErr(null)}>
@@ -1004,15 +997,11 @@ export default function PharmacyStocksModal({ open, onClose }: Props) {
       <DialogTitle>Edit lot</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 0.5 }}>
-          <TextField
-            variant="outlined"
+          <DatePickerField
+            id="pharmacy-stock-edit-lot-expiry"
             label="Expiry date (optional)"
-            type="date"
             value={editExpiry}
             onChange={(e) => setEditExpiry(e.target.value)}
-            fullWidth
-            InputLabelProps={{ shrink: true }}
-            sx={STOCK_ADJ_OUTLINED_SX}
           />
           <TextField
             variant="outlined"

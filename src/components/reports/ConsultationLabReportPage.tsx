@@ -11,12 +11,13 @@ import {
   Divider,
   Grid,
   Stack,
-  TextField,
   Typography,
 } from "@mui/material";
 import RefreshOutlinedIcon from "@mui/icons-material/RefreshOutlined";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import type { ConsultationLabReportApiKey } from "@/lib/reportsNavLeaves";
+import { DatePickerField } from "@/components/DatePickerField";
+import { filterToolbarButtonSx } from "@/components/fieldInputStyles";
 
 type Props = {
   reportKey: ConsultationLabReportApiKey;
@@ -134,44 +135,48 @@ export default function ConsultationLabReportPage({ reportKey, title }: Props) {
         {title}
       </Typography>
 
-      <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} alignItems={{ md: "center" }} sx={{ mb: 2 }}>
-        <Stack direction="row" spacing={1} flexWrap="wrap">
-          <Button size="small" variant={period === "today" ? "contained" : "outlined"} onClick={() => setPeriod("today")}>
+      <Stack
+        direction={{ xs: "column", md: "row" }}
+        spacing={1.5}
+        alignItems={{ md: "flex-end" }}
+        sx={{ mb: 2 }}
+      >
+        <Stack direction="row" spacing={1} flexWrap="wrap" alignItems="flex-end">
+          <Button size="small" sx={filterToolbarButtonSx} variant={period === "today" ? "contained" : "outlined"} onClick={() => setPeriod("today")}>
             Today
           </Button>
-          <Button size="small" variant={period === "week" ? "contained" : "outlined"} onClick={() => setPeriod("week")}>
+          <Button size="small" sx={filterToolbarButtonSx} variant={period === "week" ? "contained" : "outlined"} onClick={() => setPeriod("week")}>
             This week
           </Button>
-          <Button size="small" variant={period === "month" ? "contained" : "outlined"} onClick={() => setPeriod("month")}>
+          <Button size="small" sx={filterToolbarButtonSx} variant={period === "month" ? "contained" : "outlined"} onClick={() => setPeriod("month")}>
             This month
           </Button>
-          <Button size="small" variant={period === "custom" ? "contained" : "outlined"} onClick={() => setPeriod("custom")}>
+          <Button size="small" sx={filterToolbarButtonSx} variant={period === "custom" ? "contained" : "outlined"} onClick={() => setPeriod("custom")}>
             Date range
           </Button>
         </Stack>
 
         {period === "custom" ? (
-          <>
-            <TextField
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "flex-end" }}>
+            <DatePickerField
+              id={`${reportKey}-range-from`}
               label="From"
-              type="date"
-              size="small"
+              width={{ xs: "100%", sm: 180 }}
               value={startDate}
               onChange={(e) => setStartDate(e.target.value)}
-              InputLabelProps={{ shrink: true }}
             />
-            <TextField
+            <DatePickerField
+              id={`${reportKey}-range-to`}
               label="To"
-              type="date"
-              size="small"
+              width={{ xs: "100%", sm: 180 }}
               value={endDate}
               onChange={(e) => setEndDate(e.target.value)}
-              InputLabelProps={{ shrink: true }}
             />
-          </>
+          </Stack>
         ) : null}
         <Button
           size="small"
+          sx={filterToolbarButtonSx}
           variant="outlined"
           startIcon={<RefreshOutlinedIcon />}
           onClick={() => setReloadToken((v) => v + 1)}

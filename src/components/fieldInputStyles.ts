@@ -36,6 +36,24 @@ export const emailFieldInputSx = {
 
 export const menuItemSx = { textTransform: "uppercase" as const };
 
+/** Date inputs — same height as `fieldInputSx`, without uppercase value text. */
+export const dateFieldInputSx = {
+  "& .MuiInputBase-root": { height: 40 },
+  "& .MuiInputBase-input": {
+    height: "100%",
+    boxSizing: "border-box",
+    textTransform: "none",
+  },
+} as const;
+
+/** Toolbar filter buttons aligned to `dateFieldInputSx` height. */
+export const filterToolbarButtonSx = {
+  height: 40,
+  minHeight: 40,
+  px: 1.75,
+  whiteSpace: "nowrap",
+} as const;
+
 export const fieldMultilineInputSx = {
   "& .MuiInputBase-root": {
     minHeight: 88,

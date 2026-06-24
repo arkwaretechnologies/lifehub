@@ -32,6 +32,7 @@ import {
 import SearchIcon from "@mui/icons-material/Search";
 import CalendarMonthOutlinedIcon from "@mui/icons-material/CalendarMonthOutlined";
 import { FormFieldLabel } from "@/components/FormFieldLabel";
+import { DatePickerField } from "@/components/DatePickerField";
 import { commonFieldProps, fieldInputSx } from "@/components/fieldInputStyles";
 import { supabase } from "@/lib/supabaseClient";
 import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
@@ -582,28 +583,28 @@ export default function ConsultationHome() {
               ))}
             </List>
             <Box sx={{ display: "flex", gap: 1 }}>
-              <TextField
-                type="date"
-                size="small"
-                label="From"
-                value={encounterFrom}
-                onChange={(e) => {
-                  setEncounterRangePreset("last15");
-                  setEncounterFrom(e.target.value);
-                }}
-                sx={{ flex: 1 }}
-              />
-              <TextField
-                type="date"
-                size="small"
-                label="To"
-                value={encounterTo}
-                onChange={(e) => {
-                  setEncounterRangePreset("last15");
-                  setEncounterTo(e.target.value);
-                }}
-                sx={{ flex: 1 }}
-              />
+              <Box sx={{ flex: 1 }}>
+                <DatePickerField
+                  id="consultation-encounter-from"
+                  label="From"
+                  value={encounterFrom}
+                  onChange={(e) => {
+                    setEncounterRangePreset("last15");
+                    setEncounterFrom(e.target.value);
+                  }}
+                />
+              </Box>
+              <Box sx={{ flex: 1 }}>
+                <DatePickerField
+                  id="consultation-encounter-to"
+                  label="To"
+                  value={encounterTo}
+                  onChange={(e) => {
+                    setEncounterRangePreset("last15");
+                    setEncounterTo(e.target.value);
+                  }}
+                />
+              </Box>
             </Box>
           </Popover>
 

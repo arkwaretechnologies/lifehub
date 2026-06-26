@@ -1,5 +1,10 @@
 import type { DiagnosticAmendmentRow } from "@/lib/diagnosticAmendments";
-import { fetchLabRequestsForEncounter } from "@/lib/labRequests";
+import {
+  buildLabAdditionalDueDisplayItems,
+  fetchLabRequestsForEncounter,
+  parseLabRequestPackageId,
+  resolveLabPackageDisplayContext,
+} from "@/lib/labRequests";
 import { fetchActiveLabPricesByTestIds } from "@/lib/labServicePrices";
 import { fetchLabTestsByIds } from "@/lib/labTests";
 import { IMAGING_CATALOG_TABLE } from "@/lib/imagingCatalog";
@@ -183,7 +188,6 @@ export async function fetchVisitDiagnosticDueBreakdown(
 
   const labPaid: DiagnosticPricedItem[] = [];
   const labDueFromOrders: DiagnosticPricedItem[] = [];
-  const dueTestIds = new Set<string>();
 
   if (reqIds.length > 0) {
     const { data: salesRows } = await supabase.from("lab_sales").select("lab_request_id").in("lab_request_id", reqIds);
@@ -200,18 +204,30 @@ export async function fetchVisitDiagnosticDueBreakdown(
       const tests = await fetchLabTestsByIds(allTestIds);
       if (tests.error) return { breakdown: empty, error: tests.error };
 
+      const allPkgNums = [
+        ...new Set(
+          requests
+            .flatMap((r) => r.lab_packages ?? [])
+            .map((p) => parseLabRequestPackageId(p.id))
+            .filter((n): n is number => n != null),
+        ),
+      ];
+      const pkgCtx = await resolveLabPackageDisplayContext(allTestIds, allPkgNums);
+      if (pkgCtx.error) return { breakdown: empty, error: pkgCtx.error };
+
       for (const req of requests) {
         if (paidReqIds.has(req.id)) {
           labPaid.push(...(await labSaleLinesForRequest(req.id)));
           const saleTestIds = await labSaleTestIdsForRequest(req.id);
-          for (const tid of req.labTestIds) {
-            const id = String(tid).trim();
-            if (!id || saleTestIds.has(id) || dueTestIds.has(id)) continue;
-            dueTestIds.add(id);
-            labDueFromOrders.push({
-              name: tests.testsById.get(id)?.name ?? `Lab test ${id.slice(0, 8)}…`,
-              price: prices.pricesByTestId.get(id) ?? 0,
-            });
+          for (const line of buildLabAdditionalDueDisplayItems(
+            req,
+            saleTestIds,
+            prices.pricesByTestId,
+            tests.testsById,
+            pkgCtx.membersByPackageId,
+            pkgCtx.packageDetailsLookup,
+          )) {
+            labDueFromOrders.push(line);
           }
         }
         // Unpaid orders (no lab_sales yet) are listed separately at cashier as open lab requests — not “additional due”.
@@ -225,8 +241,13 @@ export async function fetchVisitDiagnosticDueBreakdown(
   let labDue: DiagnosticPricedItem[] = [];
   let labDueTotal = 0;
   if (labAmendView && labAmendView.amountDelta > 0) {
-    labDue = labAmendView.added.length > 0 ? labAmendView.added : sortByName([...labDueFromOrders]);
-    labDueTotal = roundMoney2(labAmendView.amountDelta);
+    if (labDueFromOrders.length > 0) {
+      labDue = sortByName([...labDueFromOrders]);
+      labDueTotal = sumItems(labDue);
+    } else {
+      labDue = labAmendView.added;
+      labDueTotal = roundMoney2(labAmendView.amountDelta);
+    }
   } else if (labDueFromOrders.length > 0) {
     labDue = sortByName(labDueFromOrders);
     labDueTotal = sumItems(labDue);

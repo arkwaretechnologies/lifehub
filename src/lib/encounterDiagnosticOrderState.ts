@@ -10,7 +10,9 @@ import {
   fetchImagingRequestItemsForRequestIds,
   IMAGING_REQUESTS_TABLE,
 } from "@/lib/imagingRequests";
-import { collapseComponentsToPanel, type LabTestCatalogItem } from "@/lib/labTests";
+import { collapseComponentsToPanel, expandPanelTestIds, type LabTestCatalogItem } from "@/lib/labTests";
+import type { LabPackageWithTests } from "@/lib/labPackages";
+import { parseLabRequestPackageId } from "@/lib/labRequests";
 
 export type EncounterDiagnosticOrderState = {
   labTestIds: Set<string>;
@@ -134,6 +136,51 @@ export function filterNewPackageIds(
   state: EncounterDiagnosticOrderState,
 ): number[] {
   return normalizeLabRequestPackageIdList([...candidateIds]).filter((id) => !state.packageIds.has(id));
+}
+
+function testsCoveredByPackageNums(
+  packages: LabPackageWithTests[],
+  packageNums: ReadonlySet<number>,
+  catalog: LabTestCatalogItem[],
+): Set<string> {
+  const s = new Set<string>();
+  for (const pkg of packages) {
+    const num = parseLabRequestPackageId(pkg.id);
+    if (num == null || !packageNums.has(num)) continue;
+    for (const tid of pkg.labTestIds) {
+      s.add(tid);
+      for (const expanded of expandPanelTestIds([tid], catalog)) s.add(expanded);
+    }
+  }
+  return s;
+}
+
+/** Build lab create payload for a new unpaid request (excludes paid-locked tests/packages). */
+export function computeUnpaidLabSavePayload(
+  selectedTestIds: Iterable<string>,
+  selectedPackageCatalogIds: Iterable<string>,
+  paidLockedTestIds: ReadonlySet<string>,
+  paidLockedPackageNums: ReadonlySet<number>,
+  packages: LabPackageWithTests[],
+  catalog: LabTestCatalogItem[],
+): { labTestIds: string[]; packageIds: number[] } {
+  const packageIds = normalizeLabRequestPackageIdList(
+    [...selectedPackageCatalogIds]
+      .map((pid) => parseLabRequestPackageId(pid))
+      .filter((n): n is number => n != null),
+  ).filter((id) => !paidLockedPackageNums.has(id));
+
+  const unpaidPkgNums = new Set(packageIds);
+  const paidPkgCovered = testsCoveredByPackageNums(packages, paidLockedPackageNums, catalog);
+  const unpaidPkgCovered = testsCoveredByPackageNums(packages, unpaidPkgNums, catalog);
+
+  const collapsed = collapseComponentsToPanel(selectedTestIds, catalog);
+  const labTestIds = collapsed.filter(
+    (tid) =>
+      !paidLockedTestIds.has(tid) && !paidPkgCovered.has(tid) && !unpaidPkgCovered.has(tid),
+  );
+
+  return { labTestIds, packageIds };
 }
 
 export function findDuplicatePackageIds(

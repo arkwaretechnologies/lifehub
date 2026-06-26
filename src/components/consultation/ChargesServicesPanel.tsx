@@ -24,8 +24,11 @@ import { ConsultationActiveTabContext } from "@/components/consultation/consulta
 import { fetchActivePhysicianServices, type PhysicianServiceRow } from "@/lib/physicianServices";
 import { fetchActiveDiscountTypes, type DiscountTypeRow } from "@/lib/discountTypes";
 import {
+  buildLabAdditionalDueDisplayItems,
+  buildLabDueDisplayItemsForRequest,
   fetchLabRequestsForEncounter,
-  labRequestUsesPackageBundling,
+  parseLabRequestPackageId,
+  resolveLabPackageDisplayContext,
   type EncounterLabRequestSummary,
 } from "@/lib/labRequests";
 import { fetchActiveLabPricesByTestIds } from "@/lib/labServicePrices";
@@ -207,38 +210,6 @@ async function imagingSaleLinesForRequest(requestId: string): Promise<PricedItem
     out.push({ name, price: saleLineAmount(r.unit_price, r.quantity, r.discount) });
   }
   return out;
-}
-
-function buildLabDisplayItemsForRequest(
-  req: EncounterLabRequestSummary,
-  priceMap: Map<string, number>,
-  testsById: Map<string, { name: string }>,
-): PricedItem[] {
-  const items: PricedItem[] = [];
-  const cov = new Set(req.package_covered_test_ids ?? []);
-  if (labRequestUsesPackageBundling(req)) {
-    for (const pkg of req.lab_packages) {
-      const p = Number.isFinite(pkg.package_price) ? pkg.package_price : 0;
-      items.push({ name: `${pkg.name} (laboratory package)`, price: p });
-    }
-    for (const tid of req.labTestIds) {
-      if (cov.has(tid)) continue;
-      items.push({
-        name: testsById.get(tid)?.name ?? `Lab test ${tid.slice(0, 8)}…`,
-        price: priceMap.get(tid) ?? 0,
-        testId: tid,
-      });
-    }
-  } else {
-    for (const tid of req.labTestIds) {
-      items.push({
-        name: testsById.get(tid)?.name ?? `Lab test ${tid.slice(0, 8)}…`,
-        price: priceMap.get(tid) ?? 0,
-        testId: tid,
-      });
-    }
-  }
-  return items;
 }
 
 function DiagnosticItemList({ items }: { items: PricedItem[] }) {
@@ -489,6 +460,17 @@ export default function ChargesServicesPanel({ transId, patient }: { transId: st
     const tests = await fetchLabTestsByIds(allTestIds);
     if (tests.error) return;
 
+    const junctionPkgNums = [
+      ...new Set(
+        requests
+          .flatMap((r) => r.lab_packages ?? [])
+          .map((p) => parseLabRequestPackageId(p.id))
+          .filter((n): n is number => n != null),
+      ),
+    ];
+    const pkgCtx = await resolveLabPackageDisplayContext(allTestIds, junctionPkgNums);
+    if (pkgCtx.error) return;
+
     const paid: PricedItem[] = [];
     const due: PricedItem[] = [];
     const dueTestIds = new Set<string>();
@@ -499,19 +481,27 @@ export default function ChargesServicesPanel({ transId, patient }: { transId: st
         const saleTestIds = await labSaleTestIdsForRequest(req.id);
         paid.push(...saleLines);
 
-        // Only billable order lines (panels/standalone), not panel components (WBC, RDW, etc.).
-        for (const tid of req.labTestIds) {
-          const id = String(tid).trim();
-          if (!id || saleTestIds.has(id) || dueTestIds.has(id)) continue;
-          dueTestIds.add(id);
-          due.push({
-            name: tests.testsById.get(id)?.name ?? `Lab test ${id.slice(0, 8)}…`,
-            price: prices.pricesByTestId.get(id) ?? 0,
-            testId: id,
-          });
+        for (const item of buildLabAdditionalDueDisplayItems(
+          req,
+          saleTestIds,
+          prices.pricesByTestId,
+          tests.testsById,
+          pkgCtx.membersByPackageId,
+          pkgCtx.packageDetailsLookup,
+        )) {
+          const id = item.testId?.trim();
+          if (id && dueTestIds.has(id)) continue;
+          if (id) dueTestIds.add(id);
+          due.push(item);
         }
       } else {
-        for (const item of buildLabDisplayItemsForRequest(req, prices.pricesByTestId, tests.testsById)) {
+        for (const item of buildLabDueDisplayItemsForRequest(
+          req,
+          prices.pricesByTestId,
+          tests.testsById,
+          pkgCtx.membersByPackageId,
+          pkgCtx.packageDetailsLookup,
+        )) {
           const id = item.testId?.trim();
           if (id && dueTestIds.has(id)) continue;
           if (id) dueTestIds.add(id);
@@ -764,17 +754,21 @@ export default function ChargesServicesPanel({ transId, patient }: { transId: st
 
   const labDueDisplayItems = useMemo(() => {
     if (pendingLabAmendment && pendingLabAmendment.amountDelta > 0) {
-      return pendingLabAmendment.added.length > 0 ? pendingLabAmendment.added : labDueItems;
+      if (labDueItems.length > 0) return labDueItems;
+      return pendingLabAmendment.added;
     }
     return labDueItems;
   }, [pendingLabAmendment, labDueItems]);
 
   const labDueTotal = useMemo(() => {
+    if (labDueDisplayItems.length > 0) {
+      return roundMoney2(sumPricedItems(labDueDisplayItems));
+    }
     if (pendingLabAmendment && pendingLabAmendment.amountDelta > 0) {
       return roundMoney2(pendingLabAmendment.amountDelta);
     }
     return roundMoney2(labDueFromOrders);
-  }, [pendingLabAmendment, labDueFromOrders]);
+  }, [labDueDisplayItems, pendingLabAmendment, labDueFromOrders]);
 
   const imagingDueDisplayItems = useMemo(() => {
     if (pendingImagingAmendment && pendingImagingAmendment.amountDelta > 0) {

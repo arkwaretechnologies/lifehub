@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
-import { fetchLabPackageDetailsMap, fetchLabPackageMemberTestIdsMap, type LabPackageDetail } from "@/lib/labPackages";
+import { fetchLabPackageDetailsMap, fetchLabPackageMemberTestIdsMap, fetchLabPackageIdsForTestIds, type LabPackageDetail } from "@/lib/labPackages";
 import { validateEncounterLabCreate } from "@/lib/encounterDiagnosticOrderState";
 import { syncUnpaidImagingItemsToPackageCoverage, ensureImagingRequestForLabPackages } from "@/lib/imagingRequests";
 import { attachPanelLinksToCatalogItems } from "@/lib/labTestPanelLinks";
@@ -641,6 +641,271 @@ export function hasUnpricedNonPackageLabLines(
   return false;
 }
 
+export type LabDisplayPricedItem = { name: string; price: number; testId?: string };
+
+export type LabPackageDisplayLookup = ReadonlyMap<number, { name: string; package_price: number }>;
+
+function packageDetailsFromRequestAndLookup(
+  req: EncounterLabRequestSummary,
+  lookup: LabPackageDisplayLookup | undefined,
+): LabPackageDisplayLookup {
+  const m = new Map<number, { name: string; package_price: number }>();
+  for (const pkg of req.lab_packages ?? []) {
+    const n = parseLabRequestPackageId(pkg.id);
+    if (n == null) continue;
+    m.set(n, { name: pkg.name ?? "", package_price: pkg.package_price ?? 0 });
+  }
+  if (lookup) {
+    for (const [n, d] of lookup) {
+      if (!m.has(n)) m.set(n, d);
+    }
+  }
+  return m;
+}
+
+function groupUnsoldTestsAsCatalogPackages(
+  unsoldTestIds: readonly string[],
+  membersByPackageId: ReadonlyMap<number, readonly string[]>,
+  packageDetailsByNum: LabPackageDisplayLookup,
+  priceMap: Map<string, number>,
+): { items: LabDisplayPricedItem[]; accounted: Set<string> } {
+  const unsoldSet = new Set(unsoldTestIds);
+  const items: LabDisplayPricedItem[] = [];
+  const accounted = new Set<string>();
+  const pkgNums = [...membersByPackageId.keys()].sort(
+    (a, b) => (membersByPackageId.get(b)?.length ?? 0) - (membersByPackageId.get(a)?.length ?? 0),
+  );
+
+  for (const pkgNum of pkgNums) {
+    const members = membersByPackageId.get(pkgNum) ?? [];
+    if (members.length === 0) continue;
+    const allMembersUnsold = members.every((m) => unsoldSet.has(m) && !accounted.has(m));
+    if (!allMembersUnsold) continue;
+    const detail = packageDetailsByNum.get(pkgNum);
+    const label = detail?.name?.trim() || `Package #${pkgNum}`;
+    const catalogPrice = detail?.package_price ?? 0;
+    const price =
+      catalogPrice > 0
+        ? catalogPrice
+        : roundMoney2(members.reduce((s, tid) => s + (priceMap.get(tid) ?? 0), 0));
+    items.push({ name: `${label} (laboratory package)`, price });
+    for (const m of members) accounted.add(m);
+  }
+  return { items, accounted };
+}
+
+function roundMoney2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function packageMemberTestIdsForDisplay(
+  req: EncounterLabRequestSummary,
+  pkg: LabPackageDetail,
+  membersByPackageId: ReadonlyMap<number, readonly string[]> | undefined,
+): string[] {
+  const pkgNum = parseLabRequestPackageId(pkg.id);
+  if (pkgNum != null && membersByPackageId?.has(pkgNum)) {
+    return [...(membersByPackageId.get(pkgNum) ?? [])];
+  }
+  if ((req.lab_packages?.length ?? 0) === 1) {
+    return [...(req.package_covered_test_ids ?? [])];
+  }
+  return [];
+}
+
+/** Display lines for an unpaid lab request (cashier / charges — package bundle + à la carte). */
+export function buildLabDueDisplayItemsForRequest(
+  req: EncounterLabRequestSummary,
+  priceMap: Map<string, number>,
+  testsById: Map<string, { name: string }>,
+  membersByPackageId?: ReadonlyMap<number, readonly string[]>,
+  packageDetailsLookup?: LabPackageDisplayLookup,
+): LabDisplayPricedItem[] {
+  const cov = new Set(req.package_covered_test_ids ?? []);
+  if (labRequestUsesPackageBundling(req)) {
+    const items: LabDisplayPricedItem[] = [];
+    for (const pkg of req.lab_packages) {
+      const p = Number.isFinite(pkg.package_price) ? pkg.package_price : 0;
+      const label = (pkg.name ?? "").trim() || "Laboratory package";
+      items.push({ name: `${label} (laboratory package)`, price: p });
+    }
+    for (const tid of req.labTestIds) {
+      if (cov.has(tid)) continue;
+      items.push({
+        name: testsById.get(tid)?.name ?? `Lab test ${tid.slice(0, 8)}…`,
+        price: priceMap.get(tid) ?? 0,
+        testId: tid,
+      });
+    }
+    return items;
+  }
+
+  if (membersByPackageId && membersByPackageId.size > 0 && req.labTestIds.length > 0) {
+    const details = packageDetailsFromRequestAndLookup(req, packageDetailsLookup);
+    const grouped = groupUnsoldTestsAsCatalogPackages(
+      req.labTestIds,
+      membersByPackageId,
+      details,
+      priceMap,
+    );
+    if (grouped.items.length > 0) {
+      const items: LabDisplayPricedItem[] = [...grouped.items];
+      for (const tid of req.labTestIds) {
+        if (grouped.accounted.has(tid)) continue;
+        items.push({
+          name: testsById.get(tid)?.name ?? `Lab test ${tid.slice(0, 8)}…`,
+          price: priceMap.get(tid) ?? 0,
+          testId: tid,
+        });
+      }
+      return items;
+    }
+  }
+
+  return req.labTestIds.map((tid) => ({
+    name: testsById.get(tid)?.name ?? `Lab test ${tid.slice(0, 8)}…`,
+    price: priceMap.get(tid) ?? 0,
+    testId: tid,
+  }));
+}
+
+/** Display lines for billable tests on a paid request that are not yet on a lab_sale. */
+export function buildLabAdditionalDueDisplayItems(
+  req: EncounterLabRequestSummary,
+  soldTestIds: ReadonlySet<string>,
+  priceMap: Map<string, number>,
+  testsById: Map<string, { name: string }>,
+  membersByPackageId?: ReadonlyMap<number, readonly string[]>,
+  packageDetailsLookup?: LabPackageDisplayLookup,
+): LabDisplayPricedItem[] {
+  const unsoldTestIds = req.labTestIds
+    .map((tid) => String(tid).trim())
+    .filter((id) => id && !soldTestIds.has(id));
+  if (unsoldTestIds.length === 0) return [];
+
+  const unsoldSet = new Set(unsoldTestIds);
+  const items: LabDisplayPricedItem[] = [];
+  const accounted = new Set<string>();
+  const details = packageDetailsFromRequestAndLookup(req, packageDetailsLookup);
+
+  if (labRequestUsesPackageBundling(req)) {
+    for (const pkg of req.lab_packages) {
+      const memberIds = packageMemberTestIdsForDisplay(req, pkg, membersByPackageId);
+      const unsoldMembers = memberIds.filter((tid) => unsoldSet.has(tid));
+      if (unsoldMembers.length === 0) continue;
+      const p = Number.isFinite(pkg.package_price) ? pkg.package_price : 0;
+      const label = (pkg.name ?? "").trim() || "Laboratory package";
+      items.push({ name: `${label} (laboratory package)`, price: p });
+      for (const tid of unsoldMembers) accounted.add(tid);
+    }
+    for (const tid of unsoldTestIds) {
+      if (accounted.has(tid)) continue;
+      items.push({
+        name: testsById.get(tid)?.name ?? `Lab test ${tid.slice(0, 8)}…`,
+        price: priceMap.get(tid) ?? 0,
+        testId: tid,
+      });
+    }
+    if (items.some((it) => !it.testId)) return items;
+  }
+
+  if (membersByPackageId && membersByPackageId.size > 0) {
+    const grouped = groupUnsoldTestsAsCatalogPackages(
+      unsoldTestIds,
+      membersByPackageId,
+      details,
+      priceMap,
+    );
+    if (grouped.items.length > 0) {
+      const out: LabDisplayPricedItem[] = [...grouped.items];
+      for (const tid of unsoldTestIds) {
+        if (grouped.accounted.has(tid)) continue;
+        out.push({
+          name: testsById.get(tid)?.name ?? `Lab test ${tid.slice(0, 8)}…`,
+          price: priceMap.get(tid) ?? 0,
+          testId: tid,
+        });
+      }
+      return out;
+    }
+  }
+
+  return unsoldTestIds.map((tid) => ({
+    name: testsById.get(tid)?.name ?? `Lab test ${tid.slice(0, 8)}…`,
+    price: priceMap.get(tid) ?? 0,
+    testId: tid,
+  }));
+}
+
+/** Load package members + names for display grouping (junction rows + catalog inference from test ids). */
+export async function resolveLabPackageDisplayContext(
+  testIds: string[],
+  junctionPackageNums: number[],
+): Promise<{
+  membersByPackageId: Map<number, string[]>;
+  packageDetailsLookup: Map<number, { name: string; package_price: number }>;
+  error: string | null;
+}> {
+  const inferred = await fetchLabPackageIdsForTestIds(supabase, testIds);
+  if (inferred.error) {
+    return { membersByPackageId: new Map(), packageDetailsLookup: new Map(), error: inferred.error };
+  }
+  const allNums = [
+    ...new Set([
+      ...junctionPackageNums.filter((n) => Number.isFinite(n) && n > 0),
+      ...inferred.packageIds,
+    ]),
+  ];
+  if (allNums.length === 0) {
+    return { membersByPackageId: new Map(), packageDetailsLookup: new Map(), error: null };
+  }
+  const members = await fetchLabPackageMemberTestIdsMap(supabase, allNums);
+  if (members.error) {
+    return { membersByPackageId: new Map(), packageDetailsLookup: new Map(), error: members.error };
+  }
+  const details = await fetchLabPackageDetailsMap(supabase, allNums);
+  if (details.error) {
+    return { membersByPackageId: new Map(), packageDetailsLookup: new Map(), error: details.error };
+  }
+  const packageDetailsLookup = new Map<number, { name: string; package_price: number }>();
+  for (const [n, d] of details.byId) {
+    packageDetailsLookup.set(n, { name: d.name, package_price: d.package_price });
+  }
+  return { membersByPackageId: members.byPackageId, packageDetailsLookup, error: null };
+}
+
+/** `lab_test_id`s on `lab_sale_items` for the given requests (actually paid at cashier). */
+export async function fetchLabSoldTestIdsByRequestIds(
+  requestIds: string[],
+): Promise<{ soldTestIds: Set<string>; error: string | null }> {
+  const ids = [...new Set(requestIds.map((x) => String(x).trim()).filter(Boolean))];
+  const soldTestIds = new Set<string>();
+  if (ids.length === 0) return { soldTestIds, error: null };
+
+  const { data: sales, error: sErr } = await supabase
+    .from("lab_sales")
+    .select("id, lab_request_id")
+    .in("lab_request_id", ids);
+  if (sErr) return { soldTestIds, error: sErr.message };
+
+  const saleIds = ((sales ?? []) as Array<{ id?: string | null }>)
+    .map((r) => String(r.id ?? "").trim())
+    .filter(Boolean);
+  if (saleIds.length === 0) return { soldTestIds, error: null };
+
+  const { data: lines, error: lErr } = await supabase
+    .from("lab_sale_items")
+    .select("lab_test_id")
+    .in("lab_sale_id", saleIds);
+  if (lErr) return { soldTestIds, error: lErr.message };
+
+  for (const row of (lines ?? []) as Array<{ lab_test_id?: string | null }>) {
+    const tid = String(row.lab_test_id ?? "").trim();
+    if (tid) soldTestIds.add(tid);
+  }
+  return { soldTestIds, error: null };
+}
+
 export type FetchLabRequestItemDetailsOptions = {
   /** When true (default), only billable rows for cashier; applies legacy panel collapse when needed. */
   billableOnly?: boolean;
@@ -963,6 +1228,54 @@ export async function deleteLabRequestsForEncounter(encounterId: string): Promis
   if (pkgErr) return { error: pkgErr.message };
 
   const { error: delErr } = await supabase.from(LAB_REQUESTS_TABLE).delete().in("id", reqIds);
+  if (delErr) return { error: delErr.message };
+
+  return { error: null };
+}
+
+/** Delete lab requests on an encounter that have no `lab_sales` row (unpaid at cashier). */
+export async function deleteUnpaidLabRequestsForEncounter(
+  encounterId: string,
+): Promise<{ error: string | null }> {
+  const id = encounterId.trim();
+  if (!id) return { error: null };
+
+  const { data: reqRows, error: reqErr } = await supabase
+    .from(LAB_REQUESTS_TABLE)
+    .select("id")
+    .eq("encounter_id", id);
+  if (reqErr) return { error: reqErr.message };
+
+  const reqIds = ((reqRows ?? []) as Array<{ id: string }>).map((r) => r.id).filter(Boolean);
+  if (reqIds.length === 0) return { error: null };
+
+  const { data: salesRows, error: salesErr } = await supabase
+    .from("lab_sales")
+    .select("lab_request_id")
+    .in("lab_request_id", reqIds);
+  if (salesErr) return { error: salesErr.message };
+
+  const paidReqIds = new Set(
+    ((salesRows ?? []) as Array<{ lab_request_id?: string | null }>)
+      .map((r) => String(r.lab_request_id ?? "").trim())
+      .filter(Boolean),
+  );
+  const unpaidReqIds = reqIds.filter((rid) => !paidReqIds.has(rid));
+  if (unpaidReqIds.length === 0) return { error: null };
+
+  const { error: itemsErr } = await supabase
+    .from(LAB_REQUEST_ITEMS_TABLE)
+    .delete()
+    .in("lab_request_id", unpaidReqIds);
+  if (itemsErr) return { error: itemsErr.message };
+
+  const { error: pkgErr } = await supabase
+    .from(LAB_REQUEST_PACKAGES_TABLE)
+    .delete()
+    .in("lab_request_id", unpaidReqIds);
+  if (pkgErr) return { error: pkgErr.message };
+
+  const { error: delErr } = await supabase.from(LAB_REQUESTS_TABLE).delete().in("id", unpaidReqIds);
   if (delErr) return { error: delErr.message };
 
   return { error: null };

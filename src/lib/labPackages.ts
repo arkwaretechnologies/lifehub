@@ -1,7 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
 import type { ImagingCatalogRow, ImagingLineSelection } from "@/lib/imagingCatalog";
-import { isLabPackageTestSatisfiedInUI, type LabTestCatalogItem } from "@/lib/labTests";
+import {
+  collapseComponentsToPanel,
+  isLabPackageTestSatisfiedInUI,
+  type LabTestCatalogItem,
+} from "@/lib/labTests";
+import { parseLabRequestPackageId, type EncounterLabRequestSummary } from "@/lib/labRequests";
 
 export const LAB_PACKAGES_TABLE = "lab_packages" as const;
 export const LAB_PACKAGE_TESTS_TABLE = "lab_package_tests" as const;
@@ -437,6 +442,34 @@ export async function fetchLabPackageMemberTestIdsMap(
   return { byPackageId, error: null };
 }
 
+/** Package ids that include at least one of the given test ids (for display grouping when junction rows are missing). */
+export async function fetchLabPackageIdsForTestIds(
+  db: SupabaseClient,
+  testIds: string[],
+): Promise<{ packageIds: number[]; error: string | null }> {
+  const ids = [...new Set(testIds.map((t) => String(t).trim()).filter(Boolean))];
+  if (ids.length === 0) return { packageIds: [], error: null };
+
+  const { data, error } = await db
+    .from(LAB_PACKAGE_TESTS_TABLE)
+    .select("lab_package_id")
+    .in("lab_test_id", ids);
+  if (error) return { packageIds: [], error: error.message };
+
+  const packageIds = [
+    ...new Set(
+      ((data ?? []) as Array<{ lab_package_id?: string | number }>)
+        .map((r) => {
+          const raw = r.lab_package_id;
+          const n = typeof raw === "number" ? Math.trunc(raw) : Math.trunc(Number(String(raw ?? "")));
+          return Number.isFinite(n) && n > 0 ? n : null;
+        })
+        .filter((n): n is number => n != null),
+    ),
+  ];
+  return { packageIds, error: null };
+}
+
 /**
  * Member `imaging_catalog_id`s per catalog package.
  */
@@ -492,4 +525,49 @@ export async function fetchLabPackageDetailsByIds(rawIds: unknown[]): Promise<{
   error: string | null;
 }> {
   return fetchLabPackageDetailsMap(supabase, rawIds);
+}
+
+/** Map numeric `lab_package_id` from junction rows to catalog package `id` string. */
+export function catalogPackageIdForNumericId(
+  packages: LabPackageWithTests[],
+  numericId: number,
+): string | null {
+  return packages.find((p) => parseLabRequestPackageId(p.id) === numericId)?.id ?? null;
+}
+
+/** Restore catalog package ids from saved lab request junction rows. */
+export function restoreLabPackageCatalogIdsFromRequests(
+  packages: LabPackageWithTests[],
+  requests: EncounterLabRequestSummary[],
+): Set<string> {
+  const seen = new Set<number>();
+  const restored = new Set<string>();
+  for (const req of requests) {
+    for (const lp of req.lab_packages ?? []) {
+      const numericId = parseLabRequestPackageId(lp.id);
+      if (numericId == null || seen.has(numericId)) continue;
+      seen.add(numericId);
+      const catalogId = catalogPackageIdForNumericId(packages, numericId);
+      if (catalogId) restored.add(catalogId);
+    }
+  }
+  return restored;
+}
+
+/** Restore lab modal selection (tests + packages) from encounter lab requests. */
+export function hydrateLabSelectionFromEncounter(
+  requests: EncounterLabRequestSummary[],
+  packages: LabPackageWithTests[],
+  catalogTests: LabTestCatalogItem[],
+): { testIds: Set<string>; packageIds: Set<string> } {
+  const allTestIds: string[] = [];
+  for (const req of requests) {
+    for (const tid of req.labTestIds ?? []) {
+      if (tid) allTestIds.push(tid);
+    }
+  }
+  return {
+    testIds: new Set(collapseComponentsToPanel(allTestIds, catalogTests)),
+    packageIds: restoreLabPackageCatalogIdsFromRequests(packages, requests),
+  };
 }

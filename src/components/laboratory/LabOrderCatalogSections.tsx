@@ -66,6 +66,9 @@ export type LabOrderCatalogSectionsProps = {
   testsCoveredByPackages?: ReadonlySet<string>;
   /** Tests in a currently selected package: checked and not individually toggleable. */
   testsLockedByPackage?: ReadonlySet<string>;
+  /** Tests that cannot be unchecked (e.g. paid at cashier). Order mode only. */
+  lockedTestIds?: ReadonlySet<string>;
+  /** @deprecated Use `lockedTestIds` */
   requestedTestIds?: ReadonlySet<string>;
   /** Multi-column cards (consultation modal) vs single-column stack (reception triage). */
   layout?: "columns" | "stack";
@@ -96,11 +99,13 @@ export function LabOrderCatalogSections({
   pricesLoading = false,
   testsCoveredByPackages,
   testsLockedByPackage,
+  lockedTestIds,
   requestedTestIds,
   layout = "columns",
   catalogMode = "order",
 }: LabOrderCatalogSectionsProps) {
-  const lockRequested = catalogMode === "order" ? requestedTestIds : undefined;
+  const lockRequested =
+    catalogMode === "order" ? (lockedTestIds ?? requestedTestIds) : undefined;
   const theme = useTheme();
   const [searchQuery, setSearchQuery] = useState("");
 

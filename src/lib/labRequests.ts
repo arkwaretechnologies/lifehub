@@ -40,6 +40,8 @@ export type CreateLabRequestInput = {
   itemPriority?: LabRequestItemPriority | null;
   /** Catalog `lab_packages.id` rows acquired on this request (order preserved). */
   packageIds?: number[] | null;
+  /** Skip duplicate-check fetch when the caller already replaced encounter lab state (e.g. `isNew` full replace). */
+  skipEncounterValidation?: boolean;
 };
 
 function localDateYmd(d: Date): string {
@@ -94,14 +96,23 @@ export async function createLabRequestWithItems(
 
   let labTestIdsToSave = ids;
   let packageIdsToSave = packageIds;
-  if (enc) {
+  let catalog: LabTestCatalogItem[] | null = null;
+
+  const loadCatalog = async (): Promise<{ catalog: LabTestCatalogItem[]; error: string | null }> => {
+    if (catalog) return { catalog, error: null };
     const catalogFetch = await fetchLabTestCatalogRows(supabase);
-    if (catalogFetch.error) return { labRequestId: null, error: catalogFetch.error };
-    let catalog = catalogFetch.rows.map((raw) => mapLabTestCatalogItem(raw));
-    const attached = await attachPanelLinksToCatalogItems(supabase, catalog);
-    if (attached.error) return { labRequestId: null, error: attached.error };
+    if (catalogFetch.error) return { catalog: [], error: catalogFetch.error };
+    let rows = catalogFetch.rows.map((raw) => mapLabTestCatalogItem(raw));
+    const attached = await attachPanelLinksToCatalogItems(supabase, rows);
+    if (attached.error) return { catalog: [], error: attached.error };
     catalog = attached.tests;
-    const validated = await validateEncounterLabCreate(supabase, enc, ids, packageIds, catalog);
+    return { catalog, error: null };
+  };
+
+  if (enc && !input.skipEncounterValidation) {
+    const loaded = await loadCatalog();
+    if (loaded.error) return { labRequestId: null, error: loaded.error };
+    const validated = await validateEncounterLabCreate(supabase, enc, ids, packageIds, loaded.catalog);
     if (validated.error) return { labRequestId: null, error: validated.error };
     labTestIdsToSave = validated.labTestIds;
     packageIdsToSave = validated.packageIds;
@@ -167,20 +178,13 @@ export async function createLabRequestWithItems(
   const itemPriority = input.itemPriority ?? null;
 
   if (labTestIdsToSave.length > 0) {
-    const catalogFetch = await fetchLabTestCatalogRows(supabase);
-    if (catalogFetch.error) {
+    const loaded = await loadCatalog();
+    if (loaded.error) {
       await supabase.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
-      return { labRequestId: null, error: catalogFetch.error };
+      return { labRequestId: null, error: loaded.error };
     }
-    let catalog = catalogFetch.rows.map((raw) => mapLabTestCatalogItem(raw));
-    const attached = await attachPanelLinksToCatalogItems(supabase, catalog);
-    if (attached.error) {
-      await supabase.from(LAB_REQUESTS_TABLE).delete().eq("id", labRequestId);
-      return { labRequestId: null, error: attached.error };
-    }
-    catalog = attached.tests;
 
-    const itemSpecs = buildLabRequestItemRows(labTestIdsToSave, catalog);
+    const itemSpecs = buildLabRequestItemRows(labTestIdsToSave, loaded.catalog);
     const items = itemSpecs.map((row) => ({
       lab_request_id: labRequestId,
       lab_test_id: row.lab_test_id,
@@ -288,6 +292,33 @@ export async function fetchLabRequestPackageIdsByRequestIdMap(
   }
 
   return { map, error: null };
+}
+
+/** Package junction ids only — skips package detail + member test lookups (faster modal open). */
+async function attachLabRequestPackageIdsOnly(
+  db: SupabaseClient,
+  summaries: EncounterLabRequestSummary[],
+): Promise<EncounterLabRequestSummary[]> {
+  if (summaries.length === 0) return summaries;
+
+  const { map: junctionMap, error: jErr } = await fetchLabRequestPackageIdsByRequestIdMap(
+    db,
+    summaries.map((s) => s.id),
+  );
+  if (jErr) {
+    return summaries.map((s) => ({ ...s, lab_packages: [], package_covered_test_ids: [] }));
+  }
+
+  return summaries.map((s) => {
+    const pkgIds = junctionMap.get(s.id) ?? [];
+    const lab_packages = pkgIds.map((pid) => ({
+      id: pid,
+      name: "",
+      description: null,
+      package_price: 0,
+    }));
+    return { ...s, lab_packages, package_covered_test_ids: [] };
+  });
 }
 
 export async function attachLabRequestSummariesPackagesForDb(
@@ -400,17 +431,27 @@ export async function fetchLabRequestHeaderById(labRequestId: string): Promise<{
 /**
  * All lab requests for an encounter, with item test ids (newest request first).
  */
-export async function fetchLabRequestsForEncounter(
-  encounterId: string,
-): Promise<{
+export type FetchLabRequestsForEncounterOptions = {
+  /** When false, only junction package ids are loaded (faster). Default true. */
+  includePackageDetails?: boolean;
+};
+
+export type FetchLabRequestsForEncounterResult = {
   requests: EncounterLabRequestSummary[];
   requestedTestIds: string[];
   requestedPackageIds: number[];
+  storedItems: LabRequestItemStoredRow[];
   error: string | null;
-}> {
+};
+
+export async function fetchLabRequestsForEncounter(
+  encounterId: string,
+  options?: FetchLabRequestsForEncounterOptions,
+): Promise<FetchLabRequestsForEncounterResult> {
+  const includePackageDetails = options?.includePackageDetails !== false;
   const id = encounterId.trim();
   if (!id) {
-    return { requests: [], requestedTestIds: [], requestedPackageIds: [], error: null };
+    return { requests: [], requestedTestIds: [], requestedPackageIds: [], storedItems: [], error: null };
   }
 
   const { data: reqRows, error: reqErr } = await supabase
@@ -420,7 +461,7 @@ export async function fetchLabRequestsForEncounter(
     .order("created_at", { ascending: false });
 
   if (reqErr) {
-    return { requests: [], requestedTestIds: [], requestedPackageIds: [], error: reqErr.message };
+    return { requests: [], requestedTestIds: [], requestedPackageIds: [], storedItems: [], error: reqErr.message };
   }
 
   const requestsRaw = (reqRows ?? []) as {
@@ -434,13 +475,13 @@ export async function fetchLabRequestsForEncounter(
   }[];
 
   if (requestsRaw.length === 0) {
-    return { requests: [], requestedTestIds: [], requestedPackageIds: [], error: null };
+    return { requests: [], requestedTestIds: [], requestedPackageIds: [], storedItems: [], error: null };
   }
 
   const requestIds = requestsRaw.map((r) => r.id);
   const itemRes = await fetchLabRequestItemsForRequestIds(supabase, requestIds);
   if (itemRes.error) {
-    return { requests: [], requestedTestIds: [], requestedPackageIds: [], error: itemRes.error };
+    return { requests: [], requestedTestIds: [], requestedPackageIds: [], storedItems: [], error: itemRes.error };
   }
 
   const items = itemRes.items;
@@ -471,7 +512,9 @@ export async function fetchLabRequestsForEncounter(
     package_covered_test_ids: [],
   }));
 
-  const requests = await attachLabRequestSummariesPackagesForDb(supabase, summaries);
+  const requests = includePackageDetails
+    ? await attachLabRequestSummariesPackagesForDb(supabase, summaries)
+    : await attachLabRequestPackageIdsOnly(supabase, summaries);
 
   const requestedPackageIds = [
     ...new Set(
@@ -483,6 +526,7 @@ export async function fetchLabRequestsForEncounter(
     requests,
     requestedTestIds: [...allTestIds],
     requestedPackageIds,
+    storedItems: items,
     error: null,
   };
 }
@@ -914,6 +958,9 @@ export async function deleteLabRequestsForEncounter(encounterId: string): Promis
 
   const { error: itemsErr } = await supabase.from(LAB_REQUEST_ITEMS_TABLE).delete().in("lab_request_id", reqIds);
   if (itemsErr) return { error: itemsErr.message };
+
+  const { error: pkgErr } = await supabase.from(LAB_REQUEST_PACKAGES_TABLE).delete().in("lab_request_id", reqIds);
+  if (pkgErr) return { error: pkgErr.message };
 
   const { error: delErr } = await supabase.from(LAB_REQUESTS_TABLE).delete().in("id", reqIds);
   if (delErr) return { error: delErr.message };

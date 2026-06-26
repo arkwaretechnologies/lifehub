@@ -579,6 +579,13 @@ export default function ChargesServicesPanel({ transId, patient }: { transId: st
     const paid: PricedItem[] = [];
     const due: PricedItem[] = [];
 
+    const pushDue = (items: PricedItem[]) => {
+      for (const item of items) {
+        if (roundMoney2(moneyNum(item.price)) <= 0) continue;
+        due.push(item);
+      }
+    };
+
     for (const req of requests) {
       const rows = itemRes.rows.filter((r) => r.imaging_request_id === req.id);
       const currentItems: PricedItem[] = rows.map((r) => ({
@@ -592,13 +599,15 @@ export default function ChargesServicesPanel({ transId, patient }: { transId: st
         for (const row of rows) {
           const cid = String(row.imaging_catalog_id ?? "").trim();
           if (!cid || saleCatalogIds.has(cid)) continue;
+          const price = roundMoney2(moneyNum(row.unit_price));
+          if (price <= 0) continue;
           due.push({
             name: row.study_name?.trim() || row.study_code?.trim() || "Imaging study",
-            price: roundMoney2(moneyNum(row.unit_price)),
+            price,
           });
         }
       } else {
-        due.push(...currentItems);
+        pushDue(currentItems);
       }
     }
 

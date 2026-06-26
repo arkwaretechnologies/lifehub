@@ -61,7 +61,11 @@ export type LabOrderCatalogSectionsProps = {
   selectedTestIds: ReadonlySet<string>;
   onToggleTest: (testId: string) => void;
   priceByTestId: ReadonlyMap<string, number>;
+  /** When true, list prices show "—" until the price map is filled. */
+  pricesLoading?: boolean;
   testsCoveredByPackages?: ReadonlySet<string>;
+  /** Tests in a currently selected package: checked and not individually toggleable. */
+  testsLockedByPackage?: ReadonlySet<string>;
   requestedTestIds?: ReadonlySet<string>;
   /** Multi-column cards (consultation modal) vs single-column stack (reception triage). */
   layout?: "columns" | "stack";
@@ -89,7 +93,9 @@ export function LabOrderCatalogSections({
   selectedTestIds,
   onToggleTest,
   priceByTestId,
+  pricesLoading = false,
   testsCoveredByPackages,
+  testsLockedByPackage,
   requestedTestIds,
   layout = "columns",
   catalogMode = "order",
@@ -230,8 +236,15 @@ export function LabOrderCatalogSections({
                     (isPanel &&
                       panelComponentIds.length > 0 &&
                       panelComponentIds.every((cid) => lockRequested.has(cid))));
+                const lockedByPackage =
+                  testsLockedByPackage != null &&
+                  (testsLockedByPackage.has(test.id) ||
+                    (isPanel &&
+                      panelComponentIds.length > 0 &&
+                      panelComponentIds.every((cid) => testsLockedByPackage.has(cid))));
                 const checked =
                   alreadyRequested ||
+                  lockedByPackage ||
                   (isPanel
                     ? isPanelLabTestSelectedInUI(
                         test.id,
@@ -261,9 +274,9 @@ export function LabOrderCatalogSections({
                         <Checkbox
                           size="small"
                           checked={checked}
-                          disabled={alreadyRequested}
+                          disabled={alreadyRequested || lockedByPackage}
                           onChange={() => {
-                            if (alreadyRequested) return;
+                            if (alreadyRequested || lockedByPackage) return;
                             onToggleTest(test.id);
                           }}
                         />
@@ -293,14 +306,26 @@ export function LabOrderCatalogSections({
                           <Typography
                             component="span"
                             variant="caption"
-                            sx={{ fontWeight: 800, whiteSpace: "nowrap", flexShrink: 0 }}
+                            sx={{
+                              fontWeight: 800,
+                              whiteSpace: "nowrap",
+                              flexShrink: 0,
+                              color: lockedByPackage || coveredByPkg ? "text.secondary" : undefined,
+                              fontStyle: lockedByPackage || coveredByPkg ? "italic" : undefined,
+                            }}
                           >
-                            {coveredByPkg ? "—" : money2(priceByTestId.get(test.id) ?? 0)}
+                            {lockedByPackage
+                              ? "Included in package"
+                              : coveredByPkg
+                                ? "—"
+                                : pricesLoading && !priceByTestId.has(test.id)
+                                  ? "—"
+                                  : money2(priceByTestId.get(test.id) ?? 0)}
                           </Typography>
                         </Box>
                       }
                     />
-                    {coveredByPkg ? (
+                    {coveredByPkg && !lockedByPackage ? (
                       <Typography variant="caption" color="text.secondary" sx={labTestMetaIndentSx}>
                         Included in package (bundle price)
                       </Typography>

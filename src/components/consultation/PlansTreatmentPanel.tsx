@@ -62,13 +62,14 @@ import {
   fetchLabRequestsForEncounter,
   parsePatientIdForLab,
   type EncounterLabRequestSummary,
+  type FetchLabRequestsForEncounterResult,
   type LabRequestItemPriority,
+  type LabRequestItemStoredRow,
 } from "@/lib/labRequests";
 import {
   applyPanelLabTestToggle,
   collapseComponentsToPanel,
   expandPanelTestIds,
-  fetchLabCatalogGrouped,
   filterLabRequestItemsForResultEntry,
   getComponentTestIds,
   isLabPackageTestSatisfiedInUI,
@@ -77,13 +78,17 @@ import {
   type LabTestCatalogItem,
 } from "@/lib/labTests";
 import { LabOrderCatalogSections } from "@/components/laboratory/LabOrderCatalogSections";
+import { PackageSelectionConfirmDialog } from "@/components/laboratory/PackageSelectionConfirmDialog";
+import { getCachedLabCatalogAndPackages } from "@/lib/labCatalogCache";
 import { fetchActiveLabPricesByTestIds } from "@/lib/labServicePrices";
 import {
-  applyPackageImagingSelection,
-  fetchActiveLabPackagesWithTests,
+  getLabPackageAddConflicts,
+  hasLabPackageAddConflicts,
   imagingCatalogCodesCoveredByActivePackages,
+  imagingCatalogCodesCoveredByPackages,
   labPackageHasMembers,
-  mergeSelectedPackagesImagingSelection,
+  syncImagingFormWithSelectedPackages,
+  applyRemovedPackageImagingSelection,
   type LabPackageWithTests,
 } from "@/lib/labPackages";
 import { openPlansTreatmentPrintWindow, openPrescriptionPrintWindow } from "@/lib/prescriptionPrint";
@@ -119,7 +124,7 @@ import {
   filterNewLabTestIds,
   filterNewPackageIds,
 } from "@/lib/encounterDiagnosticOrderState";
-import { imagingSelectionHasChecked, fetchImagingRequestItemsForRequestIdsClient } from "@/lib/imagingRequests";
+import { imagingSelectionHasChecked, deleteImagingRequestsForEncounter, fetchImagingRequestItemsForRequestIdsClient, pruneUnpaidEncounterImagingToSelection } from "@/lib/imagingRequests";
 import type { LabRequestItemView } from "@/app/api/laboratory/lab-request/route";
 
 const tabPanelSx = { pt: 2, minHeight: 280 };
@@ -406,6 +411,35 @@ const medicationOutlinedFieldSx = {
   },
 } as const;
 
+function catalogPackageIdForNumericId(packages: LabPackageWithTests[], numericId: number): string | null {
+  return packages.find((p) => parseLabRequestPackageId(p.id) === numericId)?.id ?? null;
+}
+
+function restoreLabPackageCatalogIdsFromRequests(
+  packages: LabPackageWithTests[],
+  requests: EncounterLabRequestSummary[],
+): Set<string> {
+  const seen = new Set<number>();
+  const restored = new Set<string>();
+  for (const req of requests) {
+    for (const lp of req.lab_packages ?? []) {
+      const numericId = parseLabRequestPackageId(lp.id);
+      if (numericId == null || seen.has(numericId)) continue;
+      seen.add(numericId);
+      const catalogId = catalogPackageIdForNumericId(packages, numericId);
+      if (catalogId) restored.add(catalogId);
+    }
+  }
+  return restored;
+}
+
+function encounterLabSnapshotFresh(
+  snapshot: { transId: string; stale: boolean } | null,
+  transId: string,
+): boolean {
+  return snapshot != null && snapshot.transId === transId && !snapshot.stale;
+}
+
 export default function PlansTreatmentPanel({
   transId,
   patient,
@@ -431,6 +465,7 @@ export default function PlansTreatmentPanel({
   const labCatalogTestsRef = useRef(labCatalogTests);
   labCatalogTestsRef.current = labCatalogTests;
   const [labTestsLoading, setLabTestsLoading] = useState(false);
+  const [labPricesLoading, setLabPricesLoading] = useState(false);
   const [labTestsError, setLabTestsError] = useState("");
   const [selectedLabTestIds, setSelectedLabTestIds] = useState<Set<string>>(() => new Set());
   const [labSubmitting, setLabSubmitting] = useState(false);
@@ -463,6 +498,11 @@ export default function PlansTreatmentPanel({
   const [amendPendingKind, setAmendPendingKind] = useState<"lab" | "imaging" | null>(null);
   const [amendSaveReminderOpen, setAmendSaveReminderOpen] = useState(false);
   const [amendSaveReminderText, setAmendSaveReminderText] = useState("");
+  const [packageAddConfirm, setPackageAddConfirm] = useState<{
+    pkg: LabPackageWithTests;
+    labTestNames: string[];
+    imagingStudyNames: string[];
+  } | null>(null);
 
   const [labResultsModalOpen, setLabResultsModalOpen] = useState(false);
   const [labResultsRequestId, setLabResultsRequestId] = useState("");
@@ -497,6 +537,11 @@ export default function PlansTreatmentPanel({
   const imagingBaselineRef = useRef<Record<string, ImagingLineSelection>>({});
   const labSelectionBaselineRef = useRef("");
   const labsBaselineCapturedRef = useRef(false);
+  const encounterLabSnapshotRef = useRef<{
+    transId: string;
+    result: FetchLabRequestsForEncounterResult;
+    stale: boolean;
+  } | null>(null);
   const medsBaselineStrRef = useRef("");
   const medsBaselineReadyRef = useRef(false);
 
@@ -520,22 +565,53 @@ export default function PlansTreatmentPanel({
   );
 
   const applyPackageImagingToConsultation = useCallback(
-    (pkg: LabPackageWithTests, checked: boolean) => {
+    (
+      selectedPackageIds: Set<string>,
+      opts?: { removedPackage?: LabPackageWithTests },
+    ) => {
       const catalogForPkg =
         imagingCatalog.length > 0 ? imagingCatalog : imagingCatalogRef.current;
-      if (catalogForPkg.length === 0 || (pkg.imagingCatalogIds?.length ?? 0) === 0) return;
+      if (catalogForPkg.length === 0) return;
       setImagingForm((prev) => {
-        const next = applyPackageImagingSelection(
-          pkg.imagingCatalogIds ?? [],
-          catalogForPkg,
-          prev,
-          checked,
-        );
-        syncPlanImagingFromFormState(next, catalogForPkg);
-        return next;
+        const next = opts?.removedPackage
+          ? applyRemovedPackageImagingSelection(
+              opts.removedPackage,
+              labPackages,
+              selectedPackageIds,
+              catalogForPkg,
+              prev,
+            )
+          : syncImagingFormWithSelectedPackages(
+              labPackages,
+              selectedPackageIds,
+              catalogForPkg,
+              prev,
+            );
+        if (next !== prev || opts?.removedPackage) {
+          syncPlanImagingFromFormState(next, catalogForPkg);
+        }
+        return next !== prev || opts?.removedPackage ? next : prev;
       });
     },
-    [imagingCatalog, syncPlanImagingFromFormState],
+    [imagingCatalog, syncPlanImagingFromFormState, labPackages],
+  );
+
+  const selectedLabPackageIdsRef = useRef(selectedLabPackageIds);
+  selectedLabPackageIdsRef.current = selectedLabPackageIds;
+
+  const prevSelectedLabPackageIdsRef = useRef<Set<string>>(new Set());
+  const packageSelectionChanged = useCallback(
+    (prev: ReadonlySet<string>, next: ReadonlySet<string>) => {
+      if (prev.size !== next.size) return true;
+      for (const id of prev) {
+        if (!next.has(id)) return true;
+      }
+      for (const id of next) {
+        if (!prev.has(id)) return true;
+      }
+      return false;
+    },
+    [],
   );
 
   const prevImagingCatalogLenRef = useRef(0);
@@ -545,12 +621,13 @@ export default function PlansTreatmentPanel({
     prevImagingCatalogLenRef.current = len;
     if (!catalogJustLoaded || selectedLabPackageIds.size === 0) return;
     setImagingForm((prev) => {
-      const next = mergeSelectedPackagesImagingSelection(
+      const next = syncImagingFormWithSelectedPackages(
         labPackages,
         selectedLabPackageIds,
         imagingCatalog,
         prev,
       );
+      if (next === prev) return prev;
       syncPlanImagingFromFormState(next, imagingCatalog);
       return next;
     });
@@ -585,27 +662,52 @@ export default function PlansTreatmentPanel({
     }
     if (imagingModalMode === "amend") return;
     if (imagingCatalog.length === 0) return;
-    if (!imagingOpenedForParseRef.current) {
+    if (imagingOpenedForParseRef.current) return;
+    imagingOpenedForParseRef.current = true;
+
+    let cancelled = false;
+    void (async () => {
       const parsed = parseImagingBlockToSelection(formRef.current.plan_notes ?? "", imagingCatalog);
-      setImagingForm((prev) => {
-        const merged = { ...parsed };
-        for (const c of imagingCatalog) {
-          if (!c.code) continue;
-          const prevSel = prev[c.code];
-          if (prevSel?.checked) {
-            merged[c.code] = {
-              ...(merged[c.code] ?? { checked: false, view: "" }),
-              ...prevSel,
+      let merged: Record<string, ImagingLineSelection> = { ...parsed };
+
+      if (isNew && encounterImagingRequestIds.length > 0) {
+        const { rows: items, error } = await fetchImagingRequestItemsForRequestIdsClient(
+          encounterImagingRequestIds,
+        );
+        if (!cancelled && !error && items.length > 0) {
+          const fromEncounter = imagingSelectionFromRequestItems(imagingCatalog, items);
+          for (const [code, sel] of Object.entries(fromEncounter)) {
+            if (!sel?.checked) continue;
+            merged[code] = {
+              ...(merged[code] ?? { checked: false, view: "" }),
+              ...sel,
               checked: true,
             };
           }
         }
-        imagingBaselineRef.current = merged;
-        return merged;
+      }
+
+      if (cancelled) return;
+      const catalogForSync = imagingCatalog;
+      const synced = syncImagingFormWithSelectedPackages(
+        labPackages,
+        selectedLabPackageIdsRef.current,
+        catalogForSync,
+        merged,
+      );
+      setImagingForm(() => {
+        imagingBaselineRef.current = synced;
+        if (synced !== merged) {
+          syncPlanImagingFromFormState(synced, catalogForSync);
+        }
+        return synced;
       });
-      imagingOpenedForParseRef.current = true;
-    }
-  }, [imagingModalOpen, imagingCatalog, imagingModalMode]);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [imagingModalOpen, imagingCatalog, imagingModalMode, isNew, encounterImagingRequestIds]);
 
   /** Capture lab modal baseline once after catalog load (order mode). Amend mode sets baseline in openLabAmendModal. */
   useEffect(() => {
@@ -850,8 +952,8 @@ export default function PlansTreatmentPanel({
     setLabRequestPriority("Routine");
     setLabClinicalDiagnosis("");
     setLabRequestRemarks("");
-    setSelectedLabPackageIds(new Set());
-  }, [labsModalOpen]);
+    if (!isNew) setSelectedLabPackageIds(new Set());
+  }, [labsModalOpen, isNew]);
 
   /** Stable primitives for lab package prune effect (React 19 requires a fixed-size dep list; avoids Set/array identity issues). */
   const labPackagePruneImagingKey = useMemo(
@@ -886,6 +988,7 @@ export default function PlansTreatmentPanel({
     labCatalogTests,
     imagingForm,
     imagingCatalog,
+    isNew,
   });
   labPackagePruneInputsRef.current = {
     labPackages,
@@ -895,6 +998,7 @@ export default function PlansTreatmentPanel({
     labCatalogTests,
     imagingForm,
     imagingCatalog,
+    isNew,
   };
 
   useEffect(() => {
@@ -907,10 +1011,12 @@ export default function PlansTreatmentPanel({
       labCatalogTests: catalog,
       imagingForm: imgForm,
       imagingCatalog: imgCatalog,
+      isNew: isNewConsultation,
     } = labPackagePruneInputsRef.current;
     if (pkgs.length === 0) return;
     const catalogForImaging =
       imgCatalog.length > 0 ? imgCatalog : imagingCatalogRef.current;
+    const reqForLabOk = isNewConsultation ? new Set<string>() : req;
     setSelectedLabPackageIds((prev) => {
       const next = new Set<string>();
       for (const id of prev) {
@@ -918,7 +1024,7 @@ export default function PlansTreatmentPanel({
         const labOk =
           !pkg ||
           pkg.labTestIds.length === 0 ||
-          pkg.labTestIds.every((tid) => isLabPackageTestSatisfiedInUI(tid, catalog, sel, req));
+          pkg.labTestIds.every((tid) => isLabPackageTestSatisfiedInUI(tid, catalog, sel, reqForLabOk));
         const imagingOk =
           !pkg ||
           (pkg.imagingCatalogIds?.length ?? 0) === 0 ||
@@ -928,7 +1034,7 @@ export default function PlansTreatmentPanel({
           });
         const pkgNum = parseLabRequestPackageId(id);
         const alreadyOnEncounter = pkgNum != null && reqPkgs.has(pkgNum);
-        if (pkg && labOk && imagingOk && !alreadyOnEncounter) {
+        if (pkg && labOk && imagingOk && (isNewConsultation || !alreadyOnEncounter)) {
           next.add(id);
         }
       }
@@ -952,47 +1058,65 @@ export default function PlansTreatmentPanel({
     labPackagePruneCatalogSig,
     labPackagePruneImagingKey,
     labCatalogTests,
+    isNew,
   ]);
 
   /** Paid (`lab_sales`) and requests that already have result rows — drives View result vs View catalog. */
-  const syncPaidAndResultsFromRequestIds = useCallback(async (reqIds: string[], catalog?: LabTestCatalogItem[]) => {
-    if (reqIds.length === 0) {
-      setPaidLabRequestIds(new Set());
-      setLabRequestIdsWithResults(new Set());
-      return;
-    }
-    const catalogForFilter = catalog ?? labCatalogTestsRef.current;
-    const { data: salesRows } = await supabase.from("lab_sales").select("lab_request_id").in("lab_request_id", reqIds);
-    const paid = new Set<string>();
-    for (const row of (salesRows ?? []) as Array<{ lab_request_id: string | null }>) {
-      const id = String(row.lab_request_id ?? "").trim();
-      if (id) paid.add(id);
-    }
-    setPaidLabRequestIds(paid);
-
-    const itemRes = await fetchLabRequestItemsForRequestIds(supabase, reqIds);
-    if (itemRes.error) return;
-    const itemRows = filterLabRequestItemsForResultEntry(itemRes.items, catalogForFilter);
-    const itemToReq = new Map<string, string>();
-    for (const r of itemRows) {
-      const row = r as { id?: string; lab_request_id?: string };
-      if (row.id && row.lab_request_id) itemToReq.set(row.id, row.lab_request_id);
-    }
-    const itemIds = [...itemToReq.keys()];
-    const withResults = new Set<string>();
-    if (itemIds.length > 0) {
-      const { data: resRows } = await supabase
-        .from("lab_results")
-        .select("lab_request_item_id")
-        .in("lab_request_item_id", itemIds);
-      for (const rr of (resRows ?? []) as Array<{ lab_request_item_id?: string | null }>) {
-        const iid = String(rr.lab_request_item_id ?? "").trim();
-        const rid = itemToReq.get(iid);
-        if (rid) withResults.add(rid);
+  const syncPaidAndResultsFromRequestIds = useCallback(
+    async (
+      reqIds: string[],
+      catalog?: LabTestCatalogItem[],
+      preloadItems?: LabRequestItemStoredRow[],
+    ) => {
+      if (reqIds.length === 0) {
+        setPaidLabRequestIds(new Set());
+        setLabRequestIdsWithResults(new Set());
+        return;
       }
-    }
-    setLabRequestIdsWithResults(withResults);
-  }, []);
+      const catalogForFilter = catalog ?? labCatalogTestsRef.current;
+      const { data: salesRows } = await supabase
+        .from("lab_sales")
+        .select("lab_request_id")
+        .in("lab_request_id", reqIds);
+      const paid = new Set<string>();
+      for (const row of (salesRows ?? []) as Array<{ lab_request_id: string | null }>) {
+        const id = String(row.lab_request_id ?? "").trim();
+        if (id) paid.add(id);
+      }
+      setPaidLabRequestIds(paid);
+
+      let itemRows: LabRequestItemStoredRow[];
+      if (preloadItems != null) {
+        itemRows = preloadItems;
+      } else {
+        const itemRes = await fetchLabRequestItemsForRequestIds(supabase, reqIds);
+        if (itemRes.error) return;
+        itemRows = itemRes.items;
+      }
+
+      const filtered = filterLabRequestItemsForResultEntry(itemRows, catalogForFilter);
+      const itemToReq = new Map<string, string>();
+      for (const r of filtered) {
+        const row = r as { id?: string; lab_request_id?: string };
+        if (row.id && row.lab_request_id) itemToReq.set(row.id, row.lab_request_id);
+      }
+      const itemIds = [...itemToReq.keys()];
+      const withResults = new Set<string>();
+      if (itemIds.length > 0) {
+        const { data: resRows } = await supabase
+          .from("lab_results")
+          .select("lab_request_item_id")
+          .in("lab_request_item_id", itemIds);
+        for (const rr of (resRows ?? []) as Array<{ lab_request_item_id?: string | null }>) {
+          const iid = String(rr.lab_request_item_id ?? "").trim();
+          const rid = itemToReq.get(iid);
+          if (rid) withResults.add(rid);
+        }
+      }
+      setLabRequestIdsWithResults(withResults);
+    },
+    [],
+  );
 
   const refreshEncounterImagingCatalogCodes = useCallback(async (imagingRequestIds: string[]) => {
     const reqIds = imagingRequestIds.map((x) => x.trim()).filter(Boolean);
@@ -1057,42 +1181,127 @@ export default function PlansTreatmentPanel({
     await refreshEncounterImagingCatalogCodes(reqIds);
   }, [transId, refreshEncounterImagingCatalogCodes]);
 
+  const pruneEncounterImagingOrders = useCallback(
+    async (formState: Record<string, ImagingLineSelection>) => {
+      const catalogForPkg =
+        imagingCatalog.length > 0 ? imagingCatalog : imagingCatalogRef.current;
+      if (catalogForPkg.length === 0) return;
+      const activePkgNums = [...selectedLabPackageIdsRef.current]
+        .map((pid) => parseLabRequestPackageId(pid))
+        .filter((n): n is number => n != null);
+      const lockedCodes = imagingCatalogCodesCoveredByPackages(
+        labPackages,
+        selectedLabPackageIdsRef.current,
+        catalogForPkg,
+      );
+      const individualIds = new Set<string>();
+      for (const c of catalogForPkg) {
+        if (!c.id || !c.code) continue;
+        if (!formState[c.code]?.checked) continue;
+        if (lockedCodes.has(c.code)) continue;
+        individualIds.add(c.id);
+      }
+      const res = await pruneUnpaidEncounterImagingToSelection(transId, activePkgNums, individualIds);
+      if (res.error) return;
+      window.dispatchEvent(new CustomEvent("lifehub:imaging-updated", { detail: { transId } }));
+      await syncPaidImagingForEncounter();
+    },
+    [transId, labPackages, imagingCatalog, syncPaidImagingForEncounter],
+  );
+
+  useEffect(() => {
+    const catalogForPkg =
+      imagingCatalog.length > 0 ? imagingCatalog : imagingCatalogRef.current;
+    if (catalogForPkg.length === 0) return;
+    const prev = prevSelectedLabPackageIdsRef.current;
+    if (!packageSelectionChanged(prev, selectedLabPackageIds)) return;
+    const removed = [...prev].filter((id) => !selectedLabPackageIds.has(id));
+    prevSelectedLabPackageIdsRef.current = new Set(selectedLabPackageIds);
+    let nextFormSnapshot: Record<string, ImagingLineSelection> | null = null;
+    setImagingForm((prevForm) => {
+      let next = prevForm;
+      for (const id of removed) {
+        const removedPkg = labPackages.find((p) => p.id === id);
+        if (!removedPkg) continue;
+        next = applyRemovedPackageImagingSelection(
+          removedPkg,
+          labPackages,
+          selectedLabPackageIds,
+          catalogForPkg,
+          next,
+        );
+      }
+      if (removed.length === 0) {
+        next = syncImagingFormWithSelectedPackages(
+          labPackages,
+          selectedLabPackageIds,
+          catalogForPkg,
+          prevForm,
+        );
+      }
+      if (next === prevForm) return prevForm;
+      nextFormSnapshot = next;
+      syncPlanImagingFromFormState(next, catalogForPkg);
+      return next;
+    });
+    if (removed.length > 0) {
+      void pruneEncounterImagingOrders(nextFormSnapshot ?? imagingForm);
+    }
+  }, [
+    selectedLabPackageIds,
+    labPackages,
+    imagingCatalog,
+    imagingForm,
+    packageSelectionChanged,
+    syncPlanImagingFromFormState,
+    pruneEncounterImagingOrders,
+  ]);
+
   useEffect(() => {
     if (!labsModalOpen) return;
     let cancelled = false;
     setLabTestsLoading(true);
+    setLabPricesLoading(false);
     setLabTestsError("");
     setLabEncounterError("");
     void (async () => {
       try {
-        const [cat, enc, pkgRes] = await Promise.all([
-          fetchLabCatalogGrouped(),
-          fetchLabRequestsForEncounter(transId),
-          fetchActiveLabPackagesWithTests(),
-        ]);
+        const snapshot = encounterLabSnapshotRef.current;
+        const encounterFresh = encounterLabSnapshotFresh(snapshot, transId);
+
+        const catalogPromise = getCachedLabCatalogAndPackages();
+        const encPromise = encounterFresh
+          ? Promise.resolve(snapshot!.result)
+          : fetchLabRequestsForEncounter(transId, { includePackageDetails: false });
+
+        const [catalogRes, enc] = await Promise.all([catalogPromise, encPromise]);
         if (cancelled) return;
 
-        const catalogFromFetch = cat.error ? [] : cat.sections.flatMap((s) => s.tests);
-        const activePkgList = !pkgRes.error
-          ? pkgRes.packages.filter((p) => labPackageHasMembers(p))
-          : [];
-        if (!pkgRes.error) {
+        const activePkgList = catalogRes.packages;
+        if (!catalogRes.packagesError) {
           setLabPackages(activePkgList);
         }
-        if (cat.error) {
-          setLabTestsError(cat.error);
+        if (catalogRes.catalogError) {
+          setLabTestsError(catalogRes.catalogError);
           setLabSections([]);
         } else {
-          setLabSections(cat.sections);
+          setLabSections(catalogRes.sections);
         }
 
-        // Load prices for all tests in the catalog so each row can display a price.
-        if (!cat.error) {
-          const allTestIds = cat.sections.flatMap((s) => s.tests.map((t) => t.id));
-          const pricesAll = await fetchActiveLabPricesByTestIds(allTestIds);
-          if (!cancelled && !pricesAll.error) {
-            setLabPriceByTestId(pricesAll.pricesByTestId);
-          }
+        const catalogFromFetch = catalogRes.catalogError
+          ? []
+          : catalogRes.sections.flatMap((s) => s.tests);
+
+        if (!catalogRes.catalogError) {
+          const allTestIds = catalogRes.sections.flatMap((s) => s.tests.map((t) => t.id));
+          setLabPricesLoading(true);
+          void fetchActiveLabPricesByTestIds(allTestIds).then((pricesAll) => {
+            if (cancelled) return;
+            if (!pricesAll.error) {
+              setLabPriceByTestId(pricesAll.pricesByTestId);
+            }
+            setLabPricesLoading(false);
+          });
         }
 
         if (enc.error) {
@@ -1102,28 +1311,25 @@ export default function PlansTreatmentPanel({
           setRequestedPackageIdSet(new Set());
           setPaidLabRequestIds(new Set());
           setLabRequestIdsWithResults(new Set());
-          setSelectedLabPackageIds(new Set());
+          if (!isNew) setSelectedLabPackageIds(new Set());
         } else {
-          setEncounterLabRequests(enc.requests);
-          setRequestedTestIdSet(new Set(enc.requestedTestIds));
-          setRequestedPackageIdSet(new Set(enc.requestedPackageIds));
-          if (isNew) {
-            // In a new consultation, allow editing/removal of previously saved lab selections.
-            setSelectedLabTestIds(new Set(enc.requestedTestIds));
-          }
-          // Restore package chips from saved lab requests (View catalog).
-          const activePkgIdSet = new Set(activePkgList.map((p) => p.id));
-          const restoredPkgs = new Set<string>();
-          for (const req of enc.requests) {
-            for (const lp of req.lab_packages) {
-              const sid = String(lp.id);
-              if (activePkgIdSet.has(sid)) restoredPkgs.add(sid);
+          if (!encounterFresh) {
+            setEncounterLabRequests(enc.requests);
+            setRequestedTestIdSet(new Set(enc.requestedTestIds));
+            setRequestedPackageIdSet(new Set(enc.requestedPackageIds));
+            encounterLabSnapshotRef.current = { transId, result: enc, stale: false };
+            const reqIds = enc.requests.map((r) => r.id).filter(Boolean);
+            if (!cancelled) {
+              void syncPaidAndResultsFromRequestIds(reqIds, catalogFromFetch, enc.storedItems);
             }
           }
-          setSelectedLabPackageIds(restoredPkgs);
-
-          const reqIds = enc.requests.map((r) => r.id).filter(Boolean);
-          if (!cancelled) await syncPaidAndResultsFromRequestIds(reqIds, catalogFromFetch);
+          if (isNew) {
+            const encData = encounterFresh ? snapshot!.result : enc;
+            setSelectedLabTestIds(new Set(encData.requestedTestIds));
+            setSelectedLabPackageIds(
+              restoreLabPackageCatalogIdsFromRequests(activePkgList, encData.requests),
+            );
+          }
         }
       } catch (e) {
         if (!cancelled) {
@@ -1137,6 +1343,11 @@ export default function PlansTreatmentPanel({
       cancelled = true;
     };
   }, [labsModalOpen, transId, isNew, syncPaidAndResultsFromRequestIds]);
+
+  useEffect(() => {
+    if (!hydrated || loading) return;
+    void getCachedLabCatalogAndPackages();
+  }, [hydrated, loading]);
 
   // Keep paid / results LAB state fresh even when the catalog modal is closed.
   // This drives the "View catalog" vs "View result" action next to LABS.
@@ -1159,9 +1370,10 @@ export default function PlansTreatmentPanel({
       setEncounterLabRequests(enc.requests);
       setRequestedTestIdSet(new Set(enc.requestedTestIds));
       setRequestedPackageIdSet(new Set(enc.requestedPackageIds));
+      encounterLabSnapshotRef.current = { transId, result: enc, stale: false };
       const reqIds = enc.requests.map((r) => r.id).filter(Boolean);
       if (cancelled) return;
-      await syncPaidAndResultsFromRequestIds(reqIds);
+      await syncPaidAndResultsFromRequestIds(reqIds, undefined, enc.storedItems);
       await syncPaidImagingForEncounter();
     })();
     return () => {
@@ -1179,7 +1391,12 @@ export default function PlansTreatmentPanel({
         setEncounterLabRequests(enc.requests);
         setRequestedTestIdSet(new Set(enc.requestedTestIds));
         setRequestedPackageIdSet(new Set(enc.requestedPackageIds));
-        await syncPaidAndResultsFromRequestIds(enc.requests.map((r) => r.id).filter(Boolean));
+        encounterLabSnapshotRef.current = { transId, result: enc, stale: false };
+        await syncPaidAndResultsFromRequestIds(
+          enc.requests.map((r) => r.id).filter(Boolean),
+          undefined,
+          enc.storedItems,
+        );
         await syncPaidImagingForEncounter();
       })();
     };
@@ -1207,6 +1424,7 @@ export default function PlansTreatmentPanel({
       if (!labPackageHasMembers(pkg)) return;
       const pkgNum = parseLabRequestPackageId(pkg.id);
       if (
+        !isNew &&
         labsModalMode === "order" &&
         pkgNum != null &&
         requestedPackageIdSet.has(pkgNum) &&
@@ -1215,6 +1433,9 @@ export default function PlansTreatmentPanel({
         return;
       }
       const wasOn = selectedLabPackageIds.has(pkg.id);
+      const remainingPackageIds = new Set(selectedLabPackageIds);
+      if (wasOn) remainingPackageIds.delete(pkg.id);
+      else remainingPackageIds.add(pkg.id);
       setSelectedLabPackageIds((prev) => {
         const next = new Set(prev);
         if (wasOn) next.delete(pkg.id);
@@ -1242,34 +1463,12 @@ export default function PlansTreatmentPanel({
           return n2;
         });
       }
-      applyPackageImagingToConsultation(pkg, !wasOn);
+      applyPackageImagingToConsultation(
+        remainingPackageIds,
+        wasOn ? { removedPackage: pkg } : undefined,
+      );
     },
-    [selectedLabPackageIds, labCatalogTests, applyPackageImagingToConsultation, labsModalMode, requestedPackageIdSet],
-  );
-
-  const addLabPackageFromDropdown = useCallback(
-    (packageId: string) => {
-      const pkg = labPackages.find((p) => p.id === packageId);
-      if (!pkg || !labPackageHasMembers(pkg)) return;
-      if (selectedLabPackageIds.has(pkg.id)) return;
-      const pkgNum = parseLabRequestPackageId(pkg.id);
-      if (labsModalMode === "order" && pkgNum != null && requestedPackageIdSet.has(pkgNum)) return;
-      setSelectedLabPackageIds((prev) => new Set(prev).add(pkg.id));
-      if (pkg.labTestIds.length > 0) {
-        setSelectedLabTestIds((sel) => {
-          const n2 = new Set(sel);
-          for (const tid of pkg.labTestIds) {
-            n2.add(tid);
-            if (testHasPanelComponents(labCatalogTests, tid)) {
-              for (const cid of getComponentTestIds(labCatalogTests, tid)) n2.delete(cid);
-            }
-          }
-          return n2;
-        });
-      }
-      applyPackageImagingToConsultation(pkg, true);
-    },
-    [labPackages, selectedLabPackageIds, labCatalogTests, applyPackageImagingToConsultation, labsModalMode, requestedPackageIdSet],
+    [selectedLabPackageIds, labCatalogTests, applyPackageImagingToConsultation, labsModalMode, requestedPackageIdSet, isNew],
   );
 
   const syncStructuredPrescription = useCallback(async () => {
@@ -1464,21 +1663,133 @@ export default function PlansTreatmentPanel({
     return s;
   }, [labPackages, selectedLabPackageIds, labCatalogTests]);
 
+  const applyAddLabPackage = useCallback(
+    (pkg: LabPackageWithTests) => {
+      const nextPackageIds = new Set(selectedLabPackageIds).add(pkg.id);
+      setSelectedLabPackageIds(nextPackageIds);
+      if (pkg.labTestIds.length > 0) {
+        setSelectedLabTestIds((sel) => {
+          const n2 = new Set(sel);
+          for (const tid of pkg.labTestIds) {
+            n2.add(tid);
+            if (testHasPanelComponents(labCatalogTests, tid)) {
+              for (const cid of getComponentTestIds(labCatalogTests, tid)) n2.delete(cid);
+            }
+          }
+          return n2;
+        });
+      }
+      applyPackageImagingToConsultation(nextPackageIds);
+    },
+    [labCatalogTests, applyPackageImagingToConsultation, selectedLabPackageIds],
+  );
+
+  const addLabPackageFromDropdown = useCallback(
+    (packageId: string) => {
+      const pkg = labPackages.find((p) => p.id === packageId);
+      if (!pkg || !labPackageHasMembers(pkg)) return;
+      if (selectedLabPackageIds.has(pkg.id)) return;
+      const pkgNum = parseLabRequestPackageId(pkg.id);
+      if (!isNew && labsModalMode === "order" && pkgNum != null && requestedPackageIdSet.has(pkgNum)) return;
+
+      const catalogForImaging =
+        imagingCatalog.length > 0 ? imagingCatalog : imagingCatalogRef.current;
+      const conflict = getLabPackageAddConflicts(pkg, {
+        selectedTestIds: selectedLabTestIds,
+        testsCoveredByOtherSelectedPackages: testsCoveredBySelectedPackages,
+        imagingForm,
+        imagingCoveredByOtherPackages: imagingCatalogCodesCoveredByPackages(
+          labPackages,
+          selectedLabPackageIds,
+          catalogForImaging,
+        ),
+        encounterImagingCodes: encounterImagingCatalogCodes,
+        labCatalog: labCatalogTests,
+        imagingCatalog: catalogForImaging,
+      });
+
+      if (hasLabPackageAddConflicts(conflict)) {
+        setPackageAddConfirm({ pkg, ...conflict });
+        return;
+      }
+      applyAddLabPackage(pkg);
+    },
+    [
+      labPackages,
+      selectedLabPackageIds,
+      selectedLabTestIds,
+      testsCoveredBySelectedPackages,
+      imagingForm,
+      imagingCatalog,
+      encounterImagingCatalogCodes,
+      labCatalogTests,
+      applyAddLabPackage,
+      labsModalMode,
+      requestedPackageIdSet,
+      isNew,
+    ],
+  );
+
+  const testsCoveredByEncounterPackages = useMemo(() => {
+    const s = new Set<string>();
+    for (const req of encounterLabRequests) {
+      for (const tid of req.package_covered_test_ids ?? []) {
+        s.add(tid);
+        for (const t of expandPanelTestIds([tid], labCatalogTests)) s.add(t);
+      }
+    }
+    return s;
+  }, [encounterLabRequests, labCatalogTests]);
+
+  const testsCoveredByPackagesForCatalog = useMemo(() => {
+    const s = new Set(testsCoveredBySelectedPackages);
+    for (const id of testsCoveredByEncounterPackages) s.add(id);
+    return s;
+  }, [testsCoveredBySelectedPackages, testsCoveredByEncounterPackages]);
+
+  const orderedEncounterPackages = useMemo(() => {
+    const seen = new Set<number>();
+    const out: Array<{ numericId: number; name: string; package_price: number }> = [];
+    for (const req of encounterLabRequests) {
+      for (const lp of req.lab_packages ?? []) {
+        const numericId = parseLabRequestPackageId(lp.id);
+        if (numericId == null || seen.has(numericId)) continue;
+        seen.add(numericId);
+        const catalogId = catalogPackageIdForNumericId(labPackages, numericId);
+        const catalogPkg = catalogId ? labPackages.find((p) => p.id === catalogId) : undefined;
+        out.push({
+          numericId,
+          name: catalogPkg?.name ?? lp.name ?? `Package #${numericId}`,
+          package_price: catalogPkg?.package_price ?? lp.package_price ?? 0,
+        });
+      }
+    }
+    return out;
+  }, [encounterLabRequests, labPackages]);
+
   const savedEncounterPackageIds = useMemo(
     () => encounterLabRequests.flatMap((r) => r.lab_packages ?? []),
     [encounterLabRequests],
   );
 
-  const imagingCoveredByPackages = useMemo(
-    () =>
-      imagingCatalogCodesCoveredByActivePackages(
-        labPackages,
-        selectedLabPackageIds,
-        savedEncounterPackageIds,
-        imagingCatalog.length > 0 ? imagingCatalog : imagingCatalogRef.current,
-      ),
-    [labPackages, selectedLabPackageIds, savedEncounterPackageIds, imagingCatalog],
-  );
+  const imagingCoveredByPackages = useMemo(() => {
+    const catalog = imagingCatalog.length > 0 ? imagingCatalog : imagingCatalogRef.current;
+    if (isNew) {
+      return imagingCatalogCodesCoveredByPackages(labPackages, selectedLabPackageIds, catalog);
+    }
+    return imagingCatalogCodesCoveredByActivePackages(
+      labPackages,
+      selectedLabPackageIds,
+      savedEncounterPackageIds,
+      catalog,
+    );
+  }, [labPackages, selectedLabPackageIds, savedEncounterPackageIds, imagingCatalog, isNew]);
+
+  /** Imaging in a currently selected package: checked and not individually toggleable. */
+  const imagingLockedBySelectedPackages = useMemo(() => {
+    const catalog = imagingCatalog.length > 0 ? imagingCatalog : imagingCatalogRef.current;
+    return imagingCatalogCodesCoveredByPackages(labPackages, selectedLabPackageIds, catalog);
+  }, [labPackages, selectedLabPackageIds, imagingCatalog]);
 
   const labSelectedTotal = useMemo(() => {
     let sum = 0;
@@ -1497,6 +1808,8 @@ export default function PlansTreatmentPanel({
     const unstagedLab: Array<{ name: string; price: number; testId?: string }> = [];
     for (const pkg of labPackages) {
       if (!selectedLabPackageIds.has(pkg.id)) continue;
+      const pkgNum = parseLabRequestPackageId(pkg.id);
+      if (pkgNum != null && requestedPackageIdSet.has(pkgNum)) continue;
       unstagedLab.push({ name: `${pkg.name} (laboratory package)`, price: pkg.package_price });
     }
     for (const id of selectedLabTestIds) {
@@ -1516,7 +1829,7 @@ export default function PlansTreatmentPanel({
     for (const c of catalogForDraft) {
       if (!c.code || !imagingForm[c.code]?.checked) continue;
       if (encounterImagingCatalogCodes.has(c.code)) continue;
-      if (imagingCoveredByPackages.has(c.code)) continue;
+      if (imagingLockedBySelectedPackages.has(c.code)) continue;
       unstagedImaging.push({ name: c.name, price: Math.round(c.default_price * 100) / 100 });
     }
 
@@ -1528,13 +1841,14 @@ export default function PlansTreatmentPanel({
   }, [
     transId,
     encounterLabRequests,
+    requestedPackageIdSet,
     selectedLabTestIds,
     selectedLabPackageIds,
     labPackages,
     labCatalogTests,
     labPriceByTestId,
     testsCoveredBySelectedPackages,
-    imagingCoveredByPackages,
+    imagingLockedBySelectedPackages,
     imagingCatalog,
     imagingForm,
     encounterImagingCatalogCodes,
@@ -1625,13 +1939,22 @@ export default function PlansTreatmentPanel({
       if (n === 0) return "Select tests for this order";
       return `${n} test${n === 1 ? "" : "s"} · ${money2(labSelectedTotal)} (balance settled at cashier if changed)`;
     }
+    if (isNew) {
+      const nTests = selectedLabTestIds.size;
+      const nPkgs = selectedLabPackageIds.size;
+      if (nTests === 0 && nPkgs === 0) return "Select tests or packages to request";
+      const parts: string[] = [];
+      if (nPkgs > 0) parts.push(`${nPkgs} package${nPkgs === 1 ? "" : "s"}`);
+      if (nTests > 0) parts.push(`${nTests} test${nTests === 1 ? "" : "s"}`);
+      return `${parts.join(" · ")} · ${money2(labSelectedTotal)}`;
+    }
     const nReq = requestedTestIdSet.size;
     const nNew = selectedLabTestIds.size;
     if (nReq === 0 && nNew === 0) return "Select tests to request";
     if (nReq === 0) return `${nNew} test${nNew === 1 ? "" : "s"} selected · ${money2(labSelectedTotal)}`;
     if (nNew === 0) return `${nReq} already requested — select more to add another request`;
     return `${nReq} already requested · ${nNew} new selected · ${money2(labSelectedTotal)}`;
-  }, [labsModalMode, requestedTestIdSet, selectedLabTestIds, labSelectedTotal]);
+  }, [labsModalMode, isNew, requestedTestIdSet, selectedLabTestIds, selectedLabPackageIds, labSelectedTotal]);
 
   const submitLabAmend = useCallback(
     async (acknowledgedWarnings = false) => {
@@ -1696,19 +2019,27 @@ export default function PlansTreatmentPanel({
             : "Laboratory order updated. You can keep adding or removing tests here until you are finished, then use Save consultation.",
         );
         setAmendSaveReminderOpen(true);
-        const encRefresh = await fetchLabRequestsForEncounter(transId);
-        if (!encRefresh.error) {
-          setEncounterLabRequests(encRefresh.requests);
-          setRequestedTestIdSet(new Set(encRefresh.requestedTestIds));
-          setRequestedPackageIdSet(new Set(encRefresh.requestedPackageIds));
-          await syncPaidAndResultsFromRequestIds(encRefresh.requests.map((r) => r.id).filter(Boolean));
-        }
-        window.dispatchEvent(new CustomEvent("lifehub:lab-requests-updated", { detail: { transId } }));
         labSelectionBaselineRef.current = labSelectionSnapshot(selectedLabTestIds, selectedLabPackageIds);
         labsBaselineCapturedRef.current = true;
         setUnsavedCloseDialog(null);
         setLabsModalOpen(false);
         setLabsModalMode("order");
+        setLabSubmitting(false);
+        void (async () => {
+          const encRefresh = await fetchLabRequestsForEncounter(transId);
+          if (!encRefresh.error) {
+            setEncounterLabRequests(encRefresh.requests);
+            setRequestedTestIdSet(new Set(encRefresh.requestedTestIds));
+            setRequestedPackageIdSet(new Set(encRefresh.requestedPackageIds));
+            encounterLabSnapshotRef.current = { transId, result: encRefresh, stale: false };
+            await syncPaidAndResultsFromRequestIds(
+              encRefresh.requests.map((r) => r.id).filter(Boolean),
+              undefined,
+              encRefresh.storedItems,
+            );
+          }
+          window.dispatchEvent(new CustomEvent("lifehub:lab-requests-updated", { detail: { transId } }));
+        })();
       } catch {
         setLabDialogError("Could not save lab order changes.");
       } finally {
@@ -1815,19 +2146,27 @@ export default function PlansTreatmentPanel({
     setLabDialogError("");
     setLabsModalOpen(true);
     setLabTestsLoading(true);
+    setLabPricesLoading(false);
     try {
-      const [cat, stored, pkgRes] = await Promise.all([
-        fetchLabCatalogGrouped(),
+      const [catalogRes, stored] = await Promise.all([
+        getCachedLabCatalogAndPackages(),
         fetchLabRequestItemsForRequestIds(supabase, [labRequestId]),
-        fetchActiveLabPackagesWithTests(),
       ]);
-      const catalogFromFetch = cat.error ? [] : cat.sections.flatMap((s) => s.tests);
-      if (!cat.error) {
-        setLabSections(cat.sections);
-        const pricesAll = await fetchActiveLabPricesByTestIds(catalogFromFetch.map((t) => t.id));
-        if (!pricesAll.error) setLabPriceByTestId(pricesAll.pricesByTestId);
+      const catalogFromFetch = catalogRes.catalogError
+        ? []
+        : catalogRes.sections.flatMap((s) => s.tests);
+      if (!catalogRes.catalogError) {
+        setLabSections(catalogRes.sections);
+        const allTestIds = catalogFromFetch.map((t) => t.id);
+        setLabPricesLoading(true);
+        void fetchActiveLabPricesByTestIds(allTestIds).then((pricesAll) => {
+          if (!pricesAll.error) setLabPriceByTestId(pricesAll.pricesByTestId);
+          setLabPricesLoading(false);
+        });
       }
-      if (!pkgRes.error) setLabPackages(pkgRes.packages.filter((p) => labPackageHasMembers(p)));
+      if (!catalogRes.packagesError) {
+        setLabPackages(catalogRes.packages);
+      }
       const billable = stored.items.filter((i) => i.is_billable).map((i) => i.lab_test_id);
       const testSet = new Set(collapseComponentsToPanel(billable, catalogFromFetch));
       const pkgSet = new Set<string>();
@@ -1901,49 +2240,74 @@ export default function PlansTreatmentPanel({
       imagingCatalogIds: new Set<string>(),
       imagingCatalogCodes: encounterImagingCatalogCodes,
     };
-    const labTestIdsToSave = filterNewLabTestIds(selectedLabTestIds, encounterOrderState, labCatalogTests);
-    const packageIdsToSave = filterNewPackageIds(packageIds, encounterOrderState);
-    if (labTestIdsToSave.length === 0 && packageIdsToSave.length === 0) {
+    const labTestIdsToSave = isNew
+      ? collapseComponentsToPanel([...selectedLabTestIds], labCatalogTests)
+      : filterNewLabTestIds(selectedLabTestIds, encounterOrderState, labCatalogTests);
+    const packageIdsToSave = isNew ? packageIds : filterNewPackageIds(packageIds, encounterOrderState);
+    if (!isNew && labTestIdsToSave.length === 0 && packageIdsToSave.length === 0) {
       setLabSubmitting(false);
       setLabDialogError("All selected tests and packages are already ordered on this visit.");
       return;
     }
 
-    const { labRequestId, error } = await createLabRequestWithItems({
-      encounterId: transId,
-      patientId: parsePatientIdForLab(patient.patientId),
-      referringPhysician: patient.referringPhysician?.trim() ? patient.referringPhysician.trim() : null,
-      physicianId,
-      priority: labRequestPriority,
-      clinicalDiagnosis: diagTrim !== "" ? diagTrim : null,
-      remarks: remarksTrim !== "" ? remarksTrim : null,
-      labTestIds: labTestIdsToSave,
-      itemPriority: labRequestPriority,
-      packageIds: packageIdsToSave,
-    });
-    setLabSubmitting(false);
-    if (error) {
-      setLabDialogError(error);
-      return;
+    if (labTestIdsToSave.length > 0 || packageIdsToSave.length > 0) {
+      const { error } = await createLabRequestWithItems({
+        encounterId: transId,
+        patientId: parsePatientIdForLab(patient.patientId),
+        referringPhysician: patient.referringPhysician?.trim() ? patient.referringPhysician.trim() : null,
+        physicianId,
+        priority: labRequestPriority,
+        clinicalDiagnosis: diagTrim !== "" ? diagTrim : null,
+        remarks: remarksTrim !== "" ? remarksTrim : null,
+        labTestIds: labTestIdsToSave,
+        itemPriority: labRequestPriority,
+        packageIds: packageIdsToSave,
+        skipEncounterValidation: isNew,
+      });
+      if (error) {
+        setLabSubmitting(false);
+        setLabDialogError(error);
+        return;
+      }
     }
+
     setLabToastMessage("Lab Request Saved");
     setLabToastOpen(true);
-    setSelectedLabTestIds(new Set());
-    setSelectedLabPackageIds(new Set());
-    const encRefresh = await fetchLabRequestsForEncounter(transId);
-    if (!encRefresh.error) {
-      setEncounterLabRequests(encRefresh.requests);
-      setRequestedTestIdSet(new Set(encRefresh.requestedTestIds));
-      setRequestedPackageIdSet(new Set(encRefresh.requestedPackageIds));
-      setLabEncounterError("");
-      await syncPaidAndResultsFromRequestIds(encRefresh.requests.map((r) => r.id).filter(Boolean));
-      window.dispatchEvent(new CustomEvent("lifehub:lab-requests-updated", { detail: { transId } }));
-    }
-    labSelectionBaselineRef.current = labSelectionSnapshot(new Set(), new Set());
-    labsBaselineCapturedRef.current = true;
     setUnsavedCloseDialog(null);
     setLabsModalOpen(false);
     setLabsModalMode("order");
+    labsBaselineCapturedRef.current = true;
+    if (isNew) {
+      labSelectionBaselineRef.current = labSelectionSnapshot(selectedLabTestIds, selectedLabPackageIds);
+    } else {
+      setSelectedLabTestIds(new Set());
+      setSelectedLabPackageIds(new Set());
+      labSelectionBaselineRef.current = labSelectionSnapshot(new Set(), new Set());
+    }
+    setLabSubmitting(false);
+
+    void (async () => {
+      const encRefresh = await fetchLabRequestsForEncounter(transId);
+      if (encRefresh.error) return;
+      setEncounterLabRequests(encRefresh.requests);
+      setRequestedTestIdSet(new Set(encRefresh.requestedTestIds));
+      setRequestedPackageIdSet(new Set(encRefresh.requestedPackageIds));
+      encounterLabSnapshotRef.current = { transId, result: encRefresh, stale: false };
+      setLabEncounterError("");
+      await syncPaidAndResultsFromRequestIds(
+        encRefresh.requests.map((r) => r.id).filter(Boolean),
+        undefined,
+        encRefresh.storedItems,
+      );
+      window.dispatchEvent(new CustomEvent("lifehub:lab-requests-updated", { detail: { transId } }));
+      if (isNew) {
+        const restoredTests = new Set(encRefresh.requestedTestIds);
+        const restoredPkgs = restoreLabPackageCatalogIdsFromRequests(labPackages, encRefresh.requests);
+        setSelectedLabTestIds(restoredTests);
+        setSelectedLabPackageIds(restoredPkgs);
+        labSelectionBaselineRef.current = labSelectionSnapshot(restoredTests, restoredPkgs);
+      }
+    })();
   }, [
     transId,
     patient.patientId,
@@ -1957,6 +2321,7 @@ export default function PlansTreatmentPanel({
     labRequestPriority,
     selectedLabPackageIds,
     labCatalogTests,
+    labPackages,
     requestedTestIdSet,
     requestedPackageIdSet,
     encounterImagingCatalogCodes,
@@ -2497,7 +2862,8 @@ export default function PlansTreatmentPanel({
           )}
           {!labTestsLoading && !labTestsError && visibleLabSections.length > 0 ? (
             <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
-              {labPackages.length > 0 ? (
+              {(labPackages.length > 0 ||
+                (labsModalMode === "order" && orderedEncounterPackages.length > 0)) ? (
                 <Box
                   sx={{
                     border: "1px solid",
@@ -2516,6 +2882,29 @@ export default function PlansTreatmentPanel({
                   >
                     LAB PACKAGES
                   </Typography>
+                  {labsModalMode === "order" && !isNew && orderedEncounterPackages.length > 0 ? (
+                    <Box sx={{ mb: 1.5 }}>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
+                        Packages on this visit
+                      </Typography>
+                      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
+                        {orderedEncounterPackages.map((pkg) => (
+                          <Chip
+                            key={pkg.numericId}
+                            label={`${pkg.name} · ${money2(pkg.package_price)}`}
+                            size="small"
+                            variant="outlined"
+                            sx={{ fontWeight: 600 }}
+                          />
+                        ))}
+                      </Box>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.75 }}>
+                        Already ordered on this visit
+                      </Typography>
+                    </Box>
+                  ) : null}
+                  {labPackages.length > 0 ? (
+                    <>
                   <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
                     Add lab package
                   </Typography>
@@ -2544,6 +2933,7 @@ export default function PlansTreatmentPanel({
                       {labPackages.map((pkg) => {
                         const pkgNum = parseLabRequestPackageId(pkg.id);
                         const alreadyOnEncounter =
+                          !isNew &&
                           labsModalMode === "order" &&
                           pkgNum != null &&
                           requestedPackageIdSet.has(pkgNum);
@@ -2594,6 +2984,8 @@ export default function PlansTreatmentPanel({
                       </Box>
                     </Box>
                   ) : null}
+                    </>
+                  ) : null}
                 </Box>
               ) : null}
             <LabOrderCatalogSections
@@ -2603,7 +2995,11 @@ export default function PlansTreatmentPanel({
               selectedTestIds={selectedLabTestIds}
               onToggleTest={toggleLabTestSelection}
               priceByTestId={labPriceByTestId}
-              testsCoveredByPackages={testsCoveredBySelectedPackages}
+              pricesLoading={labPricesLoading}
+              testsCoveredByPackages={
+                isNew ? testsCoveredBySelectedPackages : testsCoveredByPackagesForCatalog
+              }
+              testsLockedByPackage={testsCoveredBySelectedPackages}
               requestedTestIds={labsModalMode === "amend" || isNew ? undefined : requestedTestIdSet}
               catalogMode={labsModalMode}
             />
@@ -2622,7 +3018,11 @@ export default function PlansTreatmentPanel({
               disabled={
                 labTestsLoading ||
                 labSubmitting ||
-                (selectedLabTestIds.size === 0 && selectedLabPackageIds.size === 0)
+                (labsModalMode === "order" &&
+                  (isNew
+                    ? labSelectionSnapshot(selectedLabTestIds, selectedLabPackageIds) ===
+                      labSelectionBaselineRef.current
+                    : selectedLabTestIds.size === 0 && selectedLabPackageIds.size === 0))
               }
               onClick={() =>
                 void (labsModalMode === "amend" ? submitLabAmend(false) : submitLabRequest())
@@ -2804,9 +3204,12 @@ export default function PlansTreatmentPanel({
             <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
               {imagingCatalog.map((c) => {
                 const row = imagingForm[c.code] ?? { checked: false, view: "" };
+                const lockedByPackage = imagingLockedBySelectedPackages.has(c.code);
                 const coveredByPackage = imagingCoveredByPackages.has(c.code);
                 const alreadyOnEncounter =
-                  imagingModalMode === "order" && encounterImagingCatalogCodes.has(c.code);
+                  !isNew &&
+                  imagingModalMode === "order" &&
+                  encounterImagingCatalogCodes.has(c.code);
                 const label = (c.view_field_label ?? "VIEW").trim() || "VIEW";
                 return (
                   <Box key={c.code}>
@@ -2815,10 +3218,14 @@ export default function PlansTreatmentPanel({
                       control={
                         <Checkbox
                           size="small"
-                          checked={row.checked || alreadyOnEncounter}
-                          disabled={alreadyOnEncounter}
+                          checked={
+                            alreadyOnEncounter || lockedByPackage
+                              ? true
+                              : row.checked
+                          }
+                          disabled={alreadyOnEncounter || lockedByPackage}
                           onChange={(_, checked) => {
-                            if (alreadyOnEncounter) return;
+                            if (alreadyOnEncounter || lockedByPackage) return;
                             setImagingForm((prev) => ({
                               ...prev,
                               [c.code]: { ...(prev[c.code] ?? { checked: false, view: "" }), checked },
@@ -2840,15 +3247,17 @@ export default function PlansTreatmentPanel({
                             sx={{
                               fontWeight: 800,
                               whiteSpace: "nowrap",
-                              color: coveredByPackage || alreadyOnEncounter ? "text.secondary" : undefined,
-                              fontStyle: coveredByPackage || alreadyOnEncounter ? "italic" : undefined,
+                              color: lockedByPackage || coveredByPackage || alreadyOnEncounter ? "text.secondary" : undefined,
+                              fontStyle: lockedByPackage || coveredByPackage || alreadyOnEncounter ? "italic" : undefined,
                             }}
                           >
                             {alreadyOnEncounter
                               ? "Already ordered on this visit"
-                              : coveredByPackage
+                              : lockedByPackage
                                 ? "Included in package"
-                                : money2(Number(c.default_price))}
+                                : coveredByPackage
+                                  ? "Included in package"
+                                  : money2(Number(c.default_price))}
                           </Typography>
                         </Box>
                       }
@@ -2906,17 +3315,24 @@ export default function PlansTreatmentPanel({
               void (async () => {
                 const catalogForSave =
                   imagingCatalog.length > 0 ? imagingCatalog : imagingCatalogRef.current;
+
+                if (isNew) {
+                  const del = await deleteImagingRequestsForEncounter(transId);
+                  if (del.error) {
+                    setImagingCatalogError(del.error);
+                    return;
+                  }
+                }
+
                 const encounterOrderState = {
                   labTestIds: requestedTestIdSet,
                   packageIds: requestedPackageIdSet,
                   imagingCatalogIds: new Set<string>(),
                   imagingCatalogCodes: encounterImagingCatalogCodes,
                 };
-                const selectionToSave = filterNewImagingSelection(
-                  imagingForm,
-                  encounterOrderState,
-                  catalogForSave,
-                );
+                const selectionToSave = isNew
+                  ? imagingForm
+                  : filterNewImagingSelection(imagingForm, encounterOrderState, catalogForSave);
                 const lines = buildImagingRequestLinesFromCatalog(catalogForSave, selectionToSave);
                 if (lines.length > 0 && imagingSelectionHasChecked(selectionToSave)) {
                   const patientId = Number(patient.patientId);
@@ -2941,7 +3357,11 @@ export default function PlansTreatmentPanel({
                       return;
                     }
                   }
-                } else if (imagingModalMode === "order" && imagingSelectionHasChecked(imagingForm)) {
+                } else if (
+                  !isNew &&
+                  imagingModalMode === "order" &&
+                  imagingSelectionHasChecked(imagingForm)
+                ) {
                   setImagingCatalogError("All selected imaging studies are already ordered on this visit.");
                   return;
                 }
@@ -3387,6 +3807,18 @@ export default function PlansTreatmentPanel({
           </Button>
         </DialogActions>
       </Dialog>
+
+      <PackageSelectionConfirmDialog
+        open={packageAddConfirm != null}
+        packageName={packageAddConfirm?.pkg.name ?? ""}
+        labTestNames={packageAddConfirm?.labTestNames ?? []}
+        imagingStudyNames={packageAddConfirm?.imagingStudyNames ?? []}
+        onCancel={() => setPackageAddConfirm(null)}
+        onConfirm={() => {
+          if (packageAddConfirm) applyAddLabPackage(packageAddConfirm.pkg);
+          setPackageAddConfirm(null);
+        }}
+      />
 
       <Snackbar
         open={labToastOpen}

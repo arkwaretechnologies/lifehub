@@ -73,11 +73,12 @@ import {
 import { canRecallQueueTicket, recallQueueButtonTooltip } from "@/lib/queueRecall";
 import PatientAddDialog from "@/components/patient/PatientAddDialog";
 import { LabOrderCatalogSections } from "@/components/laboratory/LabOrderCatalogSections";
+import { PackageSelectionConfirmDialog } from "@/components/laboratory/PackageSelectionConfirmDialog";
+import { getCachedLabCatalogAndPackages } from "@/lib/labCatalogCache";
 import {
   applyPanelLabTestToggle,
   collapseComponentsToPanel,
   expandPanelTestIds,
-  fetchLabCatalogGrouped,
   getComponentTestIds,
   testHasPanelComponents,
   type LabCatalogSection,
@@ -85,10 +86,12 @@ import {
 } from "@/lib/labTests";
 import { fetchActiveLabPricesByTestIds } from "@/lib/labServicePrices";
 import {
-  applyPackageImagingSelection,
-  fetchActiveLabPackagesWithTests,
+  getLabPackageAddConflicts,
+  hasLabPackageAddConflicts,
   imagingCatalogCodesCoveredByPackages,
   labPackageHasMembers,
+  syncImagingFormWithSelectedPackages,
+  applyRemovedPackageImagingSelection,
   type LabPackageWithTests,
 } from "@/lib/labPackages";
 import {
@@ -886,6 +889,7 @@ export default function ReceptionDesk() {
   const [labSections, setLabSections] = useState<LabCatalogSection[]>([]);
   const [labPriceByTestId, setLabPriceByTestId] = useState<Map<string, number>>(() => new Map());
   const [labLoading, setLabLoading] = useState(false);
+  const [labPricesLoading, setLabPricesLoading] = useState(false);
   const [selectedLabTestIds, setSelectedLabTestIds] = useState<Set<string>>(new Set());
   const [labSubTab, setLabSubTab] = useState(0);
   const [labPackages, setLabPackages] = useState<LabPackageWithTests[]>([]);
@@ -897,6 +901,11 @@ export default function ReceptionDesk() {
   const [encounterRequestedPackageIds, setEncounterRequestedPackageIds] = useState<Set<number>>(() => new Set());
   const [encounterImagingCatalogCodes, setEncounterImagingCatalogCodes] = useState<Set<string>>(() => new Set());
   const [orderSummaryOpen, setOrderSummaryOpen] = useState(false);
+  const [packageAddConfirm, setPackageAddConfirm] = useState<{
+    pkg: LabPackageWithTests;
+    labTestNames: string[];
+    imagingStudyNames: string[];
+  } | null>(null);
   const labDataLoadedTicketIdRef = useRef<string | null>(null);
   const labCatalogTests = useMemo(
     (): LabTestCatalogItem[] => labSections.flatMap((s) => s.tests),
@@ -1013,28 +1022,16 @@ export default function ReceptionDesk() {
     [labCatalogTests],
   );
 
-  const toggleLabPackageSelection = useCallback(
-    (pkg: LabPackageWithTests) => {
-      if (!labPackageHasMembers(pkg)) return;
-      const pkgNum = parseLabRequestPackageId(pkg.id);
-      if (
-        pkgNum != null &&
-        encounterRequestedPackageIds.has(pkgNum) &&
-        !selectedLabPackageIds.has(pkg.id)
-      ) {
-        return;
-      }
-      const wasOn = selectedLabPackageIds.has(pkg.id);
-      setSelectedLabPackageIds((prev) => {
-        const next = new Set(prev);
-        if (wasOn) next.delete(pkg.id);
-        else next.add(pkg.id);
-        return next;
-      });
+  const applyLabPackageSelection = useCallback(
+    (pkg: LabPackageWithTests, turnOn: boolean) => {
+      const remainingPackageIds = new Set(selectedLabPackageIds);
+      if (turnOn) remainingPackageIds.add(pkg.id);
+      else remainingPackageIds.delete(pkg.id);
+      setSelectedLabPackageIds(remainingPackageIds);
       if (pkg.labTestIds.length > 0) {
         setSelectedLabTestIds((sel) => {
           const n2 = new Set(sel);
-          if (wasOn) {
+          if (!turnOn) {
             for (const tid of pkg.labTestIds) {
               n2.delete(tid);
               if (testHasPanelComponents(labCatalogTests, tid)) {
@@ -1052,11 +1049,133 @@ export default function ReceptionDesk() {
           return n2;
         });
       }
-      setImagingForm((prev) =>
-        applyPackageImagingSelection(pkg.imagingCatalogIds, imagingCatalog, prev, !wasOn),
-      );
+      if (imagingCatalog.length > 0) {
+        setImagingForm((prev) =>
+          turnOn
+            ? syncImagingFormWithSelectedPackages(labPackages, remainingPackageIds, imagingCatalog, prev)
+            : applyRemovedPackageImagingSelection(
+                pkg,
+                labPackages,
+                remainingPackageIds,
+                imagingCatalog,
+                prev,
+              ),
+        );
+      }
     },
-    [selectedLabPackageIds, labCatalogTests, imagingCatalog, encounterRequestedPackageIds],
+    [labCatalogTests, imagingCatalog, labPackages, selectedLabPackageIds],
+  );
+
+  const prevSelectedLabPackageIdsRef = useRef<Set<string>>(new Set());
+  const packageSelectionChanged = useCallback(
+    (prev: ReadonlySet<string>, next: ReadonlySet<string>) => {
+      if (prev.size !== next.size) return true;
+      for (const id of prev) {
+        if (!next.has(id)) return true;
+      }
+      for (const id of next) {
+        if (!prev.has(id)) return true;
+      }
+      return false;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (triageRoute !== "laboratory" || !triageTicket) {
+      prevSelectedLabPackageIdsRef.current = new Set();
+      return;
+    }
+    if (imagingCatalog.length === 0) return;
+    const prev = prevSelectedLabPackageIdsRef.current;
+    if (!packageSelectionChanged(prev, selectedLabPackageIds)) return;
+    const removed = [...prev].filter((id) => !selectedLabPackageIds.has(id));
+    prevSelectedLabPackageIdsRef.current = new Set(selectedLabPackageIds);
+    setImagingForm((prevForm) => {
+      let next = prevForm;
+      for (const id of removed) {
+        const removedPkg = labPackages.find((p) => p.id === id);
+        if (!removedPkg) continue;
+        next = applyRemovedPackageImagingSelection(
+          removedPkg,
+          labPackages,
+          selectedLabPackageIds,
+          imagingCatalog,
+          next,
+        );
+      }
+      if (removed.length === 0) {
+        next = syncImagingFormWithSelectedPackages(
+          labPackages,
+          selectedLabPackageIds,
+          imagingCatalog,
+          prevForm,
+        );
+      }
+      return next === prevForm ? prevForm : next;
+    });
+  }, [
+    triageRoute,
+    triageTicket,
+    selectedLabPackageIds,
+    labPackages,
+    imagingCatalog,
+    packageSelectionChanged,
+  ]);
+
+  useEffect(() => {
+    if (triageRoute !== "laboratory" || !triageTicket || imagingCatalog.length === 0) return;
+    if (selectedLabPackageIds.size === 0) return;
+    setImagingForm((prev) =>
+      syncImagingFormWithSelectedPackages(labPackages, selectedLabPackageIds, imagingCatalog, prev),
+    );
+  }, [triageRoute, triageTicket, imagingCatalog, labPackages, selectedLabPackageIds]);
+
+  const requestLabPackageSelection = useCallback(
+    (pkg: LabPackageWithTests) => {
+      if (!labPackageHasMembers(pkg)) return;
+      const pkgNum = parseLabRequestPackageId(pkg.id);
+      if (
+        pkgNum != null &&
+        encounterRequestedPackageIds.has(pkgNum) &&
+        !selectedLabPackageIds.has(pkg.id)
+      ) {
+        return;
+      }
+      const wasOn = selectedLabPackageIds.has(pkg.id);
+      if (wasOn) {
+        applyLabPackageSelection(pkg, false);
+        return;
+      }
+
+      const conflict = getLabPackageAddConflicts(pkg, {
+        selectedTestIds: selectedLabTestIds,
+        testsCoveredByOtherSelectedPackages: testsCoveredBySelectedPackages,
+        imagingForm,
+        imagingCoveredByOtherPackages: imagingCoveredByPackages,
+        encounterImagingCodes: encounterImagingCatalogCodes,
+        labCatalog: labCatalogTests,
+        imagingCatalog,
+      });
+
+      if (hasLabPackageAddConflicts(conflict)) {
+        setPackageAddConfirm({ pkg, ...conflict });
+        return;
+      }
+      applyLabPackageSelection(pkg, true);
+    },
+    [
+      selectedLabPackageIds,
+      selectedLabTestIds,
+      testsCoveredBySelectedPackages,
+      imagingForm,
+      imagingCoveredByPackages,
+      encounterImagingCatalogCodes,
+      labCatalogTests,
+      imagingCatalog,
+      encounterRequestedPackageIds,
+      applyLabPackageSelection,
+    ],
   );
 
   const clearLaboratoryTriageSelections = useCallback(() => {
@@ -1299,23 +1418,27 @@ export default function ReceptionDesk() {
     let cancelled = false;
     void (async () => {
       setLabLoading(true);
+      setLabPricesLoading(false);
       setImagingCatalogError("");
       try {
-        const [catRes, pkgRes, imgRes] = await Promise.all([
-          fetchLabCatalogGrouped(),
-          fetchActiveLabPackagesWithTests(),
+        const [catalogRes, imgRes] = await Promise.all([
+          getCachedLabCatalogAndPackages(),
           fetchActiveImagingCatalog(),
         ]);
         if (cancelled) return;
-        if (!catRes.error) {
-          setLabSections(catRes.sections);
-          const allTestIds = catRes.sections.flatMap((s) => s.tests.map((t) => t.id));
-          const pricesAll = await fetchActiveLabPricesByTestIds(allTestIds);
-          if (!cancelled && !pricesAll.error) {
-            setLabPriceByTestId(pricesAll.pricesByTestId);
-          }
+        if (!catalogRes.catalogError) {
+          setLabSections(catalogRes.sections);
+          const allTestIds = catalogRes.sections.flatMap((s) => s.tests.map((t) => t.id));
+          setLabPricesLoading(true);
+          void fetchActiveLabPricesByTestIds(allTestIds).then((pricesAll) => {
+            if (cancelled) return;
+            if (!pricesAll.error) {
+              setLabPriceByTestId(pricesAll.pricesByTestId);
+            }
+            setLabPricesLoading(false);
+          });
         }
-        if (!pkgRes.error) setLabPackages(pkgRes.packages);
+        if (!catalogRes.packagesError) setLabPackages(catalogRes.packages);
         else setLabPackages([]);
         if (!imgRes.error) {
           setImagingCatalog(imgRes.rows);
@@ -1329,7 +1452,7 @@ export default function ReceptionDesk() {
         if (encId) {
           const imgCatalogRows = !imgRes.error ? imgRes.rows : [];
           const [labEnc, imgState] = await Promise.all([
-            fetchLabRequestsForEncounter(encId),
+            fetchLabRequestsForEncounter(encId, { includePackageDetails: false }),
             fetchEncounterDiagnosticOrderState(supabase, encId, { imagingCatalog: imgCatalogRows }),
           ]);
           if (!cancelled) {
@@ -2098,7 +2221,9 @@ export default function ReceptionDesk() {
                             selectedTestIds={selectedLabTestIds}
                             onToggleTest={toggleLabTestSelection}
                             priceByTestId={labPriceByTestId}
+                            pricesLoading={labPricesLoading}
                             testsCoveredByPackages={testsCoveredBySelectedPackages}
+                            testsLockedByPackage={testsCoveredBySelectedPackages}
                             requestedTestIds={
                               encounterRequestedTestIds.size > 0 ? encounterRequestedTestIds : undefined
                             }
@@ -2124,7 +2249,7 @@ export default function ReceptionDesk() {
                                           size="small"
                                           checked={selectedLabPackageIds.has(pkg.id)}
                                           disabled={alreadyOnEncounter}
-                                          onChange={() => toggleLabPackageSelection(pkg)}
+                                          onChange={() => requestLabPackageSelection(pkg)}
                                         />
                                       }
                                       label={
@@ -2187,7 +2312,7 @@ export default function ReceptionDesk() {
                               <Stack spacing={1.5}>
                                 {imagingCatalog.map((c) => {
                                   const row = imagingForm[c.code] ?? { checked: false, view: "" };
-                                  const coveredByPackage = imagingCoveredByPackages.has(c.code);
+                                  const lockedByPackage = imagingCoveredByPackages.has(c.code);
                                   const alreadyOnEncounter = encounterImagingCatalogCodes.has(c.code);
                                   const label = (c.view_field_label ?? "VIEW").trim() || "VIEW";
                                   return (
@@ -2197,10 +2322,14 @@ export default function ReceptionDesk() {
                                         control={
                                           <Checkbox
                                             size="small"
-                                            checked={row.checked || alreadyOnEncounter}
-                                            disabled={alreadyOnEncounter}
+                                            checked={
+                                              alreadyOnEncounter || lockedByPackage
+                                                ? true
+                                                : row.checked
+                                            }
+                                            disabled={alreadyOnEncounter || lockedByPackage}
                                             onChange={(_, checked) => {
-                                              if (alreadyOnEncounter) return;
+                                              if (alreadyOnEncounter || lockedByPackage) return;
                                               setImagingForm((prev) => ({
                                                 ...prev,
                                                 [c.code]: { ...(prev[c.code] ?? { checked: false, view: "" }), checked },
@@ -2231,12 +2360,12 @@ export default function ReceptionDesk() {
                                               color="text.secondary"
                                               sx={{
                                                 whiteSpace: "nowrap",
-                                                fontStyle: coveredByPackage || alreadyOnEncounter ? "italic" : undefined,
+                                                fontStyle: lockedByPackage || alreadyOnEncounter ? "italic" : undefined,
                                               }}
                                             >
                                               {alreadyOnEncounter
                                                 ? "Already ordered on this visit"
-                                                : coveredByPackage
+                                                : lockedByPackage
                                                   ? "Included in package"
                                                   : formatMoney2(c.default_price)}
                                             </Typography>
@@ -2420,6 +2549,18 @@ export default function ReceptionDesk() {
           />
         </Grid>
       </Grid>
+
+      <PackageSelectionConfirmDialog
+        open={packageAddConfirm != null}
+        packageName={packageAddConfirm?.pkg.name ?? ""}
+        labTestNames={packageAddConfirm?.labTestNames ?? []}
+        imagingStudyNames={packageAddConfirm?.imagingStudyNames ?? []}
+        onCancel={() => setPackageAddConfirm(null)}
+        onConfirm={() => {
+          if (packageAddConfirm) applyLabPackageSelection(packageAddConfirm.pkg, true);
+          setPackageAddConfirm(null);
+        }}
+      />
     </Box>
   );
 }

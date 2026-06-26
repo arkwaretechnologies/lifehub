@@ -49,6 +49,7 @@ import type { LabCategoryRow, LabTestCatalogItem } from "@/lib/labTests";
 import { collapseComponentsToPanel, labTestCategoryPickerLabel } from "@/lib/labTests";
 import { fetchActiveImagingCatalog, type ImagingCatalogRow } from "@/lib/imagingCatalog";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
+import { invalidateLabCatalogCache } from "@/lib/labCatalogCache";
 
 type TestOption = { id: string; label: string };
 
@@ -617,6 +618,7 @@ export default function SettingsLabPackagesPage() {
         return;
       }
       setAddOpen(false);
+      invalidateLabCatalogCache();
       await loadData();
     } catch {
       setAddError("Could not create package.");
@@ -652,6 +654,7 @@ export default function SettingsLabPackagesPage() {
       }
       setEditOpen(false);
       setEditingId(null);
+      invalidateLabCatalogCache();
       await loadData();
     } catch {
       setEditError("Could not update package.");
@@ -675,6 +678,7 @@ export default function SettingsLabPackagesPage() {
       }
       setDeleteOpen(false);
       setDeleteTarget(null);
+      invalidateLabCatalogCache();
       await loadData();
     } catch {
       setDeleteError("Could not delete package.");

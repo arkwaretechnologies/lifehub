@@ -56,6 +56,7 @@ import { splitAllowlistedResultsTemplateCodes } from "@/lib/labResultTemplates";
 import type { LabCategoryRow, LabTestCatalogItem } from "@/lib/labTests";
 import { filterOrderableLabTests, isNonOrderableResultLine } from "@/lib/labTests";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
+import { invalidateLabCatalogCache } from "@/lib/labCatalogCache";
 
 type TestForm = {
   category_id: string;
@@ -534,6 +535,7 @@ export default function SettingsLabTestsPage() {
         return;
       }
       setAddOpen(false);
+      invalidateLabCatalogCache();
       await loadData();
     } catch {
       setAddError("Could not create lab test.");
@@ -564,6 +566,7 @@ export default function SettingsLabTestsPage() {
       }
       setEditOpen(false);
       setEditingId(null);
+      invalidateLabCatalogCache();
       await loadData();
     } catch {
       setEditError("Could not update lab test.");
@@ -589,6 +592,7 @@ export default function SettingsLabTestsPage() {
       }
       setDeleteOpen(false);
       setDeleteTarget(null);
+      invalidateLabCatalogCache();
       await loadData();
     } catch {
       setDeleteError("Could not delete lab test.");

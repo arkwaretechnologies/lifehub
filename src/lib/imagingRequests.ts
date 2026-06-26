@@ -552,3 +552,104 @@ export async function enrichImagingRequestItemsWithCatalogPrint(
     error: null,
   };
 }
+
+/**
+ * Remove unpaid imaging line items that are no longer covered by selected lab packages
+ * or individually checked in the consultation imaging form.
+ */
+export async function pruneUnpaidEncounterImagingToSelection(
+  encounterId: string,
+  activeLabPackageIds: number[],
+  keepIndividualCatalogIds: ReadonlySet<string>,
+): Promise<{ error: string | null }> {
+  const enc = encounterId.trim();
+  if (!enc) return { error: null };
+
+  const { covered, error: covErr } = await resolvePackageCoveredImagingCatalogIds(
+    supabase,
+    activeLabPackageIds,
+  );
+  if (covErr) return { error: covErr };
+
+  const keep = new Set<string>(keepIndividualCatalogIds);
+  for (const cid of covered) keep.add(cid);
+
+  const unpaid = await unpaidImagingRequestIdsForEncounter(supabase, enc);
+  if (unpaid.error) return { error: unpaid.error };
+  if (unpaid.ids.length === 0) return { error: null };
+
+  const { data: itemRows, error: itemErr } = await supabase
+    .from(IMAGING_REQUEST_ITEMS_TABLE)
+    .select("id, imaging_request_id, imaging_catalog_id")
+    .in("imaging_request_id", unpaid.ids);
+  if (itemErr) return { error: itemErr.message };
+
+  const toDelete: string[] = [];
+  for (const row of (itemRows ?? []) as Array<{
+    id?: string;
+    imaging_request_id?: string;
+    imaging_catalog_id?: string | null;
+  }>) {
+    const itemId = String(row.id ?? "").trim();
+    const cid = String(row.imaging_catalog_id ?? "").trim();
+    if (!itemId || !cid) continue;
+    if (!keep.has(cid)) toDelete.push(itemId);
+  }
+
+  if (toDelete.length > 0) {
+    const { error: delErr } = await supabase
+      .from(IMAGING_REQUEST_ITEMS_TABLE)
+      .delete()
+      .in("id", toDelete);
+    if (delErr) return { error: delErr.message };
+  }
+
+  const { data: remainingRows, error: remErr } = await supabase
+    .from(IMAGING_REQUEST_ITEMS_TABLE)
+    .select("imaging_request_id")
+    .in("imaging_request_id", unpaid.ids);
+  if (remErr) return { error: remErr.message };
+
+  const reqsWithItems = new Set(
+    ((remainingRows ?? []) as Array<{ imaging_request_id?: string | null }>)
+      .map((r) => String(r.imaging_request_id ?? "").trim())
+      .filter(Boolean),
+  );
+  const emptyReqIds = unpaid.ids.filter((id) => !reqsWithItems.has(id));
+  if (emptyReqIds.length > 0) {
+    const { error: reqDelErr } = await supabase
+      .from(IMAGING_REQUESTS_TABLE)
+      .delete()
+      .in("id", emptyReqIds);
+    if (reqDelErr) return { error: reqDelErr.message };
+  }
+
+  return { error: null };
+}
+
+export async function deleteImagingRequestsForEncounter(
+  encounterId: string,
+): Promise<{ error: string | null }> {
+  const id = encounterId.trim();
+  if (!id) return { error: null };
+
+  const { data: reqRows, error: reqErr } = await supabase
+    .from(IMAGING_REQUESTS_TABLE)
+    .select("id")
+    .eq("encounter_id", id);
+
+  if (reqErr) return { error: reqErr.message };
+  const reqIds = ((reqRows ?? []) as Array<{ id: string }>).map((r) => r.id).filter(Boolean);
+  if (reqIds.length === 0) return { error: null };
+
+  const { error: itemsErr } = await supabase
+    .from(IMAGING_REQUEST_ITEMS_TABLE)
+    .delete()
+    .in("imaging_request_id", reqIds);
+  if (itemsErr) return { error: itemsErr.message };
+
+  const { error: delErr } = await supabase.from(IMAGING_REQUESTS_TABLE).delete().in("id", reqIds);
+  if (delErr) return { error: delErr.message };
+
+  return { error: null };
+}

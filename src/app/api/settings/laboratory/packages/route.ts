@@ -4,6 +4,7 @@ import { loadOnePackageAdmin, loadPackagesWithMembersAdmin } from "@/lib/labPack
 import { normalizePackageImagingCatalogIdsForStorage } from "@/lib/imagingCatalog";
 import { normalizePackageLabTestIdsForStorage } from "@/lib/labTests";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
+import { afterLaboratoryCatalogSettingsMutation } from "@/lib/cacheInvalidation";
 
 function adminOr500() {
   const db = supabaseAdminClient();
@@ -145,5 +146,6 @@ export async function POST(req: Request) {
   if (loadErr) return NextResponse.json({ error: loadErr }, { status: 400 });
   if (!pkg) return NextResponse.json({ error: "Created package could not be reloaded." }, { status: 500 });
 
+  await afterLaboratoryCatalogSettingsMutation();
   return NextResponse.json({ package: pkg });
 }

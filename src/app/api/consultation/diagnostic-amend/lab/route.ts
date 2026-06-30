@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { applyLabAmendment } from "@/lib/diagnosticAmendments";
+import { afterEncounterReportDataMutation } from "@/lib/cacheInvalidation";
 import { adminReactivateDiagnosticQueueAfterAmendment, queueAdminClient } from "@/lib/receptionQueueServer";
 import { attachPanelLinksToCatalogItems } from "@/lib/labTestPanelLinks";
 import { fetchLabTestCatalogRows, mapLabTestCatalogItem } from "@/lib/labTests";
@@ -74,6 +75,8 @@ export async function POST(req: Request) {
     if (q.error) return NextResponse.json({ error: q.error }, { status: 500 });
     queueDisplay = q.queueDisplay;
   }
+
+  await afterEncounterReportDataMutation();
 
   return NextResponse.json({
     ok: true,

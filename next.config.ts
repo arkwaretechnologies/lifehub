@@ -9,6 +9,19 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: projectRoot,
   },
+  webpack: (config, { isServer }) => {
+    if (!isServer) {
+      config.resolve ??= {};
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        dns: false,
+        net: false,
+        tls: false,
+        fs: false,
+      };
+    }
+    return config;
+  },
   // Allow the ngrok domain to connect to the dev server
   images: { remotePatterns: [{ hostname: "*.ngrok-free.dev" }] }, // Optional: if using images
   async headers() {

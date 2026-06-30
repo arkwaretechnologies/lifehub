@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { LAB_CATEGORIES_TABLE, type LabCategoryRow } from "@/lib/labTests";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
+import { afterLaboratoryCatalogSettingsMutation } from "@/lib/cacheInvalidation";
 
 function adminOr500() {
   const db = supabaseAdminClient();
@@ -71,5 +72,6 @@ export async function POST(req: Request) {
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+  await afterLaboratoryCatalogSettingsMutation();
   return NextResponse.json({ category: data as LabCategoryRow });
 }

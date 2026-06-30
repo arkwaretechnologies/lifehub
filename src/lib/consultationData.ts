@@ -12,6 +12,7 @@ import {
 } from "@/lib/cashierLabQueue";
 import { buildPatientSearchOrFilter, PATIENT_DIRECTORY_SELECT, sanitizePatientSearchQuery } from "@/lib/patientsCatalog";
 import { supabase } from "@/lib/supabaseClient";
+import { invalidateCachesClient } from "@/lib/cacheInvalidateClient";
 import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
 
 const ENCOUNTERS_TABLE = "encounters";
@@ -1222,6 +1223,10 @@ export async function persistEncounterPlansTreatment(
       disposition: form.disposition,
     })
     .eq("trans_id", id);
+
+  if (!error) {
+    invalidateCachesClient(["report"]);
+  }
 
   return { error: error?.message ?? null };
 }

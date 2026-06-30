@@ -82,7 +82,7 @@ import {
 } from "@/lib/labTests";
 import { LabOrderCatalogSections } from "@/components/laboratory/LabOrderCatalogSections";
 import { PackageSelectionConfirmDialog } from "@/components/laboratory/PackageSelectionConfirmDialog";
-import { getCachedLabCatalogAndPackages } from "@/lib/labCatalogCache";
+import { getCachedLabCatalogAndPackages, invalidateLabCatalogCache, LAB_CATALOG_INVALIDATED_EVENT } from "@/lib/labCatalogCache";
 import { fetchActiveLabPricesByTestIds } from "@/lib/labServicePrices";
 import {
   getLabPackageAddConflicts,
@@ -1488,6 +1488,14 @@ export default function PlansTreatmentPanel({
     window.addEventListener("lifehub:lab-requests-updated", handler);
     return () => window.removeEventListener("lifehub:lab-requests-updated", handler);
   }, [transId, syncPaidAndResultsFromRequestIds, syncPaidImagingForEncounter]);
+
+  useEffect(() => {
+    const onCatalogInvalidated = () => {
+      invalidateLabCatalogCache();
+    };
+    window.addEventListener(LAB_CATALOG_INVALIDATED_EVENT, onCatalogInvalidated);
+    return () => window.removeEventListener(LAB_CATALOG_INVALIDATED_EVENT, onCatalogInvalidated);
+  }, []);
 
   const toggleLabTestSelection = useCallback(
     (testId: string) => {

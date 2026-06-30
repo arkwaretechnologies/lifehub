@@ -54,6 +54,11 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
+  // Ops / connectivity probes (no session cookie in browser address bar).
+  if (pathname.startsWith("/api/health/")) {
+    return NextResponse.next();
+  }
+
   const authHeader =
     request.headers.get("authorization") ?? request.headers.get("Authorization") ?? "";
   const m = authHeader.match(/^Bearer\s+(.+)$/i);

@@ -35,6 +35,7 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import type { LabCategoryRow } from "@/lib/labTests";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
+import { invalidateLabCatalogCache } from "@/lib/labCatalogCache";
 
 type CategoryForm = {
   code: string;
@@ -208,6 +209,7 @@ export default function SettingsLabCategoriesPage() {
         return;
       }
       setAddOpen(false);
+      invalidateLabCatalogCache();
       await loadCategories();
     } catch {
       setAddError("Could not create category.");
@@ -252,6 +254,7 @@ export default function SettingsLabCategoriesPage() {
       }
       setEditOpen(false);
       setEditingId(null);
+      invalidateLabCatalogCache();
       await loadCategories();
     } catch {
       setEditError("Could not update category.");
@@ -275,6 +278,7 @@ export default function SettingsLabCategoriesPage() {
       }
       setDeleteOpen(false);
       setDeleteTarget(null);
+      invalidateLabCatalogCache();
       await loadCategories();
     } catch {
       setDeleteError("Could not delete category.");

@@ -15,8 +15,13 @@ type LabCatalogCacheEntry = {
 
 let catalogCache: LabCatalogCacheEntry | null = null;
 
+export const LAB_CATALOG_INVALIDATED_EVENT = "lifehub:lab-catalog-invalidated";
+
 export function invalidateLabCatalogCache(): void {
   catalogCache = null;
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(LAB_CATALOG_INVALIDATED_EVENT));
+  }
 }
 
 export type CachedLabCatalogResult = {

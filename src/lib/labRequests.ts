@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabaseClient";
+import { invalidateCachesClient } from "@/lib/cacheInvalidateClient";
 import { fetchLabPackageDetailsMap, fetchLabPackageMemberTestIdsMap, fetchLabPackageIdsForTestIds, type LabPackageDetail } from "@/lib/labPackages";
 import { validateEncounterLabCreate } from "@/lib/encounterDiagnosticOrderState";
 import { syncUnpaidImagingItemsToPackageCoverage, ensureImagingRequestForLabPackages } from "@/lib/imagingRequests";
@@ -218,6 +219,8 @@ export async function createLabRequestWithItems(
       return { labRequestId: null, error: ensured.error };
     }
   }
+
+  invalidateCachesClient(["report"]);
 
   return { labRequestId, error: null };
 }

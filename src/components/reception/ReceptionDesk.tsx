@@ -74,7 +74,7 @@ import { canRecallQueueTicket, recallQueueButtonTooltip } from "@/lib/queueRecal
 import PatientAddDialog from "@/components/patient/PatientAddDialog";
 import { LabOrderCatalogSections } from "@/components/laboratory/LabOrderCatalogSections";
 import { PackageSelectionConfirmDialog } from "@/components/laboratory/PackageSelectionConfirmDialog";
-import { getCachedLabCatalogAndPackages } from "@/lib/labCatalogCache";
+import { getCachedLabCatalogAndPackages, invalidateLabCatalogCache, LAB_CATALOG_INVALIDATED_EVENT } from "@/lib/labCatalogCache";
 import {
   applyPanelLabTestToggle,
   collapseComponentsToPanel,
@@ -900,6 +900,14 @@ export default function ReceptionDesk() {
   const [encounterRequestedTestIds, setEncounterRequestedTestIds] = useState<Set<string>>(() => new Set());
   const [encounterRequestedPackageIds, setEncounterRequestedPackageIds] = useState<Set<number>>(() => new Set());
   const [encounterImagingCatalogCodes, setEncounterImagingCatalogCodes] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    const onCatalogInvalidated = () => {
+      invalidateLabCatalogCache();
+    };
+    window.addEventListener(LAB_CATALOG_INVALIDATED_EVENT, onCatalogInvalidated);
+    return () => window.removeEventListener(LAB_CATALOG_INVALIDATED_EVENT, onCatalogInvalidated);
+  }, []);
   const [orderSummaryOpen, setOrderSummaryOpen] = useState(false);
   const [packageAddConfirm, setPackageAddConfirm] = useState<{
     pkg: LabPackageWithTests;

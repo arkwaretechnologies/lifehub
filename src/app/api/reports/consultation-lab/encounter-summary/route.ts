@@ -9,8 +9,9 @@ import {
 import { PHARMACY_SALES_TABLE } from "@/lib/pharmacyPosDb";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
 import { readUpstashJson, writeUpstashJson } from "@/lib/upstashCache";
+import { isReportCacheEnabled, reportCacheTtlSeconds } from "@/lib/redis/config";
 
-const ENCOUNTER_SUMMARY_CACHE_TTL_SECONDS = 180;
+const ENCOUNTER_SUMMARY_CACHE_TTL_SECONDS = reportCacheTtlSeconds();
 
 type EncounterRow = {
   trans_id: string;
@@ -36,8 +37,10 @@ export async function GET(req: NextRequest) {
   const { period, range } = parsed;
   const key = encounterSummaryCacheKey(period, range);
 
-  const cached = await readUpstashJson<EncounterSummaryResponse>(key);
-  if (cached) return NextResponse.json({ ...cached, cacheHit: true });
+  if (isReportCacheEnabled()) {
+    const cached = await readUpstashJson<EncounterSummaryResponse>(key);
+    if (cached) return NextResponse.json({ ...cached, cacheHit: true });
+  }
 
   const { data: encounters, error: encErr } = await admin
     .from("encounters")
@@ -125,6 +128,8 @@ export async function GET(req: NextRequest) {
     cacheHit: false,
   };
 
-  await writeUpstashJson(key, payload, ENCOUNTER_SUMMARY_CACHE_TTL_SECONDS);
+  if (isReportCacheEnabled()) {
+    await writeUpstashJson(key, payload, ENCOUNTER_SUMMARY_CACHE_TTL_SECONDS);
+  }
   return NextResponse.json(payload);
 }

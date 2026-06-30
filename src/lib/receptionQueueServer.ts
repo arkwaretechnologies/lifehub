@@ -21,6 +21,7 @@ import { insertLabQueueNewRequestNotifications } from "@/lib/labQueueNotificatio
 import { computeLabRequestQueueCollectionState } from "@/lib/labQueueTicketSync";
 import { applyActiveDeptToNotes } from "@/lib/queueActiveDept";
 import { validateEncounterLabCreate, validateEncounterImagingCreate } from "@/lib/encounterDiagnosticOrderState";
+import { afterEncounterReportDataMutation } from "@/lib/cacheInvalidation";
 import {
   fetchLabRequestPackageIdsByRequestIdMap,
   LAB_REQUEST_ITEMS_TABLE,
@@ -520,6 +521,7 @@ async function adminCreateEncounterForPatient(patientId: number): Promise<{ tran
   if (error) return { transId: null, error: error.message };
   const transId = (data as { trans_id?: string } | null)?.trans_id ?? null;
   if (!transId) return { transId: null, error: "Encounter was not created." };
+  void afterEncounterReportDataMutation();
   return { transId, error: null };
 }
 
@@ -658,6 +660,8 @@ async function adminCreateLabRequestWithItems(input: {
     }
     imagingRequestId = ensured.imagingRequestId ?? null;
   }
+
+  void afterEncounterReportDataMutation();
 
   return { labRequestId, imagingRequestId, error: null };
 }

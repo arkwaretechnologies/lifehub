@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getBearerSessionUserId } from "@/lib/requireSession";
 import { completePharmacySale, generateOrNumber, type CompletePharmacySaleInput } from "@/lib/pharmacyPosDb";
+import { afterEncounterReportDataMutation } from "@/lib/cacheInvalidation";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
 
 export async function POST(req: Request) {
@@ -46,6 +47,8 @@ export async function POST(req: Request) {
   if (!saleId) {
     return NextResponse.json({ error: "Checkout failed." }, { status: 500 });
   }
+
+  await afterEncounterReportDataMutation();
 
   return NextResponse.json({ saleId, orNumber });
 }

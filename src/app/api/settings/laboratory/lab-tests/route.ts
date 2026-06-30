@@ -18,6 +18,7 @@ import {
 } from "@/lib/labServicePrices";
 import { attachPanelLinksToCatalogItems, syncLabTestPanelLinks } from "@/lib/labTestPanelLinks";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
+import { afterLaboratoryCatalogSettingsMutation } from "@/lib/cacheInvalidation";
 
 async function loadPanelTargets(
   db: NonNullable<ReturnType<typeof supabaseAdminClient>>,
@@ -241,5 +242,6 @@ export async function POST(req: Request) {
     panel_lab_test_ids: orderableCheck.panel_lab_test_ids,
   };
 
+  await afterLaboratoryCatalogSettingsMutation();
   return NextResponse.json({ test });
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { ImagingLineSelection } from "@/lib/imagingCatalog";
 import { applyImagingAmendment } from "@/lib/diagnosticAmendments";
+import { afterEncounterReportDataMutation } from "@/lib/cacheInvalidation";
 import { fetchActiveImagingCatalog } from "@/lib/imagingCatalog";
 import { adminReactivateDiagnosticQueueAfterAmendment, queueAdminClient } from "@/lib/receptionQueueServer";
 
@@ -63,6 +64,8 @@ export async function POST(req: Request) {
     if (q.error) return NextResponse.json({ error: q.error }, { status: 500 });
     queueDisplay = q.queueDisplay;
   }
+
+  await afterEncounterReportDataMutation();
 
   return NextResponse.json({
     ok: true,

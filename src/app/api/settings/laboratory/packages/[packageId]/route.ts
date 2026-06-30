@@ -12,6 +12,7 @@ import { LAB_REQUEST_PACKAGES_TABLE } from "@/lib/labRequests";
 import { normalizePackageImagingCatalogIdsForStorage } from "@/lib/imagingCatalog";
 import { normalizePackageLabTestIdsForStorage } from "@/lib/labTests";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
+import { afterLaboratoryCatalogSettingsMutation } from "@/lib/cacheInvalidation";
 
 function adminOr500() {
   const db = supabaseAdminClient();
@@ -161,6 +162,7 @@ export async function PATCH(
   if (loadErr) return NextResponse.json({ error: loadErr }, { status: 400 });
   if (!pkg) return NextResponse.json({ error: "Package not found." }, { status: 404 });
 
+  await afterLaboratoryCatalogSettingsMutation();
   return NextResponse.json({ package: pkg });
 }
 
@@ -202,5 +204,6 @@ export async function DELETE(
   const { error } = await db.from(LAB_PACKAGES_TABLE).delete().eq("id", packageId);
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
+  await afterLaboratoryCatalogSettingsMutation();
   return NextResponse.json({ ok: true });
 }

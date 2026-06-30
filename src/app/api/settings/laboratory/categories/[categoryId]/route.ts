@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { LAB_CATEGORIES_TABLE, LAB_TESTS_TABLE, type LabCategoryRow } from "@/lib/labTests";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
+import { afterLaboratoryCatalogSettingsMutation } from "@/lib/cacheInvalidation";
 
 function adminOr500() {
   const db = supabaseAdminClient();
@@ -77,6 +78,7 @@ export async function PATCH(
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
   if (!data) return NextResponse.json({ error: "Category not found." }, { status: 404 });
 
+  await afterLaboratoryCatalogSettingsMutation();
   return NextResponse.json({ category: data as LabCategoryRow });
 }
 
@@ -109,5 +111,6 @@ export async function DELETE(
   const { error } = await db.from(LAB_CATEGORIES_TABLE).delete().eq("id", categoryId);
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
+  await afterLaboratoryCatalogSettingsMutation();
   return NextResponse.json({ ok: true });
 }

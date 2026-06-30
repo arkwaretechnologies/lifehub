@@ -7,6 +7,7 @@ import {
   validateEncounterImagingCreate,
 } from "@/lib/encounterDiagnosticOrderState";
 import { supabase } from "@/lib/supabaseClient";
+import { invalidateCachesClient } from "@/lib/cacheInvalidateClient";
 import {
   buildImagingRequestLinesFromCatalog,
   fetchActiveImagingCatalogForDb,
@@ -329,6 +330,8 @@ async function createImagingRequestWithItemsOnDb(
     const sync = await syncUnpaidImagingItemsToPackageCoverage(db, enc, packageIds);
     if (sync.error) return { imagingRequestId: null, error: sync.error };
   }
+
+  invalidateCachesClient(["report"]);
 
   return { imagingRequestId, error: null };
 }

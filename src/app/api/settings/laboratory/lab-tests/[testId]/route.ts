@@ -24,6 +24,7 @@ import {
   syncLabTestPanelLinks,
 } from "@/lib/labTestPanelLinks";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
+import { afterLaboratoryCatalogSettingsMutation } from "@/lib/cacheInvalidation";
 
 async function loadPanelTargets(
   db: NonNullable<ReturnType<typeof supabaseAdminClient>>,
@@ -289,6 +290,7 @@ export async function PATCH(
   if (attached.error) return NextResponse.json({ error: attached.error }, { status: 400 });
   test = attached.tests[0] ?? test;
 
+  await afterLaboratoryCatalogSettingsMutation();
   return NextResponse.json({ test });
 }
 
@@ -330,5 +332,6 @@ export async function DELETE(
   const { error } = await db.from(LAB_TESTS_TABLE).delete().eq("id", testId);
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
+  await afterLaboratoryCatalogSettingsMutation();
   return NextResponse.json({ ok: true });
 }

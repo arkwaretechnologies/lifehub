@@ -73,6 +73,7 @@ export function parseImagingSignatoryRole(raw: string): ImagingSignatureRole | n
   const r = raw.trim().toLowerCase();
   if (r === "radtech" || r === "radiologic_technologist") return "radtech";
   if (r === "radiologist") return "radiologist";
+  if (r === "cardiologist") return "cardiologist";
   return null;
 }
 

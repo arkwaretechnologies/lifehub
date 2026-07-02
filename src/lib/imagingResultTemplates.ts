@@ -1,5 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import path from "path";
+import {
+  IMAGING_SIGNATURE_ROLES,
+  type ImagingSignatureRole,
+} from "@/lib/imagingResultSignatures";
 import type { LabResultImagePosition, LabResultPrintPosition } from "@/lib/labResultsPrintLayout";
 import {
   buildImageLayoutJsonFromFormFields,
@@ -24,10 +28,10 @@ export type ImagingResultTemplateSignatureSlot = {
   signature: LabResultImagePosition | null;
 };
 
-export type ImagingResultTemplateSignatureLayout = {
-  radtech: ImagingResultTemplateSignatureSlot;
-  radiologist: ImagingResultTemplateSignatureSlot;
-};
+export type ImagingResultTemplateSignatureLayout = Record<
+  ImagingSignatureRole,
+  ImagingResultTemplateSignatureSlot
+>;
 
 export type ImagingResultTemplateResultLayout = {
   examination_name: LabResultPrintPosition | null;
@@ -82,17 +86,15 @@ function parseSignatureSlot(raw: unknown): ImagingResultTemplateSignatureSlot {
 export function parseTemplateSignatureLayout(raw: unknown): ImagingResultTemplateSignatureLayout | null {
   if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return null;
   const rec = raw as Record<string, unknown>;
-  const radtech = parseSignatureSlot(rec.radtech);
-  const radiologist = parseSignatureSlot(rec.radiologist);
-  const hasAny =
-    radtech.name != null ||
-    radtech.license != null ||
-    radtech.signature != null ||
-    radiologist.name != null ||
-    radiologist.license != null ||
-    radiologist.signature != null;
+  const layout = {} as ImagingResultTemplateSignatureLayout;
+  let hasAny = false;
+  for (const role of IMAGING_SIGNATURE_ROLES) {
+    const slot = parseSignatureSlot(rec[role]);
+    layout[role] = slot;
+    if (slot.name != null || slot.license != null || slot.signature != null) hasAny = true;
+  }
   if (!hasAny) return null;
-  return { radtech, radiologist };
+  return layout;
 }
 
 function mapTemplateRow(row: Record<string, unknown>): ImagingResultTemplateRow {
@@ -216,29 +218,14 @@ export function parseTemplateResultLayoutInput(
 }
 
 export function buildSignatureLayoutJsonFromForm(
-  radtechName: LabResultPrintPosition | null,
-  radtechLicense: LabResultPrintPosition | null,
-  radtechSignature: LabResultImagePosition | null,
-  radiologistName: LabResultPrintPosition | null,
-  radiologistLicense: LabResultPrintPosition | null,
-  radiologistSignature: LabResultImagePosition | null,
+  slots: ImagingResultTemplateSignatureLayout,
 ): ImagingResultTemplateSignatureLayout | null {
-  const layout: ImagingResultTemplateSignatureLayout = {
-    radtech: { name: radtechName, license: radtechLicense, signature: radtechSignature },
-    radiologist: {
-      name: radiologistName,
-      license: radiologistLicense,
-      signature: radiologistSignature,
-    },
-  };
-  const hasAny =
-    radtechName != null ||
-    radtechLicense != null ||
-    radtechSignature != null ||
-    radiologistName != null ||
-    radiologistLicense != null ||
-    radiologistSignature != null;
-  return hasAny ? layout : null;
+  let hasAny = false;
+  for (const role of IMAGING_SIGNATURE_ROLES) {
+    const slot = slots[role];
+    if (slot.name != null || slot.license != null || slot.signature != null) hasAny = true;
+  }
+  return hasAny ? slots : null;
 }
 
 function parsePositionField(raw: unknown): LabResultPrintPosition | null {
@@ -255,32 +242,19 @@ export function parseTemplateSignatureLayoutInput(
     return { ok: false, error: "signature_layout must be an object." };
   }
   const rec = raw as Record<string, unknown>;
-  const radRaw = rec.radtech;
-  const radDocRaw = rec.radiologist;
-  const radtech =
-    radRaw != null && typeof radRaw === "object" && !Array.isArray(radRaw)
-      ? {
-          name: parsePositionField((radRaw as Record<string, unknown>).name),
-          license: parsePositionField((radRaw as Record<string, unknown>).license),
-          signature: parseResultsImageLayout((radRaw as Record<string, unknown>).signature),
-        }
-      : { name: null, license: null, signature: null };
-  const radiologist =
-    radDocRaw != null && typeof radDocRaw === "object" && !Array.isArray(radDocRaw)
-      ? {
-          name: parsePositionField((radDocRaw as Record<string, unknown>).name),
-          license: parsePositionField((radDocRaw as Record<string, unknown>).license),
-          signature: parseResultsImageLayout((radDocRaw as Record<string, unknown>).signature),
-        }
-      : { name: null, license: null, signature: null };
-  const value = buildSignatureLayoutJsonFromForm(
-    radtech.name,
-    radtech.license,
-    radtech.signature,
-    radiologist.name,
-    radiologist.license,
-    radiologist.signature,
-  );
+  const layout = {} as ImagingResultTemplateSignatureLayout;
+  for (const role of IMAGING_SIGNATURE_ROLES) {
+    const roleRaw = rec[role];
+    layout[role] =
+      roleRaw != null && typeof roleRaw === "object" && !Array.isArray(roleRaw)
+        ? {
+            name: parsePositionField((roleRaw as Record<string, unknown>).name),
+            license: parsePositionField((roleRaw as Record<string, unknown>).license),
+            signature: parseResultsImageLayout((roleRaw as Record<string, unknown>).signature),
+          }
+        : { name: null, license: null, signature: null };
+  }
+  const value = buildSignatureLayoutJsonFromForm(layout);
   return { ok: true, value };
 }
 
@@ -291,6 +265,9 @@ export type TemplateSignatureLayoutFormFields = {
   radiologist_name: PrintLayoutFormFields;
   radiologist_license: PrintLayoutFormFields;
   radiologist_signature: ImageLayoutFormFields;
+  cardiologist_name: PrintLayoutFormFields;
+  cardiologist_license: PrintLayoutFormFields;
+  cardiologist_signature: ImageLayoutFormFields;
 };
 
 export function emptyTemplateSignatureLayoutFormFields(): TemplateSignatureLayoutFormFields {
@@ -301,6 +278,9 @@ export function emptyTemplateSignatureLayoutFormFields(): TemplateSignatureLayou
     radiologist_name: emptyPrintLayoutFormFields(),
     radiologist_license: emptyPrintLayoutFormFields(),
     radiologist_signature: emptyImageLayoutFormFields(),
+    cardiologist_name: emptyPrintLayoutFormFields(),
+    cardiologist_license: emptyPrintLayoutFormFields(),
+    cardiologist_signature: emptyImageLayoutFormFields(),
   };
 }
 
@@ -309,14 +289,13 @@ export function templateSignatureLayoutFormFieldsFromDb(
 ): TemplateSignatureLayoutFormFields {
   const empty = emptyTemplateSignatureLayoutFormFields();
   if (!layout) return empty;
-  return {
-    radtech_name: printLayoutFormFieldsFromDb(layout.radtech.name),
-    radtech_license: printLayoutFormFieldsFromDb(layout.radtech.license),
-    radtech_signature: imageLayoutFormFieldsFromDb(layout.radtech.signature),
-    radiologist_name: printLayoutFormFieldsFromDb(layout.radiologist.name),
-    radiologist_license: printLayoutFormFieldsFromDb(layout.radiologist.license),
-    radiologist_signature: imageLayoutFormFieldsFromDb(layout.radiologist.signature),
-  };
+  const out = { ...empty };
+  for (const role of IMAGING_SIGNATURE_ROLES) {
+    out[`${role}_name`] = printLayoutFormFieldsFromDb(layout[role].name);
+    out[`${role}_license`] = printLayoutFormFieldsFromDb(layout[role].license);
+    out[`${role}_signature`] = imageLayoutFormFieldsFromDb(layout[role].signature);
+  }
+  return out;
 }
 
 function parseImageSlotFromFormFields(
@@ -328,26 +307,21 @@ function parseImageSlotFromFormFields(
 export function buildTemplateSignatureLayoutFromFormFields(
   fields: TemplateSignatureLayoutFormFields,
 ): { ok: true; value: ImagingResultTemplateSignatureLayout | null } | { ok: false; error: string } {
-  const radName = parseSlotFromFormFields(fields.radtech_name);
-  if (!radName.ok) return radName;
-  const radLic = parseSlotFromFormFields(fields.radtech_license);
-  if (!radLic.ok) return radLic;
-  const radSig = parseImageSlotFromFormFields(fields.radtech_signature);
-  if (!radSig.ok) return radSig;
-  const docName = parseSlotFromFormFields(fields.radiologist_name);
-  if (!docName.ok) return docName;
-  const docLic = parseSlotFromFormFields(fields.radiologist_license);
-  if (!docLic.ok) return docLic;
-  const docSig = parseImageSlotFromFormFields(fields.radiologist_signature);
-  if (!docSig.ok) return docSig;
-  const value = buildSignatureLayoutJsonFromForm(
-    radName.value,
-    radLic.value,
-    radSig.value,
-    docName.value,
-    docLic.value,
-    docSig.value,
-  );
+  const layout = {} as ImagingResultTemplateSignatureLayout;
+  for (const role of IMAGING_SIGNATURE_ROLES) {
+    const name = parseSlotFromFormFields(fields[`${role}_name`]);
+    if (!name.ok) return name;
+    const license = parseSlotFromFormFields(fields[`${role}_license`]);
+    if (!license.ok) return license;
+    const signature = parseImageSlotFromFormFields(fields[`${role}_signature`]);
+    if (!signature.ok) return signature;
+    layout[role] = {
+      name: name.value,
+      license: license.value,
+      signature: signature.value,
+    };
+  }
+  const value = buildSignatureLayoutJsonFromForm(layout);
   return { ok: true, value };
 }
 

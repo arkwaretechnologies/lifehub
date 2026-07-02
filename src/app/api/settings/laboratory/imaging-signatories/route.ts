@@ -4,6 +4,7 @@ import {
   upsertImagingResultSignatories,
   type ImagingResultSignatoriesPayload,
 } from "@/lib/imagingResultSignatories";
+import { IMAGING_SIGNATURE_ROLES } from "@/lib/imagingResultSignatures";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
 
 function adminOr500() {
@@ -34,9 +35,9 @@ export async function PATCH(req: Request) {
   if (!db || res) return res!;
 
   const body = (await req.json().catch(() => null)) as ImagingResultSignatoriesPayload | null;
-  if (!body || (body.radtech === undefined && body.radiologist === undefined)) {
+  if (!body || IMAGING_SIGNATURE_ROLES.every((role) => body[role] === undefined)) {
     return NextResponse.json(
-      { error: "Provide radtech and/or radiologist fields to update." },
+      { error: "Provide at least one signatory role (radtech, radiologist, cardiologist) to update." },
       { status: 400 },
     );
   }

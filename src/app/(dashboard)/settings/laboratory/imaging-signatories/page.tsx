@@ -17,6 +17,11 @@ import SaveOutlinedIcon from "@mui/icons-material/SaveOutlined";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import SignatureUploadField from "@/components/SignatureUploadField";
 import { useAppToast } from "@/hooks/useAppToast";
+import {
+  IMAGING_SIGNATURE_ROLE_LABELS,
+  IMAGING_SIGNATURE_ROLES,
+  type ImagingSignatureRole,
+} from "@/lib/imagingResultSignatures";
 import type { ImagingResultSignatoriesMap } from "@/lib/imagingResultSignatories";
 
 type SignatoryForm = {
@@ -24,46 +29,56 @@ type SignatoryForm = {
   license_no: string;
 };
 
-type SignatoryKey = "radtech" | "radiologist";
+type SignatoryFormState = Record<ImagingSignatureRole, SignatoryForm>;
+
+const SIGNATORY_SECTIONS = IMAGING_SIGNATURE_ROLES.map((key) => ({
+  key,
+  title: IMAGING_SIGNATURE_ROLE_LABELS[key],
+}));
 
 const fieldSx = {
   fullWidth: true as const,
   sx: { "& .MuiOutlinedInput-root": { minHeight: 44, borderRadius: 2 } },
 };
 
-function mapToForm(s: ImagingResultSignatoriesMap): { radtech: SignatoryForm; radiologist: SignatoryForm } {
+function emptyForm(): SignatoryFormState {
   return {
-    radtech: {
-      full_name: s.radtech.full_name ?? "",
-      license_no: s.radtech.license_no ?? "",
-    },
-    radiologist: {
-      full_name: s.radiologist.full_name ?? "",
-      license_no: s.radiologist.license_no ?? "",
-    },
+    radtech: { full_name: "", license_no: "" },
+    radiologist: { full_name: "", license_no: "" },
+    cardiologist: { full_name: "", license_no: "" },
   };
 }
 
+function mapToForm(s: ImagingResultSignatoriesMap): SignatoryFormState {
+  const out = emptyForm();
+  for (const role of IMAGING_SIGNATURE_ROLES) {
+    out[role] = {
+      full_name: s[role].full_name ?? "",
+      license_no: s[role].license_no ?? "",
+    };
+  }
+  return out;
+}
+
+function emptyPreviewState(): Record<ImagingSignatureRole, string | null> {
+  return { radtech: null, radiologist: null, cardiologist: null };
+}
+
+function emptyHasState(): Record<ImagingSignatureRole, boolean> {
+  return { radtech: false, radiologist: false, cardiologist: false };
+}
+
 export default function SettingsImagingSignatoriesPage() {
-  const [form, setForm] = useState<{ radtech: SignatoryForm; radiologist: SignatoryForm }>({
-    radtech: { full_name: "", license_no: "" },
-    radiologist: { full_name: "", license_no: "" },
-  });
+  const [form, setForm] = useState<SignatoryFormState>(emptyForm);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
-  const [sigPreview, setSigPreview] = useState<{ radtech: string | null; radiologist: string | null }>({
-    radtech: null,
-    radiologist: null,
-  });
-  const [sigHas, setSigHas] = useState<{ radtech: boolean; radiologist: boolean }>({
-    radtech: false,
-    radiologist: false,
-  });
-  const [sigUploading, setSigUploading] = useState<SignatoryKey | null>(null);
+  const [sigPreview, setSigPreview] = useState(emptyPreviewState);
+  const [sigHas, setSigHas] = useState(emptyHasState);
+  const [sigUploading, setSigUploading] = useState<ImagingSignatureRole | null>(null);
 
-  const loadSignaturePreview = useCallback(async (role: SignatoryKey) => {
+  const loadSignaturePreview = useCallback(async (role: ImagingSignatureRole) => {
     const res = await authenticatedFetch(`/api/settings/laboratory/imaging-signatories/${role}/signature`);
     const json = (await res.json().catch(() => null)) as {
       url?: string | null;
@@ -76,7 +91,7 @@ export default function SettingsImagingSignatoriesPage() {
   }, []);
 
   const loadAllSignaturePreviews = useCallback(async () => {
-    await Promise.all([loadSignaturePreview("radtech"), loadSignaturePreview("radiologist")]);
+    await Promise.all(IMAGING_SIGNATURE_ROLES.map((role) => loadSignaturePreview(role)));
   }, [loadSignaturePreview]);
 
   const load = useCallback(async () => {
@@ -107,7 +122,7 @@ export default function SettingsImagingSignatoriesPage() {
 
   const { showToast, Toast } = useAppToast();
 
-  const uploadSignature = async (role: SignatoryKey, file: File) => {
+  const uploadSignature = async (role: ImagingSignatureRole, file: File) => {
     setError("");
     setSigUploading(role);
     showToast("Uploading signature…", "info");
@@ -132,7 +147,7 @@ export default function SettingsImagingSignatoriesPage() {
     }
   };
 
-  const removeSignature = async (role: SignatoryKey) => {
+  const removeSignature = async (role: ImagingSignatureRole) => {
     setError("");
     setSigUploading(role);
     showToast("Removing signature…", "info");
@@ -160,19 +175,17 @@ export default function SettingsImagingSignatoriesPage() {
     setSuccess(false);
     setSaving(true);
     try {
+      const payload: Record<string, { full_name: string | null; license_no: string | null }> = {};
+      for (const role of IMAGING_SIGNATURE_ROLES) {
+        payload[role] = {
+          full_name: form[role].full_name.trim() || null,
+          license_no: form[role].license_no.trim() || null,
+        };
+      }
       const res = await authenticatedFetch("/api/settings/laboratory/imaging-signatories", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          radtech: {
-            full_name: form.radtech.full_name.trim() || null,
-            license_no: form.radtech.license_no.trim() || null,
-          },
-          radiologist: {
-            full_name: form.radiologist.full_name.trim() || null,
-            license_no: form.radiologist.license_no.trim() || null,
-          },
-        }),
+        body: JSON.stringify(payload),
       });
       const json = (await res.json().catch(() => null)) as {
         signatories?: ImagingResultSignatoriesMap;
@@ -192,7 +205,7 @@ export default function SettingsImagingSignatoriesPage() {
     }
   };
 
-  const renderSection = (title: string, key: SignatoryKey) => (
+  const renderSection = (title: string, key: ImagingSignatureRole) => (
     <Box>
       <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1.5 }}>
         {title}
@@ -263,9 +276,12 @@ export default function SettingsImagingSignatoriesPage() {
               </Box>
             ) : (
               <Stack spacing={3}>
-                {renderSection("Radiologic Technologist", "radtech")}
-                <Divider />
-                {renderSection("Radiologist", "radiologist")}
+                {SIGNATORY_SECTIONS.map((section, index) => (
+                  <Box key={section.key}>
+                    {index > 0 ? <Divider sx={{ mb: 3 }} /> : null}
+                    {renderSection(section.title, section.key)}
+                  </Box>
+                ))}
                 <Box sx={{ display: "flex", justifyContent: "flex-end", pt: 1 }}>
                   <Button
                     variant="contained"

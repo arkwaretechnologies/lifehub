@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
   const roleRaw = req.nextUrl.searchParams.get("role") ?? "";
   const role = parseImagingSignatoryRole(roleRaw);
   if (!role) {
-    return NextResponse.json({ error: "role must be radtech or radiologist." }, { status: 400 });
+    return NextResponse.json({ error: "role must be radtech, radiologist, or cardiologist." }, { status: 400 });
   }
 
   const { path, error: pathErr } = await fetchImagingSignatorySignaturePath(db, role as ImagingSignatureRole);

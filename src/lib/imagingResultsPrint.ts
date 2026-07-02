@@ -11,6 +11,7 @@ import {
   type ImagingResultTemplateSignatureLayout,
 } from "@/lib/imagingResultTemplates";
 import type { ImagingResultSignatoriesMap } from "@/lib/imagingResultSignatories";
+import { IMAGING_SIGNATURE_ROLES, type ImagingSignatureRole } from "@/lib/imagingResultSignatures";
 import {
   effectivePrintLineHeight,
   type LabResultImagePosition,
@@ -40,10 +41,7 @@ type TemplateRegistry = {
   signatureByCode: Map<string, ImagingResultTemplateSignatureLayout | null>;
 };
 
-type SignatureImageCache = {
-  radtech: Uint8Array | null;
-  radiologist: Uint8Array | null;
-};
+type SignatureImageCache = Record<ImagingSignatureRole, Uint8Array | null>;
 
 async function fetchSignatoriesForPrint(): Promise<ImagingResultSignatoriesMap | null> {
   const res = await authenticatedFetch("/api/imaging/imaging-result-signatories", { cache: "no-store" });
@@ -55,14 +53,13 @@ async function fetchSignatoriesForPrint(): Promise<ImagingResultSignatoriesMap |
 }
 
 async function loadImagingSignatureImageCache(): Promise<SignatureImageCache> {
-  const [radtechRes, radiologistRes] = await Promise.all([
-    fetchImagingSignatorySignatureBytes("radtech"),
-    fetchImagingSignatorySignatureBytes("radiologist"),
-  ]);
-  return {
-    radtech: radtechRes.bytes,
-    radiologist: radiologistRes.bytes,
-  };
+  const entries = await Promise.all(
+    IMAGING_SIGNATURE_ROLES.map(async (role) => {
+      const res = await fetchImagingSignatorySignatureBytes(role);
+      return [role, res.bytes] as const;
+    }),
+  );
+  return Object.fromEntries(entries) as SignatureImageCache;
 }
 
 function drawSignatureSlot(
@@ -106,27 +103,20 @@ async function drawImagingTemplateSignatures(
 ): Promise<void> {
   if (!layout || !signatories) return;
 
-  if (imageCache.radtech && layout.radtech.signature) {
-    let img = embeddedImages.get("radtech");
-    if (!img) {
-      img = (await embedSignatureBytes(doc, imageCache.radtech, "image/png")) ?? undefined;
-      if (img) embeddedImages.set("radtech", img);
+  for (const role of IMAGING_SIGNATURE_ROLES) {
+    const slot = layout[role];
+    const bytes = imageCache[role];
+    if (bytes && slot.signature) {
+      let img = embeddedImages.get(role);
+      if (!img) {
+        img = (await embedSignatureBytes(doc, bytes, "image/png")) ?? undefined;
+        if (img) embeddedImages.set(role, img);
+      }
+      if (img) drawSignatureImageSlot(page, img, slot.signature);
     }
-    if (img) drawSignatureImageSlot(page, img, layout.radtech.signature);
+    drawSignatureSlot(page, signatories[role].full_name, slot.name, font);
+    drawSignatureSlot(page, signatories[role].license_no, slot.license, font);
   }
-  if (imageCache.radiologist && layout.radiologist.signature) {
-    let img = embeddedImages.get("radiologist");
-    if (!img) {
-      img = (await embedSignatureBytes(doc, imageCache.radiologist, "image/png")) ?? undefined;
-      if (img) embeddedImages.set("radiologist", img);
-    }
-    if (img) drawSignatureImageSlot(page, img, layout.radiologist.signature);
-  }
-
-  drawSignatureSlot(page, signatories.radtech.full_name, layout.radtech.name, font);
-  drawSignatureSlot(page, signatories.radtech.license_no, layout.radtech.license, font);
-  drawSignatureSlot(page, signatories.radiologist.full_name, layout.radiologist.name, font);
-  drawSignatureSlot(page, signatories.radiologist.license_no, layout.radiologist.license, font);
 }
 
 function escapeHtml(s: string): string {

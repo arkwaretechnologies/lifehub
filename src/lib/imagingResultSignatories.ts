@@ -1,5 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { ImagingSignatureRole } from "@/lib/imagingResultSignatures";
+import {
+  IMAGING_SIGNATURE_ROLES,
+  type ImagingSignatureRole,
+  isImagingSignatureRole,
+} from "@/lib/imagingResultSignatures";
 
 export const IMAGING_RESULT_SIGNATORIES_TABLE = "imaging_result_signatories" as const;
 
@@ -13,10 +17,7 @@ export type ImagingResultSignatoryRow = {
   updated_at: string | null;
 };
 
-export type ImagingResultSignatoriesMap = {
-  radtech: ImagingResultSignatoryRow;
-  radiologist: ImagingResultSignatoryRow;
-};
+export type ImagingResultSignatoriesMap = Record<ImagingSignatureRole, ImagingResultSignatoryRow>;
 
 const SIGNATORY_SELECT = "role, full_name, license_no, signature_storage_path, updated_at";
 
@@ -26,7 +27,7 @@ function emptySignatory(role: ImagingSignatureRole): ImagingResultSignatoryRow {
 
 function mapRow(raw: Record<string, unknown>): ImagingResultSignatoryRow | null {
   const role = String(raw.role ?? "").trim().toLowerCase();
-  if (role !== "radtech" && role !== "radiologist") return null;
+  if (!isImagingSignatureRole(role)) return null;
   return {
     role,
     full_name:
@@ -46,9 +47,11 @@ function mapRow(raw: Record<string, unknown>): ImagingResultSignatoryRow | null 
 }
 
 function toMap(rows: ImagingResultSignatoryRow[]): ImagingResultSignatoriesMap {
-  const radtech = rows.find((r) => r.role === "radtech") ?? emptySignatory("radtech");
-  const radiologist = rows.find((r) => r.role === "radiologist") ?? emptySignatory("radiologist");
-  return { radtech, radiologist };
+  const out = {} as ImagingResultSignatoriesMap;
+  for (const role of IMAGING_SIGNATURE_ROLES) {
+    out[role] = rows.find((r) => r.role === role) ?? emptySignatory(role);
+  }
+  return out;
 }
 
 export async function fetchImagingResultSignatories(
@@ -57,7 +60,7 @@ export async function fetchImagingResultSignatories(
   const { data, error } = await db
     .from(IMAGING_RESULT_SIGNATORIES_TABLE)
     .select(SIGNATORY_SELECT)
-    .in("role", ["radtech", "radiologist"]);
+    .in("role", [...IMAGING_SIGNATURE_ROLES]);
   if (error) return { signatories: toMap([]), error: error.message };
   const rows = (data ?? [])
     .map((r) => mapRow(r as Record<string, unknown>))
@@ -71,10 +74,9 @@ function safeText(v: unknown): string | null {
   return s === "" ? null : s;
 }
 
-export type ImagingResultSignatoriesPayload = {
-  radtech?: { full_name?: unknown; license_no?: unknown };
-  radiologist?: { full_name?: unknown; license_no?: unknown };
-};
+export type ImagingResultSignatoriesPayload = Partial<
+  Record<ImagingSignatureRole, { full_name?: unknown; license_no?: unknown }>
+>;
 
 export async function setImagingSignatorySignaturePath(
   db: SupabaseClient,
@@ -100,8 +102,7 @@ export async function fetchImagingSignatorySignaturePath(
 ): Promise<{ path: string | null; error: string | null }> {
   const { signatories, error } = await fetchImagingResultSignatories(db);
   if (error) return { path: null, error };
-  const row = role === "radtech" ? signatories.radtech : signatories.radiologist;
-  return { path: row.signature_storage_path, error: null };
+  return { path: signatories[role].signature_storage_path, error: null };
 }
 
 export async function upsertImagingResultSignatories(
@@ -116,19 +117,13 @@ export async function upsertImagingResultSignatories(
     updated_at: string;
   }> = [];
 
-  if (payload.radtech !== undefined) {
+  for (const role of IMAGING_SIGNATURE_ROLES) {
+    const patch = payload[role];
+    if (patch === undefined) continue;
     rows.push({
-      role: "radtech",
-      full_name: safeText(payload.radtech.full_name),
-      license_no: safeText(payload.radtech.license_no),
-      updated_at: now,
-    });
-  }
-  if (payload.radiologist !== undefined) {
-    rows.push({
-      role: "radiologist",
-      full_name: safeText(payload.radiologist.full_name),
-      license_no: safeText(payload.radiologist.license_no),
+      role,
+      full_name: safeText(patch.full_name),
+      license_no: safeText(patch.license_no),
       updated_at: now,
     });
   }

@@ -57,3 +57,4 @@ supabase/migrations/
 supabase/.temp/
 supabase/
 debug.log
+scripts/

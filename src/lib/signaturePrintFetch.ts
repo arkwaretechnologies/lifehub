@@ -1,4 +1,5 @@
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
+import type { ImagingSignatureRole } from "@/lib/imagingResultSignatures";
 import type { LabSignatureRole } from "@/lib/labResultSignatures";
 
 export type SignatureBytesResult = {
@@ -25,7 +26,7 @@ export async function fetchLabSignatorySignatureBytes(
 }
 
 export async function fetchImagingSignatorySignatureBytes(
-  role: "radtech" | "radiologist",
+  role: ImagingSignatureRole,
 ): Promise<SignatureBytesResult> {
   return fetchSignatureBytesFromUrl(
     `/api/imaging/imaging-result-signatories/signature-bytes?role=${encodeURIComponent(role)}`,

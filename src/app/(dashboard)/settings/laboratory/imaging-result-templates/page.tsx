@@ -46,6 +46,7 @@ import {
   type TemplateSignatureLayoutFormFields,
 } from "@/lib/imagingResultTemplates";
 import type { ImageLayoutFormFields, PrintLayoutFormFields } from "@/lib/labResultsPrintLayout";
+import { IMAGING_SIGNATURE_ROLE_LABELS, IMAGING_SIGNATURE_ROLES } from "@/lib/imagingResultSignatures";
 
 type ResultTemplateRow = ImagingResultTemplateRow & { has_file?: boolean };
 
@@ -492,44 +493,40 @@ export default function SettingsImagingResultTemplatesPage() {
       <Typography variant="subtitle1" fontWeight={800} sx={{ pt: 1 }}>
         Signatories
       </Typography>
-      <SignatureSlotFields
-        title="Radiologic Technologist — name"
-        fields={form.signature.radtech_name}
-        onChange={(radtech_name) => setForm({ ...form, signature: { ...form.signature, radtech_name } })}
-      />
-      <SignatureSlotFields
-        title="Radiologic Technologist — license no."
-        fields={form.signature.radtech_license}
-        onChange={(radtech_license) => setForm({ ...form, signature: { ...form.signature, radtech_license } })}
-      />
-      <ImageSignatureSlotFields
-        title="Radiologic Technologist — signature image"
-        fields={form.signature.radtech_signature}
-        onChange={(radtech_signature) =>
-          setForm({ ...form, signature: { ...form.signature, radtech_signature } })
-        }
-      />
-      <SignatureSlotFields
-        title="Radiologist — name"
-        fields={form.signature.radiologist_name}
-        onChange={(radiologist_name) =>
-          setForm({ ...form, signature: { ...form.signature, radiologist_name } })
-        }
-      />
-      <SignatureSlotFields
-        title="Radiologist — license no."
-        fields={form.signature.radiologist_license}
-        onChange={(radiologist_license) =>
-          setForm({ ...form, signature: { ...form.signature, radiologist_license } })
-        }
-      />
-      <ImageSignatureSlotFields
-        title="Radiologist — signature image"
-        fields={form.signature.radiologist_signature}
-        onChange={(radiologist_signature) =>
-          setForm({ ...form, signature: { ...form.signature, radiologist_signature } })
-        }
-      />
+      {IMAGING_SIGNATURE_ROLES.map((role) => (
+        <Box key={role}>
+          <SignatureSlotFields
+            title={`${IMAGING_SIGNATURE_ROLE_LABELS[role]} — name`}
+            fields={form.signature[`${role}_name`]}
+            onChange={(value) =>
+              setForm({
+                ...form,
+                signature: { ...form.signature, [`${role}_name`]: value },
+              })
+            }
+          />
+          <SignatureSlotFields
+            title={`${IMAGING_SIGNATURE_ROLE_LABELS[role]} — license no.`}
+            fields={form.signature[`${role}_license`]}
+            onChange={(value) =>
+              setForm({
+                ...form,
+                signature: { ...form.signature, [`${role}_license`]: value },
+              })
+            }
+          />
+          <ImageSignatureSlotFields
+            title={`${IMAGING_SIGNATURE_ROLE_LABELS[role]} — signature image`}
+            fields={form.signature[`${role}_signature`]}
+            onChange={(value) =>
+              setForm({
+                ...form,
+                signature: { ...form.signature, [`${role}_signature`]: value },
+              })
+            }
+          />
+        </Box>
+      ))}
     </Stack>
   );
 

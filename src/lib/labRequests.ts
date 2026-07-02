@@ -45,19 +45,7 @@ export type CreateLabRequestInput = {
   skipEncounterValidation?: boolean;
 };
 
-function localDateYmd(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function localTimeHms(d: Date): string {
-  const h = String(d.getHours()).padStart(2, "0");
-  const min = String(d.getMinutes()).padStart(2, "0");
-  const s = String(d.getSeconds()).padStart(2, "0");
-  return `${h}:${min}:${s}`;
-}
+import { clinicDateYmd, clinicTimeHms } from "@/lib/queueTicketDate";
 
 export function normalizeLabRequestPackageIdList(raw: unknown[] | null | undefined): number[] {
   if (raw == null || !Array.isArray(raw)) return [];
@@ -124,8 +112,8 @@ export async function createLabRequestWithItems(
   }
 
   const now = new Date();
-  const request_date = localDateYmd(now);
-  const request_time = localTimeHms(now);
+  const request_date = clinicDateYmd(now);
+  const request_time = clinicTimeHms(now);
 
   const referring =
     input.referringPhysician != null && input.referringPhysician.trim() !== ""

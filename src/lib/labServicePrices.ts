@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { clinicDateYmd } from "@/lib/queueTicketDate";
 import { supabase } from "@/lib/supabaseClient";
 
 export const LAB_SERVICE_PRICES_TABLE = "lab_service_prices" as const;
@@ -85,10 +86,6 @@ export function parseLabTestPriceInput(
   return { ok: true, value: p };
 }
 
-function todayIsoDate(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
 /** Upsert the single `lab_service_prices` row for a test (unique on `lab_test_id`). */
 export async function upsertLabServicePriceForTest(
   db: SupabaseClient,
@@ -103,7 +100,7 @@ export async function upsertLabServicePriceForTest(
       lab_test_id: id,
       price,
       is_active: true,
-      effective_date: todayIsoDate(),
+      effective_date: clinicDateYmd(),
       updated_at: new Date().toISOString(),
     },
     { onConflict: "lab_test_id" },

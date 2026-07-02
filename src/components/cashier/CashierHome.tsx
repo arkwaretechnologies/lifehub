@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { LIFEHUB_LOGO_SRC } from "@/lib/lifehubLogo";
+import { clinicAddDays, clinicDateYmd } from "@/lib/queueTicketDate";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -448,40 +449,23 @@ export default function CashierHome() {
     };
   }, [selectedPatient, selectedContext?.encounterId]);
 
-  function isoToday(): string {
-    const d = new Date();
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-  }
-
-  function isoAddDays(base: Date, days: number): string {
-    const d = new Date(base);
-    d.setDate(d.getDate() + days);
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-  }
-
   const applyEncounterPreset = useCallback((preset: typeof encounterRangePreset) => {
     const now = new Date();
-    const today = isoToday();
+    const today = clinicDateYmd(now);
     if (preset === "today") {
       setEncounterFrom(today);
       setEncounterTo(today);
       return;
     }
     if (preset === "yesterday") {
-      const y = isoAddDays(now, -1);
+      const y = clinicAddDays(-1, now);
       setEncounterFrom(y);
       setEncounterTo(y);
       return;
     }
     const days =
       preset === "last3" ? 3 : preset === "last7" ? 7 : preset === "last15" ? 15 : 30;
-    setEncounterFrom(isoAddDays(now, -(days - 1)));
+    setEncounterFrom(clinicAddDays(-(days - 1), now));
     setEncounterTo(today);
   }, []);
 

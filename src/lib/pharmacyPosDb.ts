@@ -3,6 +3,7 @@
  * Prefer calling functions here instead of scattering `supabase.from` across the app.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { clinicDateYmd, clinicTimeHms } from "@/lib/queueTicketDate";
 import { supabase } from "@/lib/supabaseClient";
 
 export const PRODUCTS_TABLE = "products" as const;
@@ -613,8 +614,8 @@ export async function completePharmacySale(
   if (!stockCheck.ok) return { saleId: null, error: stockCheck.error };
 
   const now = new Date();
-  const saleDate = now.toISOString().slice(0, 10);
-  const saleTime = now.toTimeString().slice(0, 8);
+  const saleDate = clinicDateYmd(now);
+  const saleTime = clinicTimeHms(now);
 
   const { data: saleIns, error: saleErr } = await db
     .from(PHARMACY_SALES_TABLE)

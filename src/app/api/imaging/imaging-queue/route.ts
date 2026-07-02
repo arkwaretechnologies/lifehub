@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
+import { clinicAddDays, queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
 import {
   adminImagingRequestIdsWithSales,
   adminRepairQueueTicketModalityFlags,
@@ -19,9 +19,7 @@ import type { QueueTicketStatus } from "@/lib/queueReception";
 const ACTIVE_STATUSES: QueueTicketStatus[] = ["Waiting", "Called", "Collected", "Serving"];
 
 function isoDateDaysAgo(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - Math.max(0, Math.floor(days)));
-  return d.toISOString().slice(0, 10);
+  return clinicAddDays(-Math.max(0, Math.floor(days)));
 }
 
 function parsePositiveInt(raw: string | null, fallback: number): number {

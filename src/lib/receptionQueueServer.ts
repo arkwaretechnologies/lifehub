@@ -15,7 +15,12 @@ import {
 } from "@/lib/queueReception";
 import { numericIdFromUnknown } from "@/lib/sessionUserId";
 import { parseBp } from "@/lib/bpInput";
-import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
+import {
+  clinicDateYmd,
+  clinicEncounterDateTimeFields,
+  clinicTimeHms,
+  queueTicketTodayIsoDate,
+} from "@/lib/queueTicketDate";
 import { applyPartialLabReleaseToNotes } from "@/lib/labPartialCollection";
 import { insertLabQueueNewRequestNotifications } from "@/lib/labQueueNotificationServer";
 import { computeLabRequestQueueCollectionState } from "@/lib/labQueueTicketSync";
@@ -517,7 +522,14 @@ function parseDecimal(raw: string): number | null {
 async function adminCreateEncounterForPatient(patientId: number): Promise<{ transId: string | null; error: string | null }> {
   const admin = queueAdminClient();
   if (!admin) return { transId: null, error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." };
-  const { data, error } = await admin.from("encounters").insert({ patient_id: patientId }).select("trans_id").maybeSingle();
+  const { data, error } = await admin
+    .from("encounters")
+    .insert({
+      patient_id: patientId,
+      ...clinicEncounterDateTimeFields(),
+    })
+    .select("trans_id")
+    .maybeSingle();
   if (error) return { transId: null, error: error.message };
   const transId = (data as { trans_id?: string } | null)?.trans_id ?? null;
   if (!transId) return { transId: null, error: "Encounter was not created." };
@@ -541,8 +553,8 @@ async function adminCreateLabRequestWithItems(input: {
   if (!admin) return { labRequestId: null, imagingRequestId: null, error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." };
 
   const now = new Date();
-  const request_date = now.toISOString().slice(0, 10);
-  const request_time = now.toTimeString().slice(0, 8);
+  const request_date = clinicDateYmd(now);
+  const request_time = clinicTimeHms(now);
 
   const clinical =
     input.clinicalDiagnosis != null && input.clinicalDiagnosis.trim() !== ""

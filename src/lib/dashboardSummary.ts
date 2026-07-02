@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
-import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
+import { clinicTimeZone, queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
 import { formatQueueTicketNotesForDisplay } from "@/lib/queueReception";
 
 const ACTIVE_QUEUE: string[] = ["Waiting", "Called", "Serving"];
@@ -69,7 +69,7 @@ function pad2(n: number): string {
 }
 
 function clinicYmdParts(d: Date): { y: number; m: number; d: number } {
-  const tz = process.env.NEXT_PUBLIC_QUEUE_TICKET_TIMEZONE?.trim() || "Asia/Manila";
+  const tz = clinicTimeZone();
   try {
     const parts = new Intl.DateTimeFormat("en-CA", {
       timeZone: tz,

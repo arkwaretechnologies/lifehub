@@ -16,6 +16,7 @@ import {
   type ImagingCatalogRow,
   type ImagingLineSelection,
 } from "@/lib/imagingCatalog";
+import { clinicDateYmd, clinicTimeHms } from "@/lib/queueTicketDate";
 
 export const IMAGING_REQUESTS_TABLE = "imaging_requests" as const;
 export const IMAGING_REQUEST_ITEMS_TABLE = "imaging_request_items" as const;
@@ -46,6 +47,15 @@ export function imagingItemHasPrintableResult(item: {
   remarks?: string | null;
 }): boolean {
   return Boolean(String(item.findings ?? "").trim() || String(item.remarks ?? "").trim());
+}
+
+/** Consultation / read-only viewers: findings, impression, or uploaded study image. */
+export function imagingItemHasConsultationViewableResult(item: {
+  findings?: string | null;
+  remarks?: string | null;
+  image_storage_path?: string | null;
+}): boolean {
+  return imagingItemHasPrintableResult(item) || Boolean(String(item.image_storage_path ?? "").trim());
 }
 
 export type CreateImagingRequestInput = {
@@ -155,20 +165,6 @@ export async function syncUnpaidImagingItemsToPackageCoverage(
   }
 
   return { error: null };
-}
-
-function localDateYmd(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function localTimeHms(d: Date): string {
-  const h = String(d.getHours()).padStart(2, "0");
-  const min = String(d.getMinutes()).padStart(2, "0");
-  const s = String(d.getSeconds()).padStart(2, "0");
-  return `${h}:${min}:${s}`;
 }
 
 export function imagingSelectionHasChecked(sel: Record<string, ImagingLineSelection>): boolean {
@@ -288,8 +284,8 @@ async function createImagingRequestWithItemsOnDb(
     .insert({
       encounter_id: enc === "" ? null : enc,
       patient_id: input.patientId,
-      request_date: localDateYmd(now),
-      request_time: localTimeHms(now),
+      request_date: clinicDateYmd(now),
+      request_time: clinicTimeHms(now),
       priority: (input.priority ?? "Routine").trim() || "Routine",
       remarks: input.remarks?.trim() ? input.remarks.trim() : null,
       status: "Pending",

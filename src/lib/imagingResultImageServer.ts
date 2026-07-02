@@ -8,6 +8,7 @@ import {
   extensionFromFilename,
   isDicomUpload,
 } from "@/lib/imagingResultImageShared";
+import { clinicDateYmd } from "@/lib/queueTicketDate";
 
 const EXT_TO_MIME: Record<string, string> = {
   ".dcm": "application/dicom",
@@ -212,7 +213,7 @@ export async function resolveImagingResultDisplayFilename(
 
   const dateYmd =
     String(reqRow.request_date ?? "").trim().slice(0, 10) ||
-    new Date().toISOString().slice(0, 10);
+    clinicDateYmd();
 
   let patientName = "Patient";
   let patientId = reqRow.patient_id;

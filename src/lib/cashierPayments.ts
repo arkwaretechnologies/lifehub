@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabaseClient";
+import { clinicDateYmd, clinicTimeHms } from "@/lib/queueTicketDate";
 import { PHYSICIAN_FEE_SALES_TABLE, PHYSICIAN_FEE_STATUS_PAID } from "@/lib/physicianFeeSales";
 
 export const LAB_SALES_TABLE = "lab_sales" as const;
@@ -11,26 +12,8 @@ function roundMoney2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-function localDateYmd(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function localDateCompactYmd(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}${m}${day}`;
-}
-
-/** `time without time zone` for Postgres */
-function localTimeHms(d: Date): string {
-  const h = String(d.getHours()).padStart(2, "0");
-  const min = String(d.getMinutes()).padStart(2, "0");
-  const s = String(d.getSeconds()).padStart(2, "0");
-  return `${h}:${min}:${s}`;
+function clinicDateCompactYmd(d: Date = new Date()): string {
+  return clinicDateYmd(d).replace(/-/g, "");
 }
 
 function parseOrSeq(orNumber: string, expectedPrefix: string): number | null {
@@ -64,7 +47,7 @@ async function fetchMaxOrSeqForPrefix(table: string, prefix: string): Promise<{ 
  */
 export async function generateNextDailyOrNumber(): Promise<{ orNumber: string | null; error: string | null }> {
   const now = new Date();
-  const prefix = `${localDateCompactYmd(now)}-`;
+  const prefix = `${clinicDateCompactYmd(now)}-`;
 
   const [physRes, labRes] = await Promise.all([
     fetchMaxOrSeqForPrefix(PHYSICIAN_FEE_SALES_TABLE, prefix),
@@ -180,8 +163,8 @@ export async function createLabSaleWithItems(args: {
     lab_request_id: labRequestId,
     imaging_request_id: imagingRequestId,
     or_number: orTrimmed,
-    sale_date: localDateYmd(now),
-    sale_time: localTimeHms(now),
+    sale_date: clinicDateYmd(now),
+    sale_time: clinicTimeHms(now),
     subtotal,
     discount_type_id: discountAmount > 0 ? args.discountTypeId : (null as number | null),
     discount_amount: discountAmount,
@@ -321,8 +304,8 @@ export async function createLabAmendmentRefundSale(args: {
     lab_request_id: labRequestId,
     imaging_request_id: imagingRequestId,
     or_number: orTrimmed,
-    sale_date: localDateYmd(now),
-    sale_time: localTimeHms(now),
+    sale_date: clinicDateYmd(now),
+    sale_time: clinicTimeHms(now),
     subtotal: refund,
     discount_type_id: null as number | null,
     discount_amount: 0,

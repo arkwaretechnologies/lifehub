@@ -12,6 +12,7 @@ import {
 } from "@/lib/cashierLabQueue";
 import { buildPatientSearchOrFilter, PATIENT_DIRECTORY_SELECT, sanitizePatientSearchQuery } from "@/lib/patientsCatalog";
 import { supabase } from "@/lib/supabaseClient";
+import { clinicEncounterDateTimeFields } from "@/lib/queueTicketDate";
 import { invalidateCachesClient } from "@/lib/cacheInvalidateClient";
 import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
 
@@ -952,7 +953,10 @@ export async function createEncounterForPatient(
 
   const { data, error } = await supabase
     .from(ENCOUNTERS_TABLE)
-    .insert({ patient_id: patientId })
+    .insert({
+      patient_id: patientId,
+      ...clinicEncounterDateTimeFields(),
+    })
     .select("trans_id")
     .maybeSingle();
 

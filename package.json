@@ -6,7 +6,9 @@
     "dev": "next dev --webpack",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "backfill:encounter-dates": "node scripts/backfill-encounter-dates.mjs",
+    "backfill:encounter-dates:dry": "node scripts/backfill-encounter-dates.mjs --dry-run"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",

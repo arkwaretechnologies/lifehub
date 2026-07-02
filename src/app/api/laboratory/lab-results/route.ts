@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { clinicDateYmd, clinicTimeHms } from "@/lib/queueTicketDate";
 import { computeImagingRequestQueueState } from "@/lib/imagingQueueSync";
 import { computeLabRequestQueueCollectionState } from "@/lib/labQueueTicketSync";
 import {
@@ -55,8 +56,8 @@ export async function PATCH(req: Request) {
     status: resultValue ? "Completed" : explicitStatus ?? "Pending",
     performed_by: explicitPerformed,
     verified_by: explicitVerified,
-    result_date: now.toISOString().slice(0, 10),
-    result_time: now.toTimeString().slice(0, 8),
+    result_date: clinicDateYmd(now),
+    result_time: clinicTimeHms(now),
     updated_at: now.toISOString(),
   };
 

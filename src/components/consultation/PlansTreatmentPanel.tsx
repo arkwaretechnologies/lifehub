@@ -7,6 +7,7 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import PrintOutlinedIcon from "@mui/icons-material/PrintOutlined";
 import SaveOutlinedIcon from "@mui/icons-material/SaveOutlined";
 import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
+import CameraAltOutlinedIcon from "@mui/icons-material/CameraAltOutlined";
 import {
   Alert,
   Box,
@@ -131,8 +132,18 @@ import {
   filterNewLabTestIds,
   filterNewPackageIds,
 } from "@/lib/encounterDiagnosticOrderState";
-import { imagingSelectionHasChecked, deleteImagingRequestsForEncounter, fetchImagingRequestItemsForRequestIdsClient, pruneUnpaidEncounterImagingToSelection } from "@/lib/imagingRequests";
+import {
+  imagingItemHasConsultationViewableResult,
+  imagingSelectionHasChecked,
+  deleteImagingRequestsForEncounter,
+  fetchImagingRequestItemsForRequestIdsClient,
+  pruneUnpaidEncounterImagingToSelection,
+  type ImagingRequestItemRow,
+} from "@/lib/imagingRequests";
 import type { LabRequestItemView } from "@/app/api/laboratory/lab-request/route";
+import type { ImagingRequestHeaderView } from "@/app/api/imaging/imaging-request/route";
+import ImagingStudyImageUpload from "@/components/imaging/ImagingStudyImageUpload";
+import { isImagingItemResultReceived } from "@/lib/imagingQueueSync";
 
 const tabPanelSx = { pt: 2, minHeight: 280 };
 
@@ -478,6 +489,8 @@ export default function PlansTreatmentPanel({
   const [encounterImagingCatalogCodes, setEncounterImagingCatalogCodes] = useState<Set<string>>(() => new Set());
   /** Lab requests that have at least one saved `lab_results` row (payment not required). */
   const [labRequestIdsWithResults, setLabRequestIdsWithResults] = useState<Set<string>>(() => new Set());
+  /** Imaging requests with findings, impression, or uploaded image (payment not required). */
+  const [imagingRequestIdsWithResults, setImagingRequestIdsWithResults] = useState<Set<string>>(() => new Set());
 
   const [labsModalMode, setLabsModalMode] = useState<"order" | "amend">("order");
   const [imagingModalMode, setImagingModalMode] = useState<"order" | "amend">("order");
@@ -497,6 +510,13 @@ export default function PlansTreatmentPanel({
   const [labResultsLoading, setLabResultsLoading] = useState(false);
   const [labResultsError, setLabResultsError] = useState("");
   const [labResultsItems, setLabResultsItems] = useState<LabRequestItemView[]>([]);
+
+  const [imagingResultsModalOpen, setImagingResultsModalOpen] = useState(false);
+  const [imagingResultsRequestId, setImagingResultsRequestId] = useState("");
+  const [imagingResultsLoading, setImagingResultsLoading] = useState(false);
+  const [imagingResultsError, setImagingResultsError] = useState("");
+  const [imagingResultsHeader, setImagingResultsHeader] = useState<ImagingRequestHeaderView | null>(null);
+  const [imagingResultsItems, setImagingResultsItems] = useState<ImagingRequestItemRow[]>([]);
 
   const [imagingModalOpen, setImagingModalOpen] = useState(false);
   const [imagingCatalog, setImagingCatalog] = useState<ImagingCatalogRow[]>([]);
@@ -1181,6 +1201,22 @@ export default function PlansTreatmentPanel({
     setEncounterImagingCatalogCodes(codes);
   }, []);
 
+  const syncImagingResultsFromRequestIds = useCallback(async (reqIds: string[]) => {
+    if (reqIds.length === 0) {
+      setImagingRequestIdsWithResults(new Set());
+      return;
+    }
+    const { rows: items, error } = await fetchImagingRequestItemsForRequestIdsClient(reqIds);
+    if (error) return;
+    const withResults = new Set<string>();
+    for (const row of items) {
+      if (!imagingItemHasConsultationViewableResult(row)) continue;
+      const rid = String(row.imaging_request_id ?? "").trim();
+      if (rid) withResults.add(rid);
+    }
+    setImagingRequestIdsWithResults(withResults);
+  }, []);
+
   const syncPaidImagingForEncounter = useCallback(async () => {
     const { data: reqRows, error: rErr } = await supabase
       .from("imaging_requests")
@@ -1192,6 +1228,7 @@ export default function PlansTreatmentPanel({
       setPrimaryPaidImagingRequestId("");
       setEncounterImagingRequestIds([]);
       setEncounterImagingCatalogCodes(new Set());
+      setImagingRequestIdsWithResults(new Set());
       return;
     }
     const reqIds = ((reqRows ?? []) as Array<{ id: string }>).map((r) => r.id).filter(Boolean);
@@ -1200,6 +1237,7 @@ export default function PlansTreatmentPanel({
       setPrimaryPaidImagingRequestId("");
       setEncounterImagingRequestIds([]);
       setEncounterImagingCatalogCodes(new Set());
+      setImagingRequestIdsWithResults(new Set());
       return;
     }
     setEncounterImagingRequestIds(reqIds);
@@ -1219,7 +1257,8 @@ export default function PlansTreatmentPanel({
     const primaryPaid = reqIds.find((id) => paid.has(id)) ?? "";
     setPrimaryPaidImagingRequestId(primaryPaid);
     await refreshEncounterImagingCatalogCodes(reqIds);
-  }, [transId, refreshEncounterImagingCatalogCodes]);
+    await syncImagingResultsFromRequestIds(reqIds);
+  }, [transId, refreshEncounterImagingCatalogCodes, syncImagingResultsFromRequestIds]);
 
   const pruneEncounterImagingOrders = useCallback(
     async (formState: Record<string, ImagingLineSelection>) => {
@@ -1464,6 +1503,16 @@ export default function PlansTreatmentPanel({
       cancelled = true;
     };
   }, [transId, hydrated, loading, syncPaidAndResultsFromRequestIds, syncPaidImagingForEncounter]);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{ transId?: string }>;
+      if (!ce.detail?.transId || ce.detail.transId !== transId) return;
+      void syncPaidImagingForEncounter();
+    };
+    window.addEventListener("lifehub:imaging-updated", handler);
+    return () => window.removeEventListener("lifehub:imaging-updated", handler);
+  }, [transId, syncPaidImagingForEncounter]);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -1978,6 +2027,18 @@ export default function PlansTreatmentPanel({
     return encounterLabRequests[0]?.id ?? "";
   }, [encounterLabRequests, paidLabRequestIds, labRequestIdsWithResults]);
 
+  const canViewImagingResults = useMemo(
+    () => encounterImagingRequestIds.some((id) => imagingRequestIdsWithResults.has(id)),
+    [encounterImagingRequestIds, imagingRequestIdsWithResults],
+  );
+
+  const viewResultsImagingRequestId = useMemo(() => {
+    for (const id of encounterImagingRequestIds) {
+      if (imagingRequestIdsWithResults.has(id)) return id;
+    }
+    return encounterImagingRequestIds[0] ?? "";
+  }, [encounterImagingRequestIds, imagingRequestIdsWithResults]);
+
   const primaryPaidLabRequestId = useMemo(() => {
     for (const r of encounterLabRequests) {
       if (paidLabRequestIds.has(r.id)) return r.id;
@@ -2004,6 +2065,16 @@ export default function PlansTreatmentPanel({
     setLabResultsItems([]);
     setLabResultsRequestId(id);
     setLabResultsModalOpen(true);
+  }, []);
+
+  const openImagingResultsModal = useCallback((imagingRequestId: string) => {
+    const id = String(imagingRequestId ?? "").trim();
+    if (!id) return;
+    setImagingResultsError("");
+    setImagingResultsHeader(null);
+    setImagingResultsItems([]);
+    setImagingResultsRequestId(id);
+    setImagingResultsModalOpen(true);
   }, []);
 
   useEffect(() => {
@@ -2036,6 +2107,47 @@ export default function PlansTreatmentPanel({
       cancelled = true;
     };
   }, [labResultsModalOpen, labResultsRequestId]);
+
+  useEffect(() => {
+    if (!imagingResultsModalOpen) return;
+    const id = imagingResultsRequestId.trim();
+    if (!id) return;
+    let cancelled = false;
+    setImagingResultsLoading(true);
+    setImagingResultsError("");
+    void (async () => {
+      try {
+        const res = await authenticatedFetch(
+          `/api/imaging/imaging-request?imagingRequestId=${encodeURIComponent(id)}`,
+          { cache: "no-store" },
+        );
+        const json = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          header?: ImagingRequestHeaderView;
+          items?: ImagingRequestItemRow[];
+        };
+        if (cancelled) return;
+        if (!res.ok) {
+          setImagingResultsError(json.error ?? `Request failed (${res.status})`);
+          setImagingResultsHeader(null);
+          setImagingResultsItems([]);
+          return;
+        }
+        setImagingResultsHeader(json.header ?? null);
+        setImagingResultsItems(Array.isArray(json.items) ? json.items : []);
+      } catch {
+        if (cancelled) return;
+        setImagingResultsError("Failed to load imaging results.");
+        setImagingResultsHeader(null);
+        setImagingResultsItems([]);
+      } finally {
+        if (!cancelled) setImagingResultsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [imagingResultsModalOpen, imagingResultsRequestId]);
 
   const labDialogFooterHint = useMemo(() => {
     if (labsModalMode === "amend") {
@@ -2829,27 +2941,38 @@ export default function PlansTreatmentPanel({
                       disabled={loading}
                       onChange={(_, c) => {
                         setForm((f) => ({ ...f, plan_imaging: c }));
-                        if (c) setImagingModalOpen(true);
-                        else setImagingModalOpen(false);
+                        if (c) {
+                          const viewId = viewResultsImagingRequestId.trim();
+                          if (canViewImagingResults && viewId) {
+                            openImagingResultsModal(viewId);
+                          } else {
+                            setImagingModalMode("order");
+                            setImagingModalOpen(true);
+                          }
+                        } else setImagingModalOpen(false);
                       }}
                     />
                   }
                   label="IMAGING"
                   sx={consultFormControlLabelSx}
                 />
-                {form.plan_imaging && !loading ? (
+                {(form.plan_imaging || encounterImagingRequestIds.length > 0) && !loading ? (
                   <Stack spacing={0.25} sx={{ ml: 0.5 }}>
                     <Button
                       type="button"
                       variant="text"
                       size="small"
                       onClick={() => {
+                        if (canViewImagingResults && viewResultsImagingRequestId) {
+                          openImagingResultsModal(viewResultsImagingRequestId);
+                          return;
+                        }
                         setImagingModalMode("order");
                         setImagingModalOpen(true);
                       }}
                       sx={{ textTransform: "uppercase", minWidth: "auto", py: 0.25, px: 0.75 }}
                     >
-                      View studies
+                      {canViewImagingResults ? "View result" : "View studies"}
                     </Button>
                     {canEditPaidImaging ? (
                       <Button
@@ -3387,6 +3510,140 @@ export default function PlansTreatmentPanel({
               Open in Lab Results
             </Button>
             <Button onClick={() => setLabResultsModalOpen(false)} color="error" variant="outlined" startIcon={<CloseIcon />} sx={{ textTransform: "none" }}>
+              Close
+            </Button>
+          </Box>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={imagingResultsModalOpen}
+        onClose={() => setImagingResultsModalOpen(false)}
+        maxWidth="lg"
+        fullWidth
+        aria-labelledby="plans-imaging-results-dialog-title"
+        slotProps={{
+          paper: {
+            sx: { maxHeight: "92vh" },
+          },
+        }}
+      >
+        <DialogTitle
+          id="plans-imaging-results-dialog-title"
+          sx={{
+            fontWeight: 800,
+            textAlign: "center",
+            letterSpacing: "0.08em",
+            bgcolor: "info.main",
+            color: "info.contrastText",
+            py: 1.5,
+          }}
+        >
+          IMAGING RESULTS
+        </DialogTitle>
+        <DialogContent dividers sx={{ px: { xs: 2, sm: 2.5 }, py: 2, overflow: "auto" }}>
+          {imagingResultsError ? (
+            <Alert severity="error" sx={{ mb: 2 }} onClose={() => setImagingResultsError("")}>
+              {imagingResultsError}
+            </Alert>
+          ) : null}
+          {imagingResultsLoading ? (
+            <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+              <CircularProgress size={32} />
+            </Box>
+          ) : imagingResultsItems.length === 0 ? (
+            <Typography variant="body2" color="text.secondary">
+              No imaging results found for this request.
+            </Typography>
+          ) : (
+            <>
+              {imagingResultsHeader ? (
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  {(imagingResultsHeader.patient_name ?? "").trim() || "Patient"}
+                  {imagingResultsHeader.queue_display
+                    ? ` · Queue ${imagingResultsHeader.queue_display}`
+                    : ""}
+                  {` · ${imagingResultsHeader.request_date}`}
+                  {imagingResultsHeader.request_time ? ` ${imagingResultsHeader.request_time}` : ""}
+                </Typography>
+              ) : null}
+              <TableContainer>
+                <Table size="small" sx={{ "& th, & td": { verticalAlign: "top" } }}>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell sx={{ fontWeight: 800 }}>Study</TableCell>
+                      <TableCell sx={{ fontWeight: 800 }}>View</TableCell>
+                      <TableCell sx={{ fontWeight: 800 }}>Findings</TableCell>
+                      <TableCell sx={{ fontWeight: 800 }}>Impression</TableCell>
+                      <TableCell align="center" sx={{ fontWeight: 800 }}>
+                        Image
+                      </TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {imagingResultsItems.map((it) => {
+                      const hasImage = Boolean((it.image_storage_path ?? "").trim());
+                      return (
+                        <TableRow key={it.id} hover>
+                          <TableCell sx={{ fontWeight: 700 }}>{it.study_name}</TableCell>
+                          <TableCell>{(it.view_text ?? "").trim() || "—"}</TableCell>
+                          <TableCell sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", maxWidth: 280 }}>
+                            {(it.findings ?? "").trim() || "—"}
+                          </TableCell>
+                          <TableCell sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", maxWidth: 220 }}>
+                            {(it.remarks ?? "").trim() || "—"}
+                          </TableCell>
+                          <TableCell align="center" sx={{ verticalAlign: "middle" }}>
+                            <ImagingStudyImageUpload
+                              itemId={it.id}
+                              resultReceived={isImagingItemResultReceived(it.status) || hasImage}
+                              readOnly
+                              hasImage={hasImage}
+                              originalFilename={it.image_original_filename}
+                              onError={(msg) => setImagingResultsError(msg)}
+                            />
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ px: 2, py: 1.5, justifyContent: "space-between", flexWrap: "wrap", gap: 1 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ mr: "auto" }}>
+            Request ID:{" "}
+            <Box component="span" sx={{ fontFamily: "monospace" }}>
+              {imagingResultsRequestId}
+            </Box>
+          </Typography>
+          <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
+            <Button
+              type="button"
+              variant="outlined"
+              startIcon={<CameraAltOutlinedIcon />}
+              onClick={() => {
+                const id = imagingResultsRequestId.trim();
+                if (!id) return;
+                window.open(
+                  `/imaging/results?imagingRequestId=${encodeURIComponent(id)}`,
+                  "_blank",
+                  "noopener,noreferrer",
+                );
+              }}
+              sx={{ textTransform: "none" }}
+            >
+              Open in Imaging Results
+            </Button>
+            <Button
+              onClick={() => setImagingResultsModalOpen(false)}
+              color="error"
+              variant="outlined"
+              startIcon={<CloseIcon />}
+              sx={{ textTransform: "none" }}
+            >
               Close
             </Button>
           </Box>

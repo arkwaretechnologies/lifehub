@@ -66,6 +66,9 @@ export type RadiologyPatientRequestRow = {
   study_count: number;
   is_assigned_to_filter: boolean;
   radiologist_name?: string | null;
+  encounter_id: string | null;
+  chief_complaint: string | null;
+  history_of_present_illness: string | null;
 };
 
 function localDateYmd(d: Date): string {
@@ -721,7 +724,7 @@ export async function listAllImagingRequestsForPatient(
 
   let query = admin
     .from("imaging_requests")
-    .select("id, request_date, request_time, status, priority")
+    .select("id, encounter_id, request_date, request_time, status, priority")
     .eq("patient_id", patientId)
     .order("request_date", { ascending: false })
     .order("request_time", { ascending: false });
@@ -736,11 +739,50 @@ export async function listAllImagingRequestsForPatient(
 
   const requests = (data ?? []) as Array<{
     id: string;
+    encounter_id: string | null;
     request_date: string;
     request_time: string | null;
     status: string;
     priority: string;
   }>;
+
+  const encounterIds = [
+    ...new Set(
+      requests
+        .map((r) => String(r.encounter_id ?? "").trim())
+        .filter(Boolean),
+    ),
+  ];
+
+  const encounterClinicalById = new Map<
+    string,
+    { chief_complaint: string | null; history_of_present_illness: string | null }
+  >();
+
+  if (encounterIds.length > 0) {
+    const { data: encRows, error: encErr } = await admin
+      .from("encounters")
+      .select("trans_id, chief_complaint, history_of_present_illness")
+      .in("trans_id", encounterIds);
+    if (encErr) return { rows: [], error: encErr.message };
+
+    for (const raw of encRows ?? []) {
+      const row = raw as {
+        trans_id?: string | null;
+        chief_complaint?: string | null;
+        history_of_present_illness?: string | null;
+      };
+      const transId = String(row.trans_id ?? "").trim();
+      if (!transId) continue;
+      const cc = row.chief_complaint != null ? String(row.chief_complaint).trim() : "";
+      const hpi =
+        row.history_of_present_illness != null ? String(row.history_of_present_illness).trim() : "";
+      encounterClinicalById.set(transId, {
+        chief_complaint: cc || null,
+        history_of_present_illness: hpi || null,
+      });
+    }
+  }
 
   const assignedCounts = await loadAssignedItemCountsByRequestId(
     admin,
@@ -750,16 +792,23 @@ export async function listAllImagingRequestsForPatient(
 
   const rows: RadiologyPatientRequestRow[] = requests
     .filter((r) => (assignedCounts.get(r.id) ?? 0) > 0)
-    .map((r) => ({
-      imaging_request_id: r.id,
-      request_date: r.request_date,
-      request_time: r.request_time,
-      status: r.status,
-      priority: r.priority,
-      study_count: assignedCounts.get(r.id) ?? 0,
-      is_assigned_to_filter: true,
-      radiologist_name: radNameByRequestId?.get(r.id) ?? null,
-    }));
+    .map((r) => {
+      const encounterId = String(r.encounter_id ?? "").trim() || null;
+      const clinical = encounterId ? encounterClinicalById.get(encounterId) : undefined;
+      return {
+        imaging_request_id: r.id,
+        request_date: r.request_date,
+        request_time: r.request_time,
+        status: r.status,
+        priority: r.priority,
+        study_count: assignedCounts.get(r.id) ?? 0,
+        is_assigned_to_filter: true,
+        radiologist_name: radNameByRequestId?.get(r.id) ?? null,
+        encounter_id: encounterId,
+        chief_complaint: clinical?.chief_complaint ?? null,
+        history_of_present_illness: clinical?.history_of_present_illness ?? null,
+      };
+    });
 
   return { rows, error: null };
 }

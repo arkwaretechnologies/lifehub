@@ -10,6 +10,10 @@ import {
   Chip,
   CircularProgress,
   Collapse,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   FormControl,
   MenuItem,
   Select,
@@ -66,6 +70,50 @@ function paginationRangeLabel(from: number, to: number, count: number): string {
   return `${from}–${to} of ${count}`;
 }
 
+type ClinicalTextModalState = {
+  title: string;
+  text: string | null;
+  encounterLinked: boolean;
+} | null;
+
+function clinicalModalBody(modal: NonNullable<ClinicalTextModalState>): string {
+  if (!modal.encounterLinked) {
+    return "This imaging order is not linked to a consultation visit.";
+  }
+  const t = (modal.text ?? "").trim();
+  return t || "Not recorded in consultation.";
+}
+
+function ClinicalTextViewDialog({
+  modal,
+  onClose,
+}: {
+  modal: ClinicalTextModalState;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog open={modal != null} onClose={onClose} maxWidth="sm" fullWidth aria-labelledby="clinical-text-dialog-title">
+      <DialogTitle id="clinical-text-dialog-title" sx={{ fontWeight: 700 }}>
+        {modal?.title ?? ""}
+      </DialogTitle>
+      <DialogContent dividers>
+        <Typography
+          variant="body2"
+          color={modal && (modal.encounterLinked && (modal.text ?? "").trim()) ? "text.primary" : "text.secondary"}
+          sx={{ whiteSpace: "pre-wrap" }}
+        >
+          {modal ? clinicalModalBody(modal) : ""}
+        </Typography>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} color="secondary" variant="outlined" sx={{ textTransform: "none" }}>
+          Close
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
 export default function RadiologyPatientsPage() {
   const [canFilterRadiologists, setCanFilterRadiologists] = useState(false);
   const [radiologists, setRadiologists] = useState<RadiologistOption[]>([]);
@@ -95,6 +143,23 @@ export default function RadiologyPatientsPage() {
   const [drafts, setDrafts] = useState<Record<string, { findings: string; remarks: string }>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
   const [markingDoneId, setMarkingDoneId] = useState<string | null>(null);
+  const [clinicalModal, setClinicalModal] = useState<ClinicalTextModalState>(null);
+
+  const openChiefComplaintModal = (req: RadiologyPatientRequestRow) => {
+    setClinicalModal({
+      title: "Chief complaint",
+      text: req.chief_complaint,
+      encounterLinked: Boolean(req.encounter_id),
+    });
+  };
+
+  const openHpiModal = (req: RadiologyPatientRequestRow) => {
+    setClinicalModal({
+      title: "History of patient illness",
+      text: req.history_of_present_illness,
+      encounterLinked: Boolean(req.encounter_id),
+    });
+  };
 
   const loadRadiologists = useCallback(async () => {
     try {
@@ -540,6 +605,8 @@ export default function RadiologyPatientsPage() {
                                           <TableCell align="center">Studies</TableCell>
                                           <TableCell>Status</TableCell>
                                           <TableCell>Assignment</TableCell>
+                                          <TableCell>Chief complaint</TableCell>
+                                          <TableCell>History of patient illness</TableCell>
                                           <TableCell align="right">Actions</TableCell>
                                         </TableRow>
                                       </TableHead>
@@ -571,6 +638,28 @@ export default function RadiologyPatientsPage() {
                                                     —
                                                   </Typography>
                                                 )}
+                                              </TableCell>
+                                              <TableCell>
+                                                <Button
+                                                  size="small"
+                                                  variant="outlined"
+                                                  color="secondary"
+                                                  sx={{ textTransform: "none", whiteSpace: "nowrap" }}
+                                                  onClick={() => openChiefComplaintModal(req)}
+                                                >
+                                                  View Chief Complaint
+                                                </Button>
+                                              </TableCell>
+                                              <TableCell>
+                                                <Button
+                                                  size="small"
+                                                  variant="outlined"
+                                                  color="secondary"
+                                                  sx={{ textTransform: "none", whiteSpace: "nowrap" }}
+                                                  onClick={() => openHpiModal(req)}
+                                                >
+                                                  View HPI
+                                                </Button>
                                               </TableCell>
                                               <TableCell align="right">
                                                 <Button
@@ -772,6 +861,7 @@ export default function RadiologyPatientsPage() {
           )}
         </CardContent>
       </Card>
+      <ClinicalTextViewDialog modal={clinicalModal} onClose={() => setClinicalModal(null)} />
     </>
   );
 }

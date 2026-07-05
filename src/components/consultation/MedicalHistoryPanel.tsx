@@ -4,10 +4,12 @@ import { useCallback, useEffect, useId, useState } from "react";
 import {
   Alert,
   Box,
+  Button,
   Checkbox,
   CircularProgress,
   FormControlLabel,
   Grid,
+  IconButton,
   Radio,
   RadioGroup,
   Table,
@@ -18,6 +20,8 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import AddOutlinedIcon from "@mui/icons-material/AddOutlined";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import { BpSplitInput } from "@/components/BpSplitInput";
 import { FormFieldLabel } from "@/components/FormFieldLabel";
 import { DatePickerField } from "@/components/DatePickerField";
@@ -65,11 +69,13 @@ import {
   type SurgicalHistoryForm,
 } from "@/lib/surgicalHistory";
 import {
-  emptyPreviousHospitalizationForm,
-  fetchPreviousHospitalization,
-  formFromPreviousHospitalizationRowOrDefault,
-  persistPreviousHospitalization,
-  type PreviousHospitalizationForm,
+  emptyPreviousHospitalizationEntry,
+  emptyPreviousHospitalizationSectionState,
+  fetchPreviousHospitalizationsForEncounter,
+  previousHospitalizationOtherChecked,
+  replacePreviousHospitalizationsForEncounter,
+  type PreviousHospitalizationEntry,
+  type PreviousHospitalizationSectionState,
 } from "@/lib/previousHospitalizations";
 import {
   emptyAllergiesForm,
@@ -854,9 +860,22 @@ function SurgicalHistorySection({ transId, idPrefix }: { transId: string; idPref
   );
 }
 
+type PreviousHospitalizationEntryRow = PreviousHospitalizationEntry & { key: string };
+
+function newPreviousHospitalizationEntryRow(): PreviousHospitalizationEntryRow {
+  return { key: crypto.randomUUID(), ...emptyPreviousHospitalizationEntry() };
+}
+
+function entriesToRows(entries: PreviousHospitalizationEntry[]): PreviousHospitalizationEntryRow[] {
+  if (entries.length === 0) return [];
+  return entries.map((entry) => ({ key: crypto.randomUUID(), ...entry }));
+}
+
 function PreviousHospitalizationSection({ transId, idPrefix }: { transId: string; idPrefix: string }) {
-  const [form, setForm] = useState<PreviousHospitalizationForm>(emptyPreviousHospitalizationForm);
-  const [rowId, setRowId] = useState<string | null>(null);
+  const [sectionState, setSectionState] = useState<PreviousHospitalizationSectionState>(
+    emptyPreviousHospitalizationSectionState(),
+  );
+  const [entryRows, setEntryRows] = useState<PreviousHospitalizationEntryRow[]>([]);
   const [loadError, setLoadError] = useState("");
   const [saveError, setSaveError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -868,16 +887,16 @@ function PreviousHospitalizationSection({ transId, idPrefix }: { transId: string
     setLoading(true);
     setLoadError("");
     void (async () => {
-      const { row, error } = await fetchPreviousHospitalization(transId);
+      const { state, error } = await fetchPreviousHospitalizationsForEncounter(transId);
       if (cancelled) return;
       setLoading(false);
       if (error) {
         setLoadError(error);
-        setForm({ ...emptyPreviousHospitalizationForm });
-        setRowId(null);
+        setSectionState(emptyPreviousHospitalizationSectionState());
+        setEntryRows([]);
       } else {
-        setRowId(row?.id ?? null);
-        setForm(formFromPreviousHospitalizationRowOrDefault(row));
+        setSectionState(state);
+        setEntryRows(entriesToRows(state.entries));
       }
       setHydrated(true);
     })();
@@ -886,49 +905,70 @@ function PreviousHospitalizationSection({ transId, idPrefix }: { transId: string
     };
   }, [transId]);
 
+  const persistState = useCallback((): PreviousHospitalizationSectionState => {
+    return {
+      never: sectionState.never,
+      entries: entryRows.map(({ year, hospital, diagnosis }) => ({ year, hospital, diagnosis })),
+    };
+  }, [sectionState.never, entryRows]);
+
   const runPersist = useCallback(async () => {
     if (!hydrated) return;
     setSaveError("");
     setSaving(true);
-    const { rowId: newId, error } = await persistPreviousHospitalization(transId, rowId, form);
+    const { error } = await replacePreviousHospitalizationsForEncounter(transId, persistState());
     setSaving(false);
-    if (error) {
-      setSaveError(error);
-      return;
-    }
-    if (newId && !rowId) {
-      setRowId(newId);
-    }
-  }, [hydrated, transId, rowId, form]);
+    if (error) setSaveError(error);
+  }, [hydrated, transId, persistState]);
 
   useConsultationDebouncedSave({
     ownTabIndex: 0,
     hydrated,
     runPersist,
-    trigger: form,
+    trigger: { never: sectionState.never, entryRows },
   });
 
   function setNever(checked: boolean) {
-    setForm((prev) => {
-      if (checked) {
-        return {
-          ...emptyPreviousHospitalizationForm,
-          never: true,
-        };
-      }
-      return { ...prev, never: false };
-    });
+    if (checked) {
+      setSectionState({ never: true, entries: [] });
+      setEntryRows([]);
+      return;
+    }
+    setSectionState((prev) => ({ ...prev, never: false }));
   }
 
   function setOther(checked: boolean) {
-    setForm((prev) => ({
-      ...prev,
-      never: false,
-      other: checked,
-    }));
+    setSectionState((prev) => ({ ...prev, never: false }));
+    if (checked) {
+      setEntryRows((prev) => (prev.length === 0 ? [newPreviousHospitalizationEntryRow()] : prev));
+    } else {
+      setEntryRows([]);
+    }
   }
 
-  const fieldsDisabled = loading || form.never;
+  function updateEntry(key: string, patch: Partial<PreviousHospitalizationEntry>) {
+    setSectionState((prev) => ({ ...prev, never: false }));
+    setEntryRows((prev) => prev.map((row) => (row.key === key ? { ...row, ...patch } : row)));
+  }
+
+  function addEntry() {
+    setSectionState((prev) => ({ ...prev, never: false }));
+    setEntryRows((prev) => [...prev, newPreviousHospitalizationEntryRow()]);
+  }
+
+  function removeEntry(key: string) {
+    setEntryRows((prev) => {
+      const next = prev.filter((row) => row.key !== key);
+      return next.length === 0 ? [newPreviousHospitalizationEntryRow()] : next;
+    });
+  }
+
+  const otherChecked = previousHospitalizationOtherChecked({
+    never: sectionState.never,
+    entries: entryRows.map(({ year, hospital, diagnosis }) => ({ year, hospital, diagnosis })),
+  });
+  const fieldsDisabled = loading || sectionState.never;
+  const showTable = !sectionState.never && entryRows.length > 0;
 
   return (
     <Box sx={{ ...panelSectionSx, mb: 2 }}>
@@ -957,7 +997,7 @@ function PreviousHospitalizationSection({ transId, idPrefix }: { transId: string
           control={
             <Checkbox
               size="small"
-              checked={form.never}
+              checked={sectionState.never}
               onChange={(_, v) => setNever(v)}
               disabled={loading}
             />
@@ -969,92 +1009,108 @@ function PreviousHospitalizationSection({ transId, idPrefix }: { transId: string
           control={
             <Checkbox
               size="small"
-              checked={form.other}
+              checked={otherChecked}
               onChange={(_, v) => setOther(v)}
-              disabled={loading || form.never}
+              disabled={loading || sectionState.never}
             />
           }
           label="Other"
           sx={controlLabelSx}
         />
       </Box>
-      <Table
-        size="small"
-        sx={{ border: "1px solid", borderColor: "divider", "& td": { borderColor: "divider" } }}
-      >
-        <TableHead>
-          <TableRow sx={{ bgcolor: "grey.200" }}>
-            <TableCell sx={{ textTransform: "uppercase", fontWeight: 700, color: "info.main" }}>
-              Year
-            </TableCell>
-            <TableCell sx={{ textTransform: "uppercase", fontWeight: 700, color: "info.main" }}>
-              Hospital
-            </TableCell>
-            <TableCell sx={{ textTransform: "uppercase", fontWeight: 700, color: "info.main" }}>
-              Diagnosis
-            </TableCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          <TableRow>
-            <TableCell sx={{ p: 0.75, verticalAlign: "middle" }}>
-              <TextField
-                id={`${idPrefix}-hosp-year`}
-                hiddenLabel
-                disabled={fieldsDisabled}
-                placeholder=" "
-                value={form.year}
-                onChange={(e) =>
-                  setForm((prev) => ({
-                    ...prev,
-                    never: false,
-                    year: e.target.value.replace(/\D/g, "").slice(0, 4),
-                  }))
-                }
-                inputProps={{ inputMode: "numeric", maxLength: 4 }}
-                {...commonFieldProps}
-                sx={fieldInputSx}
-              />
-            </TableCell>
-            <TableCell sx={{ p: 0.75, verticalAlign: "middle" }}>
-              <TextField
-                id={`${idPrefix}-hosp-hospital`}
-                hiddenLabel
-                disabled={fieldsDisabled}
-                placeholder=" "
-                value={form.hospital}
-                onChange={(e) =>
-                  setForm((prev) => ({
-                    ...prev,
-                    never: false,
-                    hospital: e.target.value,
-                  }))
-                }
-                {...commonFieldProps}
-                sx={fieldInputSx}
-              />
-            </TableCell>
-            <TableCell sx={{ p: 0.75, verticalAlign: "middle" }}>
-              <TextField
-                id={`${idPrefix}-hosp-diagnosis`}
-                hiddenLabel
-                disabled={fieldsDisabled}
-                placeholder=" "
-                value={form.diagnosis}
-                onChange={(e) =>
-                  setForm((prev) => ({
-                    ...prev,
-                    never: false,
-                    diagnosis: e.target.value,
-                  }))
-                }
-                {...commonFieldProps}
-                sx={fieldInputSx}
-              />
-            </TableCell>
-          </TableRow>
-        </TableBody>
-      </Table>
+      {showTable ? (
+        <>
+          <Table
+            size="small"
+            sx={{ border: "1px solid", borderColor: "divider", "& td": { borderColor: "divider" } }}
+          >
+            <TableHead>
+              <TableRow sx={{ bgcolor: "grey.200" }}>
+                <TableCell sx={{ textTransform: "uppercase", fontWeight: 700, color: "info.main" }}>
+                  Year
+                </TableCell>
+                <TableCell sx={{ textTransform: "uppercase", fontWeight: 700, color: "info.main" }}>
+                  Hospital
+                </TableCell>
+                <TableCell sx={{ textTransform: "uppercase", fontWeight: 700, color: "info.main" }}>
+                  Diagnosis
+                </TableCell>
+                <TableCell sx={{ width: 48, p: 0.5 }} />
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {entryRows.map((row, idx) => (
+                <TableRow key={row.key}>
+                  <TableCell sx={{ p: 0.75, verticalAlign: "middle" }}>
+                    <TextField
+                      id={idx === 0 ? `${idPrefix}-hosp-year` : undefined}
+                      hiddenLabel
+                      disabled={fieldsDisabled}
+                      placeholder=" "
+                      value={row.year}
+                      onChange={(e) =>
+                        updateEntry(row.key, {
+                          year: e.target.value.replace(/\D/g, "").slice(0, 4),
+                        })
+                      }
+                      inputProps={{ inputMode: "numeric", maxLength: 4 }}
+                      {...commonFieldProps}
+                      sx={fieldInputSx}
+                    />
+                  </TableCell>
+                  <TableCell sx={{ p: 0.75, verticalAlign: "middle" }}>
+                    <TextField
+                      id={idx === 0 ? `${idPrefix}-hosp-hospital` : undefined}
+                      hiddenLabel
+                      disabled={fieldsDisabled}
+                      placeholder=" "
+                      value={row.hospital}
+                      onChange={(e) => updateEntry(row.key, { hospital: e.target.value })}
+                      {...commonFieldProps}
+                      sx={fieldInputSx}
+                    />
+                  </TableCell>
+                  <TableCell sx={{ p: 0.75, verticalAlign: "middle" }}>
+                    <TextField
+                      id={idx === 0 ? `${idPrefix}-hosp-diagnosis` : undefined}
+                      hiddenLabel
+                      disabled={fieldsDisabled}
+                      placeholder=" "
+                      value={row.diagnosis}
+                      onChange={(e) => updateEntry(row.key, { diagnosis: e.target.value })}
+                      {...commonFieldProps}
+                      sx={fieldInputSx}
+                    />
+                  </TableCell>
+                  <TableCell sx={{ p: 0.5, verticalAlign: "middle" }}>
+                    {entryRows.length > 1 ? (
+                      <IconButton
+                        size="small"
+                        aria-label="Remove hospitalization row"
+                        onClick={() => removeEntry(row.key)}
+                        disabled={fieldsDisabled}
+                      >
+                        <DeleteOutlineIcon fontSize="small" />
+                      </IconButton>
+                    ) : null}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+          <Button
+            type="button"
+            variant="outlined"
+            size="small"
+            onClick={addEntry}
+            disabled={fieldsDisabled}
+            startIcon={<AddOutlinedIcon />}
+            sx={{ textTransform: "none", mt: 1 }}
+          >
+            Add hospitalization
+          </Button>
+        </>
+      ) : null}
     </Box>
   );
 }

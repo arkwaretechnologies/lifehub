@@ -5,7 +5,8 @@ import type { FamilyHistoryForm } from "@/lib/familyHistory";
 import type { ObstetricHistoryForm } from "@/lib/obstetricHistory";
 import type { PastMedicalHistoryForm } from "@/lib/pastMedicalHistory";
 import type { PhysicalExaminationForm } from "@/lib/physicalExamination";
-import type { PreviousHospitalizationForm } from "@/lib/previousHospitalizations";
+import type { PreviousHospitalizationSectionState } from "@/lib/previousHospitalizations";
+import { previousHospitalizationOtherChecked } from "@/lib/previousHospitalizations";
 import type { ReviewOfSystemsForm } from "@/lib/reviewOfSystems";
 import type { SocialHistoryForm } from "@/lib/socialHistory";
 import type { SurgicalHistoryForm } from "@/lib/surgicalHistory";
@@ -41,7 +42,7 @@ type ConsultationPrintDetails = {
   familyHistory: FamilyHistoryForm;
   socialHistory: SocialHistoryForm;
   surgicalHistory: SurgicalHistoryForm;
-  previousHospitalization: PreviousHospitalizationForm;
+  previousHospitalization: PreviousHospitalizationSectionState;
   obstetricHistory: ObstetricHistoryForm;
   reviewOfSystems: ReviewOfSystemsForm;
   allergies: AllergiesForm;
@@ -547,16 +548,23 @@ export async function openConsultationPrintWindow(args: {
       drawWrapped(p1, sgOthers, 92, hG - 482, wG - 72, font, size2, 10);
     }
 
-    // PREVIOUS HOSPITALIZATION: Never/Other + table row values
+    // PREVIOUS HOSPITALIZATION: Never/Other + table row values (stack up to 3 rows)
     const ph = details.previousHospitalization;
+    const phOther = previousHospitalizationOtherChecked(ph);
     chkF(92, 503, ph.never);
-    chkF(92, 516, ph.other);
-    const phYear = ph.year.trim();
-    const phHospital = ph.hospital.trim();
-    const phDiagnosis = ph.diagnosis.trim();
-    if (phYear) drawAtTop(p1, phYear, 92, 542, size2, font);
-    if (phHospital) drawAtTop(p1, phHospital, 142, 542, size2, font);
-    if (phDiagnosis) drawAtTop(p1, phDiagnosis, 215, 542, size2, font);
+    chkF(92, 516, phOther);
+    const phRowBase = 542;
+    const phRowStep = 13;
+    const phMaxRows = 3;
+    ph.entries.slice(0, phMaxRows).forEach((entry, i) => {
+      const fromTop = phRowBase - i * phRowStep;
+      const phYear = entry.year.trim();
+      const phHospital = entry.hospital.trim();
+      const phDiagnosis = entry.diagnosis.trim();
+      if (phYear) drawAtTop(p1, phYear, 92, fromTop, size2, font);
+      if (phHospital) drawAtTop(p1, phHospital, 142, fromTop, size2, font);
+      if (phDiagnosis) drawAtTop(p1, phDiagnosis, 215, fromTop, size2, font);
+    });
 
     // OBSTETRIC: N/A + dates + options + GPAL + values
     const ob = details.obstetricHistory;

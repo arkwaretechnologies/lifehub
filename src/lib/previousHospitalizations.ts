@@ -11,21 +11,27 @@ export type PreviousHospitalizationRow = {
   diagnosis: string | null;
 };
 
-export type PreviousHospitalizationForm = {
-  never: boolean;
-  other: boolean;
+export type PreviousHospitalizationEntry = {
   year: string;
   hospital: string;
   diagnosis: string;
 };
 
-export const emptyPreviousHospitalizationForm: PreviousHospitalizationForm = {
-  never: false,
-  other: false,
+export type PreviousHospitalizationSectionState = {
+  never: boolean;
+  entries: PreviousHospitalizationEntry[];
+};
+
+export const emptyPreviousHospitalizationEntry = (): PreviousHospitalizationEntry => ({
   year: "",
   hospital: "",
   diagnosis: "",
-};
+});
+
+export const emptyPreviousHospitalizationSectionState = (): PreviousHospitalizationSectionState => ({
+  never: false,
+  entries: [],
+});
 
 function parseYear(raw: string): number | null {
   const t = raw.trim();
@@ -36,33 +42,26 @@ function parseYear(raw: string): number | null {
   return n;
 }
 
-function rowToForm(row: PreviousHospitalizationRow): PreviousHospitalizationForm {
-  const never = !!row.never;
-  const hasDetail =
-    row.year != null ||
-    !!(row.hospital && row.hospital.trim()) ||
-    !!(row.diagnosis && row.diagnosis.trim());
+function rowToEntry(row: PreviousHospitalizationRow): PreviousHospitalizationEntry {
   return {
-    never,
-    other: !never && hasDetail,
     year: row.year != null ? String(row.year) : "",
     hospital: row.hospital ?? "",
     diagnosis: row.diagnosis ?? "",
   };
 }
 
-function formToPayload(form: PreviousHospitalizationForm) {
-  if (form.never) {
-    return {
-      never: true,
-      year: null as number | null,
-      hospital: null as string | null,
-      diagnosis: null as string | null,
-    };
-  }
-  const y = parseYear(form.year);
-  const h = form.hospital.trim();
-  const d = form.diagnosis.trim();
+function entryHasContent(entry: PreviousHospitalizationEntry): boolean {
+  return (
+    parseYear(entry.year) != null ||
+    entry.hospital.trim().length > 0 ||
+    entry.diagnosis.trim().length > 0
+  );
+}
+
+function entryToPayload(entry: PreviousHospitalizationEntry) {
+  const y = parseYear(entry.year);
+  const h = entry.hospital.trim();
+  const d = entry.diagnosis.trim();
   return {
     never: false,
     year: y,
@@ -71,54 +70,89 @@ function formToPayload(form: PreviousHospitalizationForm) {
   };
 }
 
-export async function fetchPreviousHospitalization(transId: string): Promise<{
-  row: PreviousHospitalizationRow | null;
+/** Map DB rows to UI / print section state. */
+export function sectionStateFromRows(
+  rows: PreviousHospitalizationRow[] | null | undefined,
+): PreviousHospitalizationSectionState {
+  const list = rows ?? [];
+  if (list.some((r) => r.never)) {
+    return { never: true, entries: [] };
+  }
+  const entries = list.filter((r) => !r.never).map(rowToEntry);
+  return { never: false, entries };
+}
+
+export const sectionStateForPrint = sectionStateFromRows;
+
+export async function fetchPreviousHospitalizationsForEncounter(transId: string): Promise<{
+  rows: PreviousHospitalizationRow[];
+  state: PreviousHospitalizationSectionState;
   error: string | null;
 }> {
+  const id = transId.trim();
+  if (!id) {
+    return {
+      rows: [],
+      state: emptyPreviousHospitalizationSectionState(),
+      error: "Invalid encounter.",
+    };
+  }
+
   const { data, error } = await supabase
     .from(PREVIOUS_HOSPITALIZATIONS_TABLE)
     .select("*")
-    .eq("trans_id", transId)
-    .limit(1)
-    .maybeSingle();
+    .eq("trans_id", id)
+    .order("id");
 
   if (error) {
-    return { row: null, error: error.message };
+    return {
+      rows: [],
+      state: emptyPreviousHospitalizationSectionState(),
+      error: error.message,
+    };
   }
-  return { row: (data as PreviousHospitalizationRow) ?? null, error: null };
+
+  const rows = (data ?? []) as PreviousHospitalizationRow[];
+  return { rows, state: sectionStateFromRows(rows), error: null };
 }
 
-export async function persistPreviousHospitalization(
+/**
+ * Replaces all `previous_hospitalizations` rows for an encounter.
+ * Never → one `{ never: true }` row; otherwise one row per non-empty entry.
+ */
+export async function replacePreviousHospitalizationsForEncounter(
   transId: string,
-  existingRowId: string | null,
-  form: PreviousHospitalizationForm
-): Promise<{ rowId: string | null; error: string | null }> {
-  const payload = formToPayload(form);
+  state: PreviousHospitalizationSectionState,
+): Promise<{ error: string | null }> {
+  const id = transId.trim();
+  if (!id) return { error: "Invalid encounter." };
 
-  if (existingRowId) {
-    const { error } = await supabase
-      .from(PREVIOUS_HOSPITALIZATIONS_TABLE)
-      .update(payload)
-      .eq("id", existingRowId);
-    return { rowId: existingRowId, error: error?.message ?? null };
+  const del = await supabase.from(PREVIOUS_HOSPITALIZATIONS_TABLE).delete().eq("trans_id", id);
+  if (del.error) return { error: del.error.message };
+
+  if (state.never) {
+    const ins = await supabase.from(PREVIOUS_HOSPITALIZATIONS_TABLE).insert({
+      trans_id: id,
+      never: true,
+      year: null,
+      hospital: null,
+      diagnosis: null,
+    });
+    return { error: ins.error?.message ?? null };
   }
 
-  const { data, error } = await supabase
-    .from(PREVIOUS_HOSPITALIZATIONS_TABLE)
-    .insert({ trans_id: transId, ...payload })
-    .select("id")
-    .single();
+  const payloads = state.entries.filter(entryHasContent).map((entry) => ({
+    trans_id: id,
+    ...entryToPayload(entry),
+  }));
 
-  if (error) {
-    return { rowId: null, error: error.message };
-  }
-  const id = (data as { id?: string } | null)?.id ?? null;
-  return { rowId: id, error: null };
+  if (payloads.length === 0) return { error: null };
+
+  const ins = await supabase.from(PREVIOUS_HOSPITALIZATIONS_TABLE).insert(payloads);
+  return { error: ins.error?.message ?? null };
 }
 
-export function formFromPreviousHospitalizationRowOrDefault(
-  row: PreviousHospitalizationRow | null
-): PreviousHospitalizationForm {
-  if (!row) return { ...emptyPreviousHospitalizationForm };
-  return rowToForm(row);
+/** Whether the section has the Other checkbox checked in UI. */
+export function previousHospitalizationOtherChecked(state: PreviousHospitalizationSectionState): boolean {
+  return !state.never && state.entries.length > 0;
 }

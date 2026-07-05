@@ -43,6 +43,7 @@ import {
   fetchEncountersForPatient,
   type ConsultationPatientListRow,
 } from "@/lib/consultationData";
+import { seedNewConsultationFromPreviousVisit } from "@/lib/consultationEncounterSeed";
 import type { ConsultationEncounterSummary } from "./consultationTypes";
 import { ConsultationSectionTitle } from "@/components/consultation/ConsultationSectionTitle";
 import {
@@ -266,12 +267,15 @@ export default function ConsultationHome() {
     setCreateEncounterError("");
     setCreatingEncounter(true);
     const res = await createEncounterForPatient(pid);
-    setCreatingEncounter(false);
     if (res.error || !res.transId) {
+      setCreatingEncounter(false);
       setCreateEncounterError(res.error ?? "Could not create encounter.");
       return;
     }
-    router.push(`/consultation/${res.transId}?new=1`);
+    const seed = await seedNewConsultationFromPreviousVisit(res.transId);
+    setCreatingEncounter(false);
+    const seedQuery = seed.error ? "&seedFailed=1" : "";
+    router.push(`/consultation/${res.transId}?new=1${seedQuery}`);
   }
 
   function formatReferringPhysicianCell(value: string | number | null): string {

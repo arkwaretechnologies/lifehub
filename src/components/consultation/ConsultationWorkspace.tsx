@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   Alert,
   Box,
@@ -58,8 +58,8 @@ import {
   formFromObstetricHistoryRowOrDefault,
 } from "@/lib/obstetricHistory";
 import {
-  fetchPreviousHospitalization,
-  formFromPreviousHospitalizationRowOrDefault,
+  fetchPreviousHospitalizationsForEncounter,
+  sectionStateForPrint,
 } from "@/lib/previousHospitalizations";
 import {
   fetchReviewOfSystems,
@@ -109,6 +109,7 @@ export default function ConsultationWorkspace({
 
 function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: ConsultationPatient; transId: string; isNew: boolean }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { profile } = useAuth();
   const [tab, setTab] = useState(0);
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
@@ -118,9 +119,19 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
   const [saveToastOpen, setSaveToastOpen] = useState(false);
   const [saveToastMessage, setSaveToastMessage] = useState("");
   const [saveToastSeverity, setSaveToastSeverity] = useState<"success" | "error">("success");
+  const [seedWarningOpen, setSeedWarningOpen] = useState(false);
   const saveNavigateAfterToastRef = useRef(false);
   const saveToolbarRef = useRef<HTMLDivElement>(null);
   const { dirty, runSaveAll, saving } = useConsultationSave();
+
+  useEffect(() => {
+    if (searchParams.get("seedFailed") !== "1") return;
+    setSeedWarningOpen(true);
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("seedFailed");
+    const qs = next.toString();
+    router.replace(`/consultation/${transId}${qs ? `?${qs}` : ""}`, { scroll: false });
+  }, [searchParams, router, transId]);
 
   const handleSaveConsultation = useCallback(async () => {
     const r = await runSaveAll();
@@ -438,7 +449,7 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
                   fetchFamilyHistory(transId),
                   fetchSocialHistory(transId),
                   fetchSurgicalHistory(transId),
-                  fetchPreviousHospitalization(transId),
+                  fetchPreviousHospitalizationsForEncounter(transId),
                   fetchObstetricHistory(transId),
                   fetchReviewOfSystems(transId),
                   fetchPhysicalExamination(transId),
@@ -527,9 +538,7 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
                     familyHistory: formFromFamilyRowOrDefault(familyHistory.row),
                     socialHistory: formFromSocialHistoryRowOrDefault(socialHistory.row),
                     surgicalHistory: formFromSurgicalRowOrDefault(surgicalHistory.row),
-                    previousHospitalization: formFromPreviousHospitalizationRowOrDefault(
-                      previousHospitalization.row,
-                    ),
+                    previousHospitalization: sectionStateForPrint(previousHospitalization.rows),
                     obstetricHistory: formFromObstetricHistoryRowOrDefault(
                       obstetricHistory.row,
                     ),
@@ -712,10 +721,10 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
           }}
         >
           <Box role="tabpanel" id="consultation-tabpanel-0" aria-labelledby="consultation-tab-0" hidden={tab !== 0} sx={{ display: tab === 0 ? "block" : "none" }}>
-            <MedicalHistoryPanel transId={transId} />
+            <MedicalHistoryPanel key={transId} transId={transId} />
           </Box>
           <Box role="tabpanel" id="consultation-tabpanel-1" aria-labelledby="consultation-tab-1" hidden={tab !== 1} sx={{ display: tab === 1 ? "block" : "none" }}>
-            <PhysicalAssessmentPanel transId={transId} />
+            <PhysicalAssessmentPanel key={transId} transId={transId} />
           </Box>
           <Box role="tabpanel" id="consultation-tabpanel-2" aria-labelledby="consultation-tab-2" hidden={tab !== 2} sx={{ display: tab === 2 ? "block" : "none" }}>
             <PhysiciansRecordPanel transId={transId} />
@@ -747,6 +756,17 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
       >
         <Alert severity={saveToastSeverity} variant="filled" onClose={handleSaveToastClose} sx={{ width: "100%" }}>
           {saveToastMessage}
+        </Alert>
+      </Snackbar>
+
+      <Snackbar
+        open={seedWarningOpen}
+        autoHideDuration={8000}
+        onClose={() => setSeedWarningOpen(false)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert severity="warning" variant="filled" onClose={() => setSeedWarningOpen(false)} sx={{ width: "100%" }}>
+          Visit started, but prior medical history could not be copied.
         </Alert>
       </Snackbar>
 

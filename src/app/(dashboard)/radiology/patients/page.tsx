@@ -24,13 +24,13 @@ import {
   TableHead,
   TablePagination,
   TableRow,
-  TextField,
   Typography,
 } from "@mui/material";
-import { commonFieldProps, fieldInputSx, imagingReportFieldSx, menuItemSx } from "@/components/fieldInputStyles";
+import { fieldInputSx, menuItemSx } from "@/components/fieldInputStyles";
 import { FormFieldLabel } from "@/components/FormFieldLabel";
 import { DatePickerField } from "@/components/DatePickerField";
 import ImagingStudyImageUpload from "@/components/imaging/ImagingStudyImageUpload";
+import ImagingReportTextField from "@/components/radiology/ImagingReportTextField";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { formatDateMMDDYYYY, formatLabTime } from "@/lib/dateDisplay";
 import { isImagingItemInterpreted, isImagingItemResultReceived, imagingItemStatusLabel } from "@/lib/imagingQueueSync";
@@ -737,41 +737,37 @@ export default function RadiologyPatientsPage() {
                                                   />
                                                 </TableCell>
                                                 <TableCell>
-                                                  <TextField
-                                                    {...commonFieldProps}
-                                                    multiline
-                                                    minRows={2}
-                                                    disabled={!editable || rowBusy}
+                                                  <ImagingReportTextField
+                                                    label="Findings"
+                                                    studyLabel={`${it.study_name}${it.view_text ? ` (${it.view_text})` : ""}`}
                                                     value={drafts[it.id]?.findings ?? ""}
-                                                    onChange={(e) =>
+                                                    onChange={(findings) =>
                                                       setDrafts((prev) => ({
                                                         ...prev,
                                                         [it.id]: {
-                                                          findings: e.target.value,
+                                                          findings,
                                                           remarks: prev[it.id]?.remarks ?? "",
                                                         },
                                                       }))
                                                     }
-                                                    sx={imagingReportFieldSx}
+                                                    disabled={!editable || rowBusy}
                                                   />
                                                 </TableCell>
                                                 <TableCell>
-                                                  <TextField
-                                                    {...commonFieldProps}
-                                                    multiline
-                                                    minRows={2}
-                                                    disabled={!editable || rowBusy}
+                                                  <ImagingReportTextField
+                                                    label="Impression"
+                                                    studyLabel={`${it.study_name}${it.view_text ? ` (${it.view_text})` : ""}`}
                                                     value={drafts[it.id]?.remarks ?? ""}
-                                                    onChange={(e) =>
+                                                    onChange={(remarks) =>
                                                       setDrafts((prev) => ({
                                                         ...prev,
                                                         [it.id]: {
                                                           findings: prev[it.id]?.findings ?? "",
-                                                          remarks: e.target.value,
+                                                          remarks,
                                                         },
                                                       }))
                                                     }
-                                                    sx={imagingReportFieldSx}
+                                                    disabled={!editable || rowBusy}
                                                   />
                                                 </TableCell>
                                                 <TableCell align="right" sx={{ minWidth: 160 }}>

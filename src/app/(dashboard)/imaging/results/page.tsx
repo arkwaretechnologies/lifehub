@@ -239,6 +239,8 @@ export default function ImagingResultsPage() {
       selectedTicket?.status === "Collected" ||
       selectedTicket?.status === "Completed" ||
       (selectedTicket?.status === "Called" && selectedTicket?.active_dept !== "LAB"));
+  /** Received / upload: allowed whenever the request is openable (incl. captured · lab pending). */
+  const canMarkReceived = canOpenRequest;
   const [itemBusyId, setItemBusyId] = useState<string | null>(null);
 
   const canSendResultSms = Boolean(header?.id && header?.any_result_saved && header?.patient_contact_no);
@@ -825,7 +827,7 @@ export default function ImagingResultsPage() {
                               <Checkbox
                                 size="small"
                                 checked={resultReceived}
-                                disabled={!canMarkCaptured || rowBusy || !captured}
+                                disabled={!canMarkReceived || rowBusy || !captured}
                                 onChange={(_, checked) => void patchImagingItem(it.id, { received: checked })}
                               />
                             </span>

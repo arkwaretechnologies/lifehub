@@ -21,6 +21,16 @@ import { clinicDateYmd, clinicTimeHms } from "@/lib/queueTicketDate";
 export const IMAGING_REQUESTS_TABLE = "imaging_requests" as const;
 export const IMAGING_REQUEST_ITEMS_TABLE = "imaging_request_items" as const;
 
+export type ImagingRequestItemImageRow = {
+  id: string;
+  imaging_request_item_id: string;
+  storage_path: string;
+  content_type: string | null;
+  original_filename: string | null;
+  sort_order: number;
+  uploaded_at: string;
+};
+
 export type ImagingRequestItemRow = {
   id: string;
   imaging_request_id: string;

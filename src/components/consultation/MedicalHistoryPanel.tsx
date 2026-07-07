@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import {
   Alert,
   Box,
@@ -921,11 +921,19 @@ function PreviousHospitalizationSection({ transId, idPrefix }: { transId: string
     if (error) setSaveError(error);
   }, [hydrated, transId, persistState]);
 
+  const saveTrigger = useMemo(
+    () => ({
+      never: sectionState.never,
+      entries: entryRows.map(({ year, hospital, diagnosis }) => ({ year, hospital, diagnosis })),
+    }),
+    [sectionState.never, entryRows],
+  );
+
   useConsultationDebouncedSave({
     ownTabIndex: 0,
     hydrated,
     runPersist,
-    trigger: { never: sectionState.never, entryRows },
+    trigger: saveTrigger,
   });
 
   function setNever(checked: boolean) {

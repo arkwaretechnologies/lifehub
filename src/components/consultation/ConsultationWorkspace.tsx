@@ -34,6 +34,7 @@ import PhysiciansRecordPanel from "./PhysiciansRecordPanel";
 import PlansTreatmentPanel from "./PlansTreatmentPanel";
 import ReviewOfSystemsPanel from "./ReviewOfSystemsPanel";
 import ChargesServicesPanel from "./ChargesServicesPanel";
+import MedicalCertificatePanel from "./MedicalCertificatePanel";
 import { useAuth } from "@/components/AuthProvider";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { fetchEncounterClinicalDiagnosis, fetchEncounterPhysicianRecord, fetchEncounterPlansTreatment } from "@/lib/consultationData";
@@ -84,6 +85,7 @@ const PRIMARY_TABS = [
   "Focused exam / notes",
   "Assessment / diagnosis",
   "Plans / treatment",
+  "Medical certificate",
   "Charges / services",
 ] as const;
 
@@ -690,13 +692,18 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
         <Tabs
           value={tab}
           onChange={(_, v) => setTab(v)}
-          variant="scrollable"
-          scrollButtons="auto"
+          variant="fullWidth"
           sx={{
             "& .MuiTab-root": {
               textTransform: "capitalize",
-              minHeight: 48,
+              minHeight: 44,
+              minWidth: 0,
+              px: { xs: 0.5, sm: 0.75 },
+              py: 1,
+              fontSize: { xs: "0.7rem", sm: "0.8125rem" },
               fontWeight: 600,
+              lineHeight: 1.2,
+              whiteSpace: "normal",
               color: "text.secondary",
             },
             "& .Mui-selected": { color: "info.main" },
@@ -739,6 +746,9 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
             <PlansTreatmentPanel transId={transId} patient={patient} isNew={isNew} />
           </Box>
           <Box role="tabpanel" id="consultation-tabpanel-6" aria-labelledby="consultation-tab-6" hidden={tab !== 6} sx={{ display: tab === 6 ? "block" : "none" }}>
+            <MedicalCertificatePanel key={transId} transId={transId} patient={patient} />
+          </Box>
+          <Box role="tabpanel" id="consultation-tabpanel-7" aria-labelledby="consultation-tab-7" hidden={tab !== 7} sx={{ display: tab === 7 ? "block" : "none" }}>
             <ChargesServicesPanel transId={transId} patient={patient} />
           </Box>
         </Box>

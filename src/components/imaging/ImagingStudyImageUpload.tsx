@@ -1,16 +1,23 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import CloudUploadOutlinedIcon from "@mui/icons-material/CloudUploadOutlined";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import RestartAltOutlinedIcon from "@mui/icons-material/RestartAltOutlined";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import ZoomInOutlinedIcon from "@mui/icons-material/ZoomInOutlined";
 import ZoomOutOutlinedIcon from "@mui/icons-material/ZoomOutOutlined";
 import {
+  Badge,
   Box,
+  Button,
   CircularProgress,
   Dialog,
+  DialogActions,
   DialogContent,
+  DialogContentText,
   DialogTitle,
   IconButton,
   Tooltip,
@@ -22,6 +29,14 @@ import { IMAGING_UPLOAD_ACCEPT } from "@/lib/imagingResultImageShared";
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = 0.25;
+
+type ViewerImage = {
+  id: string;
+  imageUrl: string;
+  contentType: string | null;
+  originalFilename: string | null;
+  sortOrder: number;
+};
 
 type Props = {
   itemId: string;
@@ -47,30 +62,48 @@ function clampZoom(value: number): number {
 
 type StudyImageViewerDialogProps = {
   open: boolean;
-  title: string;
-  imageUrl: string | null;
-  legacyDicom: boolean;
+  images: ViewerImage[];
+  currentIndex: number;
   loading: boolean;
+  canDelete: boolean;
+  deleting: boolean;
   onClose: () => void;
+  onPrev: () => void;
+  onNext: () => void;
+  onDelete: () => void;
 };
 
 function StudyImageViewerDialog({
   open,
-  title,
-  imageUrl,
-  legacyDicom,
+  images,
+  currentIndex,
   loading,
+  canDelete,
+  deleting,
   onClose,
+  onPrev,
+  onNext,
+  onDelete,
 }: StudyImageViewerDialogProps) {
   const [scale, setScale] = useState(MIN_ZOOM);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [imageLoading, setImageLoading] = useState(false);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const dragStart = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+
+  const current = images[currentIndex] ?? null;
+  const imageUrl = current?.imageUrl ?? null;
+  const title = current?.originalFilename?.trim() || "Study image";
+  const legacyDicom = isLegacyDicomContent(current?.contentType ?? null, current?.originalFilename);
+  const hasMultiple = images.length > 1;
+  const canGoPrev = currentIndex > 0;
+  const canGoNext = currentIndex < images.length - 1;
 
   useEffect(() => {
     if (!open) {
       setImageLoading(false);
+      setConfirmDeleteOpen(false);
       return;
     }
     setScale(MIN_ZOOM);
@@ -81,7 +114,24 @@ function StudyImageViewerDialog({
     } else {
       setImageLoading(false);
     }
-  }, [open, imageUrl, legacyDicom]);
+  }, [open, imageUrl, legacyDicom, currentIndex]);
+
+  useEffect(() => {
+    if (!open || !hasMultiple) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "ArrowLeft" && canGoPrev) {
+        e.preventDefault();
+        onPrev();
+      } else if (e.key === "ArrowRight" && canGoNext) {
+        e.preventDefault();
+        onNext();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [open, hasMultiple, canGoPrev, canGoNext, onPrev, onNext]);
 
   const canPan = scale > MIN_ZOOM;
 
@@ -147,52 +197,108 @@ function StudyImageViewerDialog({
           pr: 2,
         }}
       >
-        <Typography component="span" variant="h6" noWrap sx={{ flex: 1, fontSize: "1rem", fontWeight: 600 }}>
-          {title}
-        </Typography>
-        {!legacyDicom && imageUrl && !showLoading ? (
-          <Box sx={{ display: "flex", alignItems: "center", gap: 0.25, flexShrink: 0 }}>
-            <Tooltip title="Zoom out">
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, flex: 1, minWidth: 0 }}>
+          {hasMultiple ? (
+            <Tooltip title="Previous image">
               <span>
                 <IconButton
                   size="small"
-                  onClick={zoomOut}
-                  disabled={scale <= MIN_ZOOM}
-                  aria-label="Zoom out"
+                  onClick={onPrev}
+                  disabled={!canGoPrev}
+                  aria-label="Previous image"
                 >
-                  <ZoomOutOutlinedIcon fontSize="small" />
+                  <ChevronLeftIcon fontSize="small" />
                 </IconButton>
               </span>
             </Tooltip>
-            <Typography variant="caption" color="text.secondary" sx={{ minWidth: 40, textAlign: "center" }}>
-              {Math.round(scale * 100)}%
-            </Typography>
-            <Tooltip title="Zoom in">
+          ) : null}
+          <Typography component="span" variant="h6" noWrap sx={{ flex: 1, fontSize: "1rem", fontWeight: 600 }}>
+            {title}
+          </Typography>
+          {hasMultiple ? (
+            <>
+              <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
+                {currentIndex + 1} / {images.length}
+              </Typography>
+              <Tooltip title="Next image">
+                <span>
+                  <IconButton
+                    size="small"
+                    onClick={onNext}
+                    disabled={!canGoNext}
+                    aria-label="Next image"
+                  >
+                    <ChevronRightIcon fontSize="small" />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            </>
+          ) : null}
+        </Box>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.25, flexShrink: 0 }}>
+          {!legacyDicom && imageUrl && !showLoading ? (
+            <>
+              <Tooltip title="Zoom out">
+                <span>
+                  <IconButton
+                    size="small"
+                    onClick={zoomOut}
+                    disabled={scale <= MIN_ZOOM}
+                    aria-label="Zoom out"
+                  >
+                    <ZoomOutOutlinedIcon fontSize="small" />
+                  </IconButton>
+                </span>
+              </Tooltip>
+              <Typography variant="caption" color="text.secondary" sx={{ minWidth: 40, textAlign: "center" }}>
+                {Math.round(scale * 100)}%
+              </Typography>
+              <Tooltip title="Zoom in">
+                <span>
+                  <IconButton
+                    size="small"
+                    onClick={zoomIn}
+                    disabled={scale >= MAX_ZOOM}
+                    aria-label="Zoom in"
+                  >
+                    <ZoomInOutlinedIcon fontSize="small" />
+                  </IconButton>
+                </span>
+              </Tooltip>
+              <Tooltip title="Reset view">
+                <span>
+                  <IconButton
+                    size="small"
+                    onClick={resetView}
+                    disabled={scale <= MIN_ZOOM && pan.x === 0 && pan.y === 0}
+                    aria-label="Reset view"
+                  >
+                    <RestartAltOutlinedIcon fontSize="small" />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            </>
+          ) : null}
+          {canDelete ? (
+            <Tooltip title="Delete this image">
               <span>
                 <IconButton
                   size="small"
-                  onClick={zoomIn}
-                  disabled={scale >= MAX_ZOOM}
-                  aria-label="Zoom in"
+                  color="error"
+                  disabled={deleting || !current?.id}
+                  onClick={() => setConfirmDeleteOpen(true)}
+                  aria-label="Delete image"
                 >
-                  <ZoomInOutlinedIcon fontSize="small" />
+                  {deleting ? (
+                    <CircularProgress size={18} color="inherit" />
+                  ) : (
+                    <DeleteOutlineIcon fontSize="small" />
+                  )}
                 </IconButton>
               </span>
             </Tooltip>
-            <Tooltip title="Reset view">
-              <span>
-                <IconButton
-                  size="small"
-                  onClick={resetView}
-                  disabled={scale <= MIN_ZOOM && pan.x === 0 && pan.y === 0}
-                  aria-label="Reset view"
-                >
-                  <RestartAltOutlinedIcon fontSize="small" />
-                </IconButton>
-              </span>
-            </Tooltip>
-          </Box>
-        ) : null}
+          ) : null}
+        </Box>
       </DialogTitle>
       <DialogContent sx={{ p: 0 }}>
         {legacyDicom ? (
@@ -249,6 +355,30 @@ function StudyImageViewerDialog({
           </Box>
         )}
       </DialogContent>
+      <Dialog open={confirmDeleteOpen} onClose={() => !deleting && setConfirmDeleteOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Delete image?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Remove <strong>{title}</strong> from this study? This cannot be undone.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setConfirmDeleteOpen(false)} disabled={deleting}>
+            Cancel
+          </Button>
+          <Button
+            color="error"
+            variant="contained"
+            disabled={deleting}
+            onClick={() => {
+              setConfirmDeleteOpen(false);
+              onDelete();
+            }}
+          >
+            Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Dialog>
   );
 }
@@ -259,90 +389,150 @@ export default function ImagingStudyImageUpload({
   disabled,
   readOnly,
   hasImage: hasImageProp,
-  originalFilename,
   onUploaded,
   onError,
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
-  const [loadingPreview, setLoadingPreview] = useState(false);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [contentType, setContentType] = useState<string | null>(null);
+  const [loadingImages, setLoadingImages] = useState(false);
+  const [images, setImages] = useState<ViewerImage[]>([]);
+  const [currentIndex, setCurrentIndex] = useState(0);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [hasImage, setHasImage] = useState(hasImageProp);
+  const [imageCount, setImageCount] = useState(hasImageProp ? 1 : 0);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     setHasImage(hasImageProp);
+    if (!hasImageProp) {
+      setImageCount(0);
+      setImages([]);
+    }
   }, [hasImageProp]);
 
-  const loadPreview = useCallback(async () => {
+  useEffect(() => {
+    setImages([]);
+    setCurrentIndex(0);
+  }, [itemId]);
+
+  const loadImages = useCallback(async () => {
     if (!hasImage || !itemId.trim()) {
-      setPreviewUrl(null);
-      setContentType(null);
-      return null;
+      setImages([]);
+      setImageCount(0);
+      return [];
     }
-    setLoadingPreview(true);
+    setLoadingImages(true);
     try {
       const res = await authenticatedFetch(
-        `/api/imaging/imaging-item/image?imagingRequestItemId=${encodeURIComponent(itemId)}`,
+        `/api/imaging/imaging-item/images?imagingRequestItemId=${encodeURIComponent(itemId)}`,
         { cache: "no-store" },
       );
       const json = (await res.json().catch(() => ({}))) as {
         error?: string;
-        imageUrl?: string;
-        contentType?: string | null;
+        images?: ViewerImage[];
       };
-      if (!res.ok || !json.imageUrl) {
-        setPreviewUrl(null);
-        setContentType(null);
-        return null;
+      if (!res.ok || json.error) {
+        setImages([]);
+        setImageCount(0);
+        return [];
       }
-      setPreviewUrl(json.imageUrl);
-      setContentType(json.contentType ?? null);
-      return json.imageUrl;
+      const loaded = Array.isArray(json.images) ? json.images : [];
+      setImages(loaded);
+      setImageCount(loaded.length);
+      setCurrentIndex(0);
+      return loaded;
     } catch {
-      setPreviewUrl(null);
-      setContentType(null);
-      return null;
+      setImages([]);
+      setImageCount(0);
+      return [];
     } finally {
-      setLoadingPreview(false);
+      setLoadingImages(false);
     }
   }, [hasImage, itemId]);
 
-  const uploadFile = async (file: File) => {
+  const uploadFiles = async (files: File[]) => {
     if (!resultReceived) {
       onError?.("Mark Received before uploading.");
       return;
     }
+    if (files.length === 0) return;
+
     setUploading(true);
     try {
       const form = new FormData();
       form.append("imagingRequestItemId", itemId);
-      form.append("file", file);
+      for (const file of files) {
+        form.append("file", file);
+      }
       const res = await authenticatedFetch("/api/imaging/imaging-item/upload", {
         method: "POST",
         body: form,
       });
       const json = (await res.json().catch(() => ({}))) as {
         error?: string;
-        imageUrl?: string;
-        optimized?: boolean;
-        contentType?: string;
+        imageCount?: number;
       };
       if (!res.ok || json.error) {
         onError?.(json.error ?? "Upload failed.");
         return;
       }
       setHasImage(true);
-      setContentType(json.contentType ?? "image/jpeg");
-      if (json.imageUrl) setPreviewUrl(json.imageUrl);
-      else await loadPreview();
+      setImageCount(typeof json.imageCount === "number" ? json.imageCount : files.length);
+      setImages([]);
       onUploaded?.();
     } catch {
       onError?.("Upload failed.");
     } finally {
       setUploading(false);
       if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  const goPrev = useCallback(() => {
+    setCurrentIndex((index) => Math.max(0, index - 1));
+  }, []);
+
+  const goNext = useCallback(() => {
+    setCurrentIndex((index) => Math.min(images.length - 1, index + 1));
+  }, [images.length]);
+
+  const deleteCurrentImage = async () => {
+    const current = images[currentIndex];
+    if (!current?.id || !itemId.trim()) return;
+
+    setDeleting(true);
+    try {
+      const res = await authenticatedFetch(
+        `/api/imaging/imaging-item/image?imagingRequestItemId=${encodeURIComponent(itemId)}&imageId=${encodeURIComponent(current.id)}`,
+        { method: "DELETE" },
+      );
+      const json = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        imageCount?: number;
+        hasImage?: boolean;
+      };
+      if (!res.ok || json.error) {
+        onError?.(json.error ?? "Could not delete image.");
+        return;
+      }
+
+      const nextImages = images.filter((img) => img.id !== current.id);
+      const nextCount = typeof json.imageCount === "number" ? json.imageCount : nextImages.length;
+      const stillHasImage = json.hasImage === true || nextCount > 0;
+
+      setImages(nextImages);
+      setImageCount(nextCount);
+      setHasImage(stillHasImage);
+      setCurrentIndex((index) => Math.min(index, Math.max(0, nextImages.length - 1)));
+
+      if (!stillHasImage) {
+        setViewerOpen(false);
+      }
+      onUploaded?.();
+    } catch {
+      onError?.("Could not delete image.");
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -354,20 +544,19 @@ export default function ImagingStudyImageUpload({
     );
   }
 
-  const legacyDicom =
-    contentType != null ? isLegacyDicomContent(contentType, originalFilename) : false;
-
   const openViewer = () => {
     setViewerOpen(true);
-    if (previewUrl) return;
     void (async () => {
-      const url = await loadPreview();
-      if (!url) {
+      const loaded = images.length > 0 ? images : await loadImages();
+      if (loaded.length === 0) {
         setViewerOpen(false);
         onError?.("Could not load image.");
       }
     })();
   };
+
+  const viewTooltip =
+    imageCount > 1 ? `View images (${imageCount})` : "View image";
 
   return (
     <>
@@ -381,18 +570,19 @@ export default function ImagingStudyImageUpload({
               ref={inputRef}
               type="file"
               accept={IMAGING_UPLOAD_ACCEPT}
+              multiple
               hidden
               disabled={disabled || uploading}
               onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) void uploadFile(file);
+                const selected = Array.from(e.target.files ?? []);
+                if (selected.length > 0) void uploadFiles(selected);
               }}
             />
             <Tooltip
               title={
                 hasImage
-                  ? "Replace x-ray / study image (.dcm, .dicom, .jpg, .png, .tif, .tiff, .bmp, .webp)"
-                  : "Upload x-ray / study image (.dcm, .dicom, .jpg, .png, .tif, .tiff, .bmp, .webp)"
+                  ? "Add x-ray / study images (.dcm, .dicom, .jpg, .png, .tif, .tiff, .bmp, .webp)"
+                  : "Upload x-ray / study images (.dcm, .dicom, .jpg, .png, .tif, .tiff, .bmp, .webp)"
               }
             >
               <span>
@@ -414,7 +604,7 @@ export default function ImagingStudyImageUpload({
           </>
         ) : null}
         {hasImage ? (
-          <Tooltip title="View image">
+          <Tooltip title={viewTooltip}>
             <span>
               <IconButton
                 size="small"
@@ -423,7 +613,13 @@ export default function ImagingStudyImageUpload({
                 onClick={openViewer}
                 aria-label="View imaging result"
               >
-                <VisibilityOutlinedIcon fontSize="small" />
+                {imageCount > 1 ? (
+                  <Badge badgeContent={imageCount} color="primary" max={99}>
+                    <VisibilityOutlinedIcon fontSize="small" />
+                  </Badge>
+                ) : (
+                  <VisibilityOutlinedIcon fontSize="small" />
+                )}
               </IconButton>
             </span>
           </Tooltip>
@@ -431,11 +627,15 @@ export default function ImagingStudyImageUpload({
       </Box>
       <StudyImageViewerDialog
         open={viewerOpen}
-        title={originalFilename?.trim() || "Study image"}
-        imageUrl={previewUrl}
-        legacyDicom={legacyDicom}
-        loading={loadingPreview}
+        images={images}
+        currentIndex={currentIndex}
+        loading={loadingImages}
+        canDelete={!readOnly && !disabled}
+        deleting={deleting}
         onClose={() => setViewerOpen(false)}
+        onPrev={goPrev}
+        onNext={goNext}
+        onDelete={() => void deleteCurrentImage()}
       />
     </>
   );

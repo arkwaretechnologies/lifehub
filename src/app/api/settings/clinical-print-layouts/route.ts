@@ -41,7 +41,10 @@ export async function PATCH(req: Request) {
 
   const templateKey = parseClinicalPrintTemplateKey(String(body?.template_key ?? ""));
   if (!templateKey) {
-    return NextResponse.json({ error: "template_key must be consultation or prescription." }, { status: 400 });
+    return NextResponse.json(
+      { error: "template_key must be consultation, prescription, or medical_certificate." },
+      { status: 400 },
+    );
   }
 
   const layoutParsed = parsePhysicianSignatureLayoutFormInput(body?.physician_signature_layout ?? null);

@@ -10,7 +10,7 @@ import {
 
 export const CLINICAL_PRINT_LAYOUTS_TABLE = "clinical_print_layouts" as const;
 
-export type ClinicalPrintTemplateKey = "consultation" | "prescription";
+export type ClinicalPrintTemplateKey = "consultation" | "prescription" | "medical_certificate";
 
 export type ClinicalPrintLayoutRow = {
   template_key: ClinicalPrintTemplateKey;
@@ -23,6 +23,7 @@ export type ClinicalPrintLayoutRow = {
 export const CLINICAL_PRINT_REF_SIZES: Record<ClinicalPrintTemplateKey, { refW: number; refH: number }> = {
   consultation: { refW: 612, refH: 792 },
   prescription: { refW: 420, refH: 595 },
+  medical_certificate: { refW: 420, refH: 596 },
 };
 
 export const DEFAULT_PHYSICIAN_SIGNATURE_LAYOUT: Record<ClinicalPrintTemplateKey, LabResultImagePosition> = {
@@ -40,6 +41,13 @@ export const DEFAULT_PHYSICIAN_SIGNATURE_LAYOUT: Record<ClinicalPrintTemplateKey
     refHeight: 36,
     pageIndex: 0,
   },
+  medical_certificate: {
+    refX: 72,
+    refFromTop: 520,
+    refWidth: 110,
+    refHeight: 32,
+    pageIndex: 0,
+  },
 };
 
 const LAYOUT_SELECT =
@@ -47,7 +55,7 @@ const LAYOUT_SELECT =
 
 function parseTemplateKey(raw: string): ClinicalPrintTemplateKey | null {
   const k = raw.trim().toLowerCase();
-  if (k === "consultation" || k === "prescription") return k;
+  if (k === "consultation" || k === "prescription" || k === "medical_certificate") return k;
   return null;
 }
 

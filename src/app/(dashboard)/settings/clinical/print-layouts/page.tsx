@@ -93,6 +93,7 @@ function emptyForms(): LayoutFormState {
   return {
     consultation: emptyPhysicianSignatureLayoutFormFields(),
     prescription: emptyPhysicianSignatureLayoutFormFields(),
+    medical_certificate: emptyPhysicianSignatureLayoutFormFields(),
   };
 }
 
@@ -117,6 +118,11 @@ const TEMPLATE_META: Record<
     title: "Prescription (RX)",
     pdfFile: "templates/RX Template.pdf",
     refLabel: "A5 420×595 pt",
+  },
+  medical_certificate: {
+    title: "Medical certificate",
+    pdfFile: "templates/LIFEHUB-MEDICAL-Certificate.pdf",
+    refLabel: "A5 420×596 pt",
   },
 };
 
@@ -230,8 +236,8 @@ export default function SettingsClinicalPrintLayoutsPage() {
           Clinical print layouts
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Position physician signature images on consultation and prescription PDFs. Same coordinate model as lab result
-          templates.
+          Position physician signature images on consultation, prescription, and medical certificate PDFs. Same
+          coordinate model as lab result templates.
         </Typography>
 
         {error ? (
@@ -251,6 +257,8 @@ export default function SettingsClinicalPrintLayoutsPage() {
                 {renderSection("consultation")}
                 <Divider />
                 {renderSection("prescription")}
+                <Divider />
+                {renderSection("medical_certificate")}
               </Stack>
             )}
           </CardContent>

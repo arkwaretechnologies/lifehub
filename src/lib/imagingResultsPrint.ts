@@ -11,7 +11,7 @@ import {
   type ImagingResultTemplateSignatureLayout,
 } from "@/lib/imagingResultTemplates";
 import type { ImagingResultSignatoriesMap } from "@/lib/imagingResultSignatories";
-import { IMAGING_SIGNATURE_ROLES, type ImagingSignatureRole } from "@/lib/imagingResultSignatures";
+import { IMAGING_SIGNATURE_LAYOUT_ROLES, IMAGING_SIGNATURE_ROLES, type ImagingSignatureRole, imagingSignatorySourceRole } from "@/lib/imagingResultSignatures";
 import {
   effectivePrintLineHeight,
   type LabResultImagePosition,
@@ -100,22 +100,24 @@ async function drawImagingTemplateSignatures(
   font: PDFFont,
   imageCache: SignatureImageCache,
   embeddedImages: Map<string, import("pdf-lib").PDFImage>,
+  templateCode: string | null,
 ): Promise<void> {
   if (!layout || !signatories) return;
 
-  for (const role of IMAGING_SIGNATURE_ROLES) {
-    const slot = layout[role];
-    const bytes = imageCache[role];
+  for (const layoutRole of IMAGING_SIGNATURE_LAYOUT_ROLES) {
+    const slot = layout[layoutRole];
+    const sourceRole = imagingSignatorySourceRole(layoutRole, templateCode);
+    const bytes = imageCache[sourceRole];
     if (bytes && slot.signature) {
-      let img = embeddedImages.get(role);
+      let img = embeddedImages.get(sourceRole);
       if (!img) {
         img = (await embedSignatureBytes(doc, bytes, "image/png")) ?? undefined;
-        if (img) embeddedImages.set(role, img);
+        if (img) embeddedImages.set(sourceRole, img);
       }
       if (img) drawSignatureImageSlot(page, img, slot.signature);
     }
-    drawSignatureSlot(page, signatories[role].full_name, slot.name, font);
-    drawSignatureSlot(page, signatories[role].license_no, slot.license, font);
+    drawSignatureSlot(page, signatories[sourceRole].full_name, slot.name, font);
+    drawSignatureSlot(page, signatories[sourceRole].license_no, slot.license, font);
   }
 }
 
@@ -457,6 +459,7 @@ export async function openImagingResultPrintWindow(args: {
         font,
         imageCache,
         embeddedSignatureImages,
+        templateCode,
       );
     }
 

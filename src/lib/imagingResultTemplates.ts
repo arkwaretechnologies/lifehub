@@ -1,8 +1,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import path from "path";
 import {
-  IMAGING_SIGNATURE_ROLES,
-  type ImagingSignatureRole,
+  IMAGING_SIGNATURE_LAYOUT_ROLES,
+  type ImagingSignatureLayoutRole,
 } from "@/lib/imagingResultSignatures";
 import type { LabResultImagePosition, LabResultPrintPosition } from "@/lib/labResultsPrintLayout";
 import {
@@ -29,7 +29,7 @@ export type ImagingResultTemplateSignatureSlot = {
 };
 
 export type ImagingResultTemplateSignatureLayout = Record<
-  ImagingSignatureRole,
+  ImagingSignatureLayoutRole,
   ImagingResultTemplateSignatureSlot
 >;
 
@@ -88,7 +88,7 @@ export function parseTemplateSignatureLayout(raw: unknown): ImagingResultTemplat
   const rec = raw as Record<string, unknown>;
   const layout = {} as ImagingResultTemplateSignatureLayout;
   let hasAny = false;
-  for (const role of IMAGING_SIGNATURE_ROLES) {
+  for (const role of IMAGING_SIGNATURE_LAYOUT_ROLES) {
     const slot = parseSignatureSlot(rec[role]);
     layout[role] = slot;
     if (slot.name != null || slot.license != null || slot.signature != null) hasAny = true;
@@ -221,7 +221,7 @@ export function buildSignatureLayoutJsonFromForm(
   slots: ImagingResultTemplateSignatureLayout,
 ): ImagingResultTemplateSignatureLayout | null {
   let hasAny = false;
-  for (const role of IMAGING_SIGNATURE_ROLES) {
+  for (const role of IMAGING_SIGNATURE_LAYOUT_ROLES) {
     const slot = slots[role];
     if (slot.name != null || slot.license != null || slot.signature != null) hasAny = true;
   }
@@ -243,7 +243,7 @@ export function parseTemplateSignatureLayoutInput(
   }
   const rec = raw as Record<string, unknown>;
   const layout = {} as ImagingResultTemplateSignatureLayout;
-  for (const role of IMAGING_SIGNATURE_ROLES) {
+  for (const role of IMAGING_SIGNATURE_LAYOUT_ROLES) {
     const roleRaw = rec[role];
     layout[role] =
       roleRaw != null && typeof roleRaw === "object" && !Array.isArray(roleRaw)
@@ -290,7 +290,7 @@ export function templateSignatureLayoutFormFieldsFromDb(
   const empty = emptyTemplateSignatureLayoutFormFields();
   if (!layout) return empty;
   const out = { ...empty };
-  for (const role of IMAGING_SIGNATURE_ROLES) {
+  for (const role of IMAGING_SIGNATURE_LAYOUT_ROLES) {
     out[`${role}_name`] = printLayoutFormFieldsFromDb(layout[role].name);
     out[`${role}_license`] = printLayoutFormFieldsFromDb(layout[role].license);
     out[`${role}_signature`] = imageLayoutFormFieldsFromDb(layout[role].signature);
@@ -308,7 +308,7 @@ export function buildTemplateSignatureLayoutFromFormFields(
   fields: TemplateSignatureLayoutFormFields,
 ): { ok: true; value: ImagingResultTemplateSignatureLayout | null } | { ok: false; error: string } {
   const layout = {} as ImagingResultTemplateSignatureLayout;
-  for (const role of IMAGING_SIGNATURE_ROLES) {
+  for (const role of IMAGING_SIGNATURE_LAYOUT_ROLES) {
     const name = parseSlotFromFormFields(fields[`${role}_name`]);
     if (!name.ok) return name;
     const license = parseSlotFromFormFields(fields[`${role}_license`]);

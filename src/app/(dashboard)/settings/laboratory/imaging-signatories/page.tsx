@@ -44,6 +44,7 @@ const fieldSx = {
 function emptyForm(): SignatoryFormState {
   return {
     radtech: { full_name: "", license_no: "" },
+    radtech_ultrasound: { full_name: "", license_no: "" },
     radiologist: { full_name: "", license_no: "" },
     cardiologist: { full_name: "", license_no: "" },
   };
@@ -61,11 +62,11 @@ function mapToForm(s: ImagingResultSignatoriesMap): SignatoryFormState {
 }
 
 function emptyPreviewState(): Record<ImagingSignatureRole, string | null> {
-  return { radtech: null, radiologist: null, cardiologist: null };
+  return { radtech: null, radtech_ultrasound: null, radiologist: null, cardiologist: null };
 }
 
 function emptyHasState(): Record<ImagingSignatureRole, boolean> {
-  return { radtech: false, radiologist: false, cardiologist: false };
+  return { radtech: false, radtech_ultrasound: false, radiologist: false, cardiologist: false };
 }
 
 export default function SettingsImagingSignatoriesPage() {

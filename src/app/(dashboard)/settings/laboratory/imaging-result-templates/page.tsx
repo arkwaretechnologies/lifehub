@@ -46,7 +46,7 @@ import {
   type TemplateSignatureLayoutFormFields,
 } from "@/lib/imagingResultTemplates";
 import type { ImageLayoutFormFields, PrintLayoutFormFields } from "@/lib/labResultsPrintLayout";
-import { IMAGING_SIGNATURE_ROLE_LABELS, IMAGING_SIGNATURE_ROLES } from "@/lib/imagingResultSignatures";
+import { IMAGING_SIGNATURE_LAYOUT_ROLES, IMAGING_SIGNATURE_ROLE_LABELS } from "@/lib/imagingResultSignatures";
 
 type ResultTemplateRow = ImagingResultTemplateRow & { has_file?: boolean };
 
@@ -493,7 +493,7 @@ export default function SettingsImagingResultTemplatesPage() {
       <Typography variant="subtitle1" fontWeight={800} sx={{ pt: 1 }}>
         Signatories
       </Typography>
-      {IMAGING_SIGNATURE_ROLES.map((role) => (
+      {IMAGING_SIGNATURE_LAYOUT_ROLES.map((role) => (
         <Box key={role}>
           <SignatureSlotFields
             title={`${IMAGING_SIGNATURE_ROLE_LABELS[role]} — name`}

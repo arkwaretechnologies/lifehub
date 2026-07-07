@@ -19,7 +19,7 @@ const IMAGING_PATIENT_HEADER_SLOTS = {
   ageSex: { refX: 118, refFromTop: 231, fontSize: 9 },
   dob: { refX: 225, refFromTop: 231, fontSize: 9 },
   dateReleased: { refX: 395, refFromTop: 231, fontSize: 9 },
-  address: { refX: 118, refFromTop: 252, fontSize: 9, maxWidth: 100, lineHeight: 8 },
+  address: { refX: 118, refFromTop: 252, fontSize: 9, maxWidth: 200, lineHeight: 8 },
   contact: { refX: 376, refFromTop: 252, fontSize: 9, maxWidth: 260, lineHeight: 7 },
   philhealth: { refX: 500, refFromTop: 252, fontSize: 9, maxWidth: 250, lineHeight: 7 },
   physician: { refX: 175, refFromTop: 272, fontSize: 9, maxWidth: 470 },

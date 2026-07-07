@@ -72,6 +72,7 @@ export function parseLabSignatoryRole(raw: string): LabSignatureRole | null {
 export function parseImagingSignatoryRole(raw: string): ImagingSignatureRole | null {
   const r = raw.trim().toLowerCase();
   if (r === "radtech" || r === "radiologic_technologist") return "radtech";
+  if (r === "radtech_ultrasound" || r === "radiologic_technologist_ultrasound") return "radtech_ultrasound";
   if (r === "radiologist") return "radiologist";
   if (r === "cardiologist") return "cardiologist";
   return null;

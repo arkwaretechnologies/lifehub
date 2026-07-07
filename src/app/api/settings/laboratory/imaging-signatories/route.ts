@@ -37,7 +37,7 @@ export async function PATCH(req: Request) {
   const body = (await req.json().catch(() => null)) as ImagingResultSignatoriesPayload | null;
   if (!body || IMAGING_SIGNATURE_ROLES.every((role) => body[role] === undefined)) {
     return NextResponse.json(
-      { error: "Provide at least one signatory role (radtech, radiologist, cardiologist) to update." },
+      { error: "Provide at least one signatory role (radtech, radtech_ultrasound, radiologist, cardiologist) to update." },
       { status: 400 },
     );
   }

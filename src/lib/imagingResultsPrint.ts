@@ -191,30 +191,206 @@ function drawAtTopRef(
   });
 }
 
-function drawLayoutLabeledSection(
+/** Max ref-space Y before the signature footer on each template page. */
+const IMAGING_CONTENT_BOTTOM_PAGE0 = 635;
+const IMAGING_SECTION_GAP_LINES = 1;
+
+type ImagingFlowTemplateContext = {
+  merged: PDFDocument;
+  src: PDFDocument;
+  srcPageIndex: number;
+  patientHeader: ResultsPrintPatientHeader;
+  font: PDFFont;
+  signatories: ImagingResultSignatoriesMap | null;
+  signatureLayout: ImagingResultTemplateSignatureLayout | null;
+  imageCache: SignatureImageCache;
+  embeddedSignatureImages: Map<string, import("pdf-lib").PDFImage>;
+  templateCode: string;
+  continuationFromTop: number;
+};
+
+type ImagingTextFlow = {
+  doc: PDFDocument;
+  page: PDFPage;
+  refFromTop: number;
+  bottomLimit: number;
+  refX: number;
+  fontSize: number;
+  lineHeight: number;
+  maxWidth: number;
+  pageSize: { width: number; height: number };
+  templateCtx: ImagingFlowTemplateContext | null;
+};
+
+function flowConfigFromPosition(pos: LabResultPrintPosition | null | undefined): {
+  refX: number;
+  fontSize: number;
+  maxWidth: number;
+  lineHeight: number;
+} {
+  const fontSize = pos?.fontSize ?? 9;
+  return {
+    refX: pos?.refX ?? 48,
+    fontSize,
+    maxWidth: pos?.maxWidth ?? 520,
+    lineHeight: effectivePrintLineHeight(pos, fontSize),
+  };
+}
+
+function wrapTextLines(text: string, font: PDFFont, fontSize: number, maxWidth: number): string[] {
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return [];
+
+  const lines: string[] = [];
+  for (const paragraph of normalized.split("\n")) {
+    const trimmed = paragraph.trim();
+    if (!trimmed) {
+      lines.push("");
+      continue;
+    }
+    const words = trimmed.split(/\s+/);
+    let line = "";
+    for (const word of words) {
+      const candidate = line ? `${line} ${word}` : word;
+      if (font.widthOfTextAtSize(candidate, fontSize) <= maxWidth) {
+        line = candidate;
+        continue;
+      }
+      if (line) lines.push(line);
+      if (font.widthOfTextAtSize(word, fontSize) > maxWidth) {
+        let chunk = "";
+        for (const ch of word) {
+          const next = chunk + ch;
+          if (font.widthOfTextAtSize(next, fontSize) <= maxWidth) chunk = next;
+          else {
+            if (chunk) lines.push(chunk);
+            chunk = ch;
+          }
+        }
+        line = chunk;
+      } else {
+        line = word;
+      }
+    }
+    if (line) lines.push(line);
+  }
+  return lines;
+}
+
+function flowAdvance(flow: ImagingTextFlow, lineCount: number): void {
+  flow.refFromTop += lineCount * flow.lineHeight;
+}
+
+async function flowAppendTemplatePage(flow: ImagingTextFlow): Promise<void> {
+  const ctx = flow.templateCtx;
+  if (!ctx) {
+    flow.page = flow.doc.addPage([flow.pageSize.width, flow.pageSize.height]);
+    flow.refFromTop = 56;
+    return;
+  }
+
+  const [copied] = await ctx.merged.copyPages(ctx.src, [ctx.srcPageIndex]);
+  ctx.merged.addPage(copied);
+  const page = ctx.merged.getPage(ctx.merged.getPageCount() - 1);
+  drawImagingResultsPatientHeader(page, ctx.patientHeader, ctx.font);
+  await drawImagingTemplateSignatures(
+    ctx.merged,
+    page,
+    ctx.signatureLayout,
+    ctx.signatories,
+    ctx.font,
+    ctx.imageCache,
+    ctx.embeddedSignatureImages,
+    ctx.templateCode,
+  );
+  flow.page = page;
+  flow.refFromTop = ctx.continuationFromTop;
+  flow.bottomLimit = IMAGING_CONTENT_BOTTOM_PAGE0;
+}
+
+async function flowEnsureLines(flow: ImagingTextFlow, neededLines: number): Promise<void> {
+  if (flow.refFromTop + neededLines * flow.lineHeight <= flow.bottomLimit) return;
+  await flowAppendTemplatePage(flow);
+}
+
+async function flowDrawSingleLine(flow: ImagingTextFlow, text: string, font: PDFFont): Promise<void> {
+  await flowEnsureLines(flow, 1);
+  drawAtTopRef(flow.page, text, flow.refX, flow.refFromTop, flow.fontSize, font);
+  flowAdvance(flow, 1);
+}
+
+async function flowDrawLabeledSection(
+  flow: ImagingTextFlow,
+  label: string,
+  body: string,
+  bodyFont: PDFFont,
+  labelFont: PDFFont,
+): Promise<void> {
+  const trimmed = body.trim();
+  if (!trimmed) return;
+
+  await flowEnsureLines(flow, 2);
+  drawAtTopRef(flow.page, label, flow.refX, flow.refFromTop, flow.fontSize, labelFont);
+  flowAdvance(flow, 2);
+
+  for (const line of wrapTextLines(trimmed, bodyFont, flow.fontSize, flow.maxWidth)) {
+    if (!line) {
+      flowAdvance(flow, 1);
+      continue;
+    }
+    await flowDrawSingleLine(flow, line, bodyFont);
+  }
+  flowAdvance(flow, IMAGING_SECTION_GAP_LINES);
+}
+
+/** Stack findings then impression; paginate with extra template pages when needed. */
+async function drawFindingsAndImpressionFlow(
   doc: PDFDocument,
   templatePageStart: number,
   pageCount: number,
-  label: string,
-  value: string,
-  pos: LabResultPrintPosition | null | undefined,
+  findings: string,
+  impression: string,
+  findingsPos: LabResultPrintPosition | null | undefined,
+  impressionPos: LabResultPrintPosition | null | undefined,
   font: PDFFont,
   boldFont: PDFFont,
-): void {
-  if (!pos) return;
-  const v = value.trim();
-  if (!v) return;
-  const pi = Math.min(pos.pageIndex ?? 0, Math.max(0, pageCount - 1));
-  const page = doc.getPage(templatePageStart + pi);
-  const fs = pos.fontSize ?? 9;
-  const lineHeight = effectivePrintLineHeight(pos, fs);
+  templateCtx: ImagingFlowTemplateContext,
+): Promise<void> {
+  if (!findingsPos && !impressionPos) return;
+  const findingsText = findings.trim();
+  const impressionText = impression.trim();
+  if (!findingsText && !impressionText) return;
 
-  drawAtTopRef(page, label, pos.refX, pos.refFromTop, fs, boldFont);
-  const valueFromTop = pos.refFromTop + lineHeight + lineHeight;
-  drawAtTopRef(page, v, pos.refX, valueFromTop, fs, font, {
-    maxWidth: pos.maxWidth,
-    lineHeight,
-  });
+  const anchorPos = findingsPos ?? impressionPos;
+  const pi = Math.min(anchorPos?.pageIndex ?? 0, Math.max(0, pageCount - 1));
+  const page = doc.getPage(templatePageStart + pi);
+  const findingsCfg = flowConfigFromPosition(findingsPos ?? impressionPos);
+  const impressionCfg = flowConfigFromPosition(impressionPos ?? findingsPos);
+  const continuationFromTop = findingsPos?.refFromTop ?? impressionPos?.refFromTop ?? 340;
+
+  const flow: ImagingTextFlow = {
+    doc,
+    page,
+    refFromTop: continuationFromTop,
+    bottomLimit: IMAGING_CONTENT_BOTTOM_PAGE0,
+    pageSize: page.getSize(),
+    templateCtx: { ...templateCtx, continuationFromTop },
+    ...findingsCfg,
+  };
+
+  if (findingsText) {
+    await flowDrawLabeledSection(flow, "FINDINGS", findingsText, font, boldFont);
+  } else if (impressionPos?.refFromTop != null) {
+    flow.refFromTop = impressionPos.refFromTop;
+  }
+
+  if (impressionText) {
+    flow.refX = impressionCfg.refX;
+    flow.fontSize = impressionCfg.fontSize;
+    flow.maxWidth = impressionCfg.maxWidth;
+    flow.lineHeight = impressionCfg.lineHeight;
+    await flowDrawLabeledSection(flow, "IMPRESSION", impressionText, font, boldFont);
+  }
 }
 
 function drawLayoutText(
@@ -468,25 +644,31 @@ export async function openImagingResultPrintWindow(args: {
     const impression = String(item.remarks ?? "").trim();
 
     drawLayoutText(merged, templatePageStart, pageCount, examinationName, layout.examination_name, font);
-    drawLayoutLabeledSection(
+    const anchorPos = layout.findings ?? layout.impression;
+    const templateSrcPageIndex = Math.min(anchorPos?.pageIndex ?? 0, Math.max(0, pageCount - 1));
+    await drawFindingsAndImpressionFlow(
       merged,
       templatePageStart,
       pageCount,
-      "FINDINGS",
       findings,
-      layout.findings,
-      font,
-      boldFont,
-    );
-    drawLayoutLabeledSection(
-      merged,
-      templatePageStart,
-      pageCount,
-      "IMPRESSION",
       impression,
+      layout.findings,
       layout.impression,
       font,
       boldFont,
+      {
+        merged,
+        src,
+        srcPageIndex: templateSrcPageIndex,
+        patientHeader,
+        font,
+        signatories,
+        signatureLayout,
+        imageCache,
+        embeddedSignatureImages,
+        templateCode,
+        continuationFromTop: layout.findings?.refFromTop ?? layout.impression?.refFromTop ?? 340,
+      },
     );
 
     const pdfBytes = await merged.save();

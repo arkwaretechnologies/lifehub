@@ -26,8 +26,8 @@ export type PrescriptionPrintPhysician = {
 const A5_W = 420;
 const A5_H = 595;
 
-/** Max medication entries per RX template page (Print RX). */
-const RX_MEDS_PER_PAGE = 5;
+/** Minimum vertical space (pt) reserved above the signature band when fitting meds. */
+const RX_MIN_MED_BLOCK_HEIGHT = 28;
 
 type PrescriptionLayout = ReturnType<typeof prescriptionLayout>;
 
@@ -42,13 +42,54 @@ type RxTemplateContext = {
   signatureSlot: PhysicianSignaturePrintSlot;
 };
 
-function chunkArray<T>(items: T[], size: number): T[][] {
-  if (items.length === 0) return [[]];
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size) {
-    out.push(items.slice(i, i + size));
+function countWrappedLines(text: string, font: PDFFont, size: number, maxWidth: number): number {
+  const normalized = text.trim();
+  if (!normalized) return 0;
+  const words = normalized.split(/\s+/).filter(Boolean);
+  let lines = 1;
+  let line = "";
+  for (const w of words) {
+    const next = line ? `${line} ${w}` : w;
+    if (font.widthOfTextAtSize(next, size) <= maxWidth) {
+      line = next;
+      continue;
+    }
+    if (line) lines += 1;
+    if (font.widthOfTextAtSize(w, size) <= maxWidth) {
+      line = w;
+      continue;
+    }
+    let rest = w;
+    while (rest.length > 0) {
+      let cut = rest.length;
+      while (cut > 0 && font.widthOfTextAtSize(rest.slice(0, cut), size) > maxWidth) cut -= 1;
+      if (cut === 0) cut = 1;
+      lines += 1;
+      rest = rest.slice(cut);
+    }
+    line = "";
   }
-  return out;
+  return lines;
+}
+
+function estimateMedicationBlockHeight(
+  m: PrescriptionPrintMedicationLine,
+  ctx: RxTemplateContext,
+): number {
+  const { font, L } = ctx;
+  const maxRxW = rxBodyMaxWidth(ctx);
+  const sigIndent = Math.round(L.rxStart.size * 1.25);
+  const q = m.quantity.trim();
+  const u = m.unit.trim();
+  const unitPrinted = pluralizeRxUnit(u, q);
+  const qtyPart = [q && `#: ${q}`, unitPrinted].filter(Boolean).join(" ");
+  const mainLine = `1. ${m.drugLine}${qtyPart ? `  ${qtyPart}` : ""}`;
+  const sigPart = (m.notes ?? "").trim();
+  let lines = countWrappedLines(mainLine, font, L.rxStart.size, maxRxW);
+  if (sigPart) {
+    lines += countWrappedLines(`Sig: ${sigPart}`, font, L.rxStart.size, maxRxW - sigIndent);
+  }
+  return lines * L.rxStart.lineHeight + Math.round(L.rxStart.lineHeight * 1.35);
 }
 
 function formatDobMMDDYYYY(raw: string): string {
@@ -451,16 +492,20 @@ function rxBodyMaxWidth(ctx: RxTemplateContext): number {
 function drawRxMedications(
   ctx: RxTemplateContext,
   medications: PrescriptionPrintMedicationLine[],
-  options?: { startNumber?: number },
-): void {
+  options?: { startNumber?: number; startIndex?: number },
+): { nextIndex: number } {
   const { page, font, L, black } = ctx;
   let yRx = rxBodyStartY(ctx);
   const maxRxW = rxBodyMaxWidth(ctx);
   const sigYMin = rxSigYMin(ctx);
   let n = options?.startNumber ?? 1;
+  let index = options?.startIndex ?? 0;
 
-  for (const m of medications) {
-    if (yRx < sigYMin) break;
+  for (; index < medications.length; index++) {
+    const m = medications[index];
+    const blockHeight = Math.max(estimateMedicationBlockHeight(m, ctx), RX_MIN_MED_BLOCK_HEIGHT);
+    if (yRx - blockHeight < sigYMin) break;
+
     const q = m.quantity.trim();
     const u = m.unit.trim();
     const unitPrinted = pluralizeRxUnit(u, q);
@@ -486,6 +531,8 @@ function drawRxMedications(
     yRx -= Math.round(L.rxStart.lineHeight * 1.35);
     n += 1;
   }
+
+  return { nextIndex: index };
 }
 
 function drawRxBodyText(ctx: RxTemplateContext, bodyText: string): void {
@@ -579,17 +626,28 @@ export async function openPrescriptionPrintWindow(args: {
   ]);
   if (!templateBytes) return false;
 
-  const chunks = chunkArray(args.medications, RX_MEDS_PER_PAGE);
   const doc = await PDFDocument.create();
   const font = await embedRxFont(doc);
   const black = rgb(0, 0, 0);
 
-  for (let i = 0; i < chunks.length; i++) {
+  let medIndex = 0;
+  let medNumber = 1;
+  while (medIndex < args.medications.length) {
     const page = await addRxTemplatePage(doc, templateBytes);
     const ctx = buildRxTemplateContext(doc, page, font, black, signatureSlot);
     drawRxPatientHeader(ctx, args.patient, args.physician);
-    drawRxMedications(ctx, chunks[i], { startNumber: i * RX_MEDS_PER_PAGE + 1 });
+    const { nextIndex: drawnThrough } = drawRxMedications(ctx, args.medications, {
+      startNumber: medNumber,
+      startIndex: medIndex,
+    });
+    let nextIndex = drawnThrough;
+    if (nextIndex <= medIndex) {
+      // Safety: always advance at least one medication per page to avoid an infinite loop.
+      nextIndex = medIndex + 1;
+    }
     await drawRxSigFooter(ctx, args.physician, args.transId);
+    medIndex = nextIndex;
+    medNumber = medIndex + 1;
   }
 
   return finishRxPrint(doc);

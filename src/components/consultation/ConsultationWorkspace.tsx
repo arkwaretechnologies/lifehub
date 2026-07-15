@@ -70,7 +70,7 @@ import {
   type ReviewOfSystemsForm,
 } from "@/lib/reviewOfSystems";
 import { fetchSocialHistory, formFromSocialHistoryRowOrDefault } from "@/lib/socialHistory";
-import { fetchSurgicalHistory, formFromSurgicalRowOrDefault } from "@/lib/surgicalHistory";
+import { fetchSurgicalHistoryForEncounter, sectionStateForPrint as surgicalSectionStateForPrint } from "@/lib/surgicalHistory";
 import { fetchVitalSigns } from "@/lib/vitalSigns";
 
 /** Same UI as `ReviewOfSystemsPanel` — kept so older references to this name still resolve. */
@@ -450,7 +450,7 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
                   fetchCurrentMedicationsForEncounter(transId),
                   fetchFamilyHistory(transId),
                   fetchSocialHistory(transId),
-                  fetchSurgicalHistory(transId),
+                  fetchSurgicalHistoryForEncounter(transId),
                   fetchPreviousHospitalizationsForEncounter(transId),
                   fetchObstetricHistory(transId),
                   fetchReviewOfSystems(transId),
@@ -539,7 +539,7 @@ function ConsultationWorkspaceInner({ patient, transId, isNew }: { patient: Cons
                     pastMedicalHistory: formFromRowOrDefault(pmh.row),
                     familyHistory: formFromFamilyRowOrDefault(familyHistory.row),
                     socialHistory: formFromSocialHistoryRowOrDefault(socialHistory.row),
-                    surgicalHistory: formFromSurgicalRowOrDefault(surgicalHistory.row),
+                    surgicalHistory: surgicalSectionStateForPrint(surgicalHistory.rows),
                     previousHospitalization: sectionStateForPrint(previousHospitalization.rows),
                     obstetricHistory: formFromObstetricHistoryRowOrDefault(
                       obstetricHistory.row,

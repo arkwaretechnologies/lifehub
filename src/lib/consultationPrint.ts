@@ -9,7 +9,8 @@ import type { PreviousHospitalizationSectionState } from "@/lib/previousHospital
 import { previousHospitalizationOtherChecked } from "@/lib/previousHospitalizations";
 import type { ReviewOfSystemsForm } from "@/lib/reviewOfSystems";
 import type { SocialHistoryForm } from "@/lib/socialHistory";
-import type { SurgicalHistoryForm } from "@/lib/surgicalHistory";
+import type { SurgicalHistorySectionState } from "@/lib/surgicalHistory";
+import { surgicalHistoryFlagsFromEntries } from "@/lib/surgicalHistory";
 import type { PDFFont, PDFPage } from "pdf-lib";
 import { drawSignatureImageAtRef, embedSignatureBytes } from "@/lib/signaturePdfEmbed";
 import { fetchPhysicianSignaturePrintLayout } from "@/lib/clinicalPrintLayoutFetch";
@@ -41,7 +42,7 @@ type ConsultationPrintDetails = {
   pastMedicalHistory: PastMedicalHistoryForm;
   familyHistory: FamilyHistoryForm;
   socialHistory: SocialHistoryForm;
-  surgicalHistory: SurgicalHistoryForm;
+  surgicalHistory: SurgicalHistorySectionState;
   previousHospitalization: PreviousHospitalizationSectionState;
   obstetricHistory: ObstetricHistoryForm;
   reviewOfSystems: ReviewOfSystemsForm;
@@ -533,20 +534,28 @@ export async function openConsultationPrintWindow(args: {
       drawWrapped(p1, drugNotes, 344, hS - 434, wS - 72, font, size2, 10);
     }
 
-    // SURGICAL HISTORY: checkboxes + Other procedures
+    // SURGICAL HISTORY: Negative + procedure checkboxes (OR of entries) + stacked year/notes
     const sg = details.surgicalHistory;
+    const sgFlags = surgicalHistoryFlagsFromEntries(sg.entries);
     chkF(92, 458, sg.no_surgery);
-    chkF(137, 458, sg.appendectomy);
-    chkF(165, 458, sg.cholecystectomy);
-    chkF(187, 458, sg.cabg);
-    chkF(221, 458, sg.c_section);
-    chkF(268, 458, sg.hernia_repair);
-    chkF(92, 471, sg.cataract);
-    const sgOthers = sg.other_procedures.trim();
-    if (sgOthers) {
-      const { height: hG, width: wG } = p1.getSize();
-      drawWrapped(p1, sgOthers, 92, hG - 482, wG - 72, font, size2, 10);
-    }
+    chkF(137, 458, sgFlags.appendectomy);
+    chkF(165, 458, sgFlags.cholecystectomy);
+    chkF(187, 458, sgFlags.cabg);
+    chkF(221, 458, sgFlags.c_section);
+    chkF(268, 458, sgFlags.hernia_repair);
+    chkF(92, 471, sgFlags.cataract);
+    const sgRowBase = 482;
+    const sgRowStep = 10;
+    const sgMaxRows = 2;
+    sg.entries.slice(0, sgMaxRows).forEach((entry, i) => {
+      const fromTop = sgRowBase + i * sgRowStep;
+      const sgYear = entry.year.trim();
+      const sgProcedure = entry.procedure_name.trim();
+      const sgNotes = entry.notes.trim();
+      if (sgYear) drawAtTop(p1, sgYear, 92, fromTop, size2, font);
+      if (sgProcedure) drawAtTop(p1, sgProcedure, 142, fromTop, size2, font);
+      if (sgNotes) drawAtTop(p1, sgNotes, 268, fromTop, size2, font);
+    });
 
     // PREVIOUS HOSPITALIZATION: Never/Other + table row values (stack up to 3 rows)
     const ph = details.previousHospitalization;

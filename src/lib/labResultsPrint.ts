@@ -4,7 +4,7 @@ import { compareLabTestSortOrder, labResultsTemplateCodeFromCatalogTestCode } fr
 import { computeLabResultAutoFlag } from "@/lib/labResultAutoFlag";
 import type { LabResultSignatoriesMap } from "@/lib/labResultSignatories";
 import type { LabResultTemplateSignatureLayout } from "@/lib/labResultTemplates";
-import type { LabResultImagePosition, LabResultPrintPosition } from "@/lib/labResultsPrintLayout";
+import type { LabResultImagePosition, LabResultInternationalPrintPosition, LabResultPrintPosition } from "@/lib/labResultsPrintLayout";
 import { fetchLabSignatorySignatureBytes } from "@/lib/signaturePrintFetch";
 import { embedSignatureBytes } from "@/lib/signaturePdfEmbed";
 import { drawLabResultsPatientHeader } from "@/lib/labResultsPatientHeader";
@@ -19,6 +19,11 @@ import {
   LAB_PRINT_FALLBACK,
   LAB_PRINT_SUMMARY,
 } from "@/lib/labResultsPrintLayout";
+import {
+  formatPrintedSiResult,
+  isBloodChemSiTemplateCode,
+  isBloodChemSiTestCode,
+} from "@/lib/labBloodChemSiConversion";
 import type { PDFDocument } from "pdf-lib";
 import { rgb } from "pdf-lib";
 
@@ -274,6 +279,20 @@ function pushWrappedParagraph(lines: string[], paragraph: string, maxChars: numb
  * Overlay results: each item uses `results_print_layouts` aligned to `results_template_code` for this
  * template stem; missing/invalid layouts use stacked fallback on page 0 of the template block.
  */
+/** Default SI column offset from conventional result column on dual-system blood chem rows. */
+const BLOODCHEM_SI_REF_X_OFFSET = 125;
+
+function bloodChemInternationalPrintPosition(pos: LabResultPrintPosition): LabResultInternationalPrintPosition {
+  if (pos.international) return pos.international;
+  return {
+    refX: pos.refX + BLOODCHEM_SI_REF_X_OFFSET,
+    refFromTop: pos.refFromTop,
+    fontSize: pos.fontSize,
+    maxWidth: pos.maxWidth,
+    pageIndex: pos.pageIndex,
+  };
+}
+
 function drawGroupResultsForTemplate(
   merged: PDFDocument,
   templatePageStart: number,
@@ -307,6 +326,22 @@ function drawGroupResultsForTemplate(
         lineHeight: effectivePrintLineHeight(pos, fs),
         color: printTextColorForResult(it, patientSex),
       });
+
+      const intlPos =
+        isBloodChemSiTemplateCode(currentTemplateCode) && isBloodChemSiTestCode(it.test_code)
+          ? bloodChemInternationalPrintPosition(pos)
+          : null;
+      if (intlPos) {
+        const siLine = formatPrintedSiResult(it.test_code, it.result_value);
+        const intlPi = Math.min(intlPos.pageIndex ?? pi, Math.max(0, pageCount - 1));
+        const intlPage = merged.getPage(templatePageStart + intlPi);
+        const intlFs = intlPos.fontSize ?? fs;
+        drawAtTopRef(intlPage, siLine, intlPos.refX, intlPos.refFromTop, intlFs, font, {
+          maxWidth: intlPos.maxWidth ?? pos.maxWidth,
+          lineHeight: effectivePrintLineHeight(intlPos, intlFs),
+          color: printTextColorForResult(it, patientSex),
+        });
+      }
     } else {
       fallback.push(it);
     }

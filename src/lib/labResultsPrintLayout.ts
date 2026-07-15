@@ -7,6 +7,15 @@
  * and replace `supabase/migrations/20260512120000_lab_tests_results_print_layout.sql` body if needed.
  */
 
+export type LabResultInternationalPrintPosition = {
+  refX: number;
+  refFromTop: number;
+  fontSize?: number;
+  maxWidth?: number;
+  lineHeight?: number;
+  pageIndex?: number;
+};
+
 export type LabResultPrintPosition = {
   refX: number;
   refFromTop: number;
@@ -16,6 +25,8 @@ export type LabResultPrintPosition = {
   lineHeight?: number;
   /** 0-based page within that template PDF (default 0). */
   pageIndex?: number;
+  /** Optional International System result column (thyroid BLOODCHEM8). */
+  international?: LabResultInternationalPrintPosition | null;
 };
 
 /** Parse JSON string or pass through parsed jsonb value. */
@@ -33,7 +44,7 @@ function unwrapLayoutJson(raw: unknown): unknown {
 }
 
 /** One overlay slot; `o` must be a plain object (not array). */
-function parseOnePosition(o: unknown): LabResultPrintPosition | null {
+function parseSlotPosition(o: unknown): LabResultInternationalPrintPosition | null {
   if (o == null || typeof o !== "object" || Array.isArray(o)) return null;
   const rec = o as Record<string, unknown>;
   const refX = Number(rec.refX);
@@ -61,7 +72,28 @@ function parseOnePosition(o: unknown): LabResultPrintPosition | null {
     if (Number.isFinite(pi) && pi >= 0 && Number.isInteger(pi)) pageIndex = pi;
   }
 
-  return { refX, refFromTop, fontSize, maxWidth, lineHeight, pageIndex };
+  const base: LabResultInternationalPrintPosition = { refX, refFromTop };
+  if (fontSize != null) base.fontSize = fontSize;
+  if (maxWidth != null) base.maxWidth = maxWidth;
+  if (lineHeight != null) base.lineHeight = lineHeight;
+  if (pageIndex != null) base.pageIndex = pageIndex;
+  return base;
+}
+
+function parseOnePosition(o: unknown): LabResultPrintPosition | null {
+  if (o == null || typeof o !== "object" || Array.isArray(o)) return null;
+  const rec = o as Record<string, unknown>;
+  const base = parseSlotPosition(rec);
+  if (!base) return null;
+
+  let international: LabResultInternationalPrintPosition | null | undefined;
+  if (rec.international != null) {
+    international = parseSlotPosition(rec.international);
+  }
+
+  const out: LabResultPrintPosition = { ...base };
+  if (international !== undefined) out.international = international;
+  return out;
 }
 
 /** Default wrapped-line spacing from font size when layout omits lineHeight. */

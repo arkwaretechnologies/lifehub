@@ -15,7 +15,6 @@ const ENCOUNTERS_TABLE = "encounters" as const;
 const CLINICAL_COPY_TABLES_ONE_TO_ONE = [
   PAST_MEDICAL_HISTORY_TABLE,
   FAMILY_HISTORY_TABLE,
-  SURGICAL_HISTORY_TABLE,
   ALLERGIES_TABLE,
   SOCIAL_HISTORY_TABLE,
   OBSTETRIC_HISTORY_TABLE,
@@ -24,6 +23,7 @@ const CLINICAL_COPY_TABLES_ONE_TO_ONE = [
 
 const CLINICAL_COPY_TABLES = [
   ...CLINICAL_COPY_TABLES_ONE_TO_ONE,
+  SURGICAL_HISTORY_TABLE,
   PREVIOUS_HOSPITALIZATIONS_TABLE,
 ] as const;
 
@@ -69,7 +69,7 @@ async function encounterHasClinicalHistory(
   transId: string,
 ): Promise<boolean> {
   for (const table of CLINICAL_COPY_TABLES) {
-    if (table === PREVIOUS_HOSPITALIZATIONS_TABLE) {
+    if (table === PREVIOUS_HOSPITALIZATIONS_TABLE || table === SURGICAL_HISTORY_TABLE) {
       const { data, error } = await admin.from(table).select("*").eq("trans_id", transId);
       if (error) continue;
       for (const row of data ?? []) {
@@ -215,6 +215,27 @@ export async function seedNewConsultationFromPreviousVisitAdmin(
       return payload;
     });
     const { error: insertError } = await admin.from(PREVIOUS_HOSPITALIZATIONS_TABLE).insert(payloads);
+    if (insertError) errors.push(insertError.message);
+    else copiedTables += 1;
+  }
+
+  const { data: surgicalRows, error: surgicalErr } = await admin
+    .from(SURGICAL_HISTORY_TABLE)
+    .select("*")
+    .eq("trans_id", sourceTransId)
+    .order("id");
+  if (surgicalErr) {
+    errors.push(surgicalErr.message);
+  } else if (surgicalRows?.length) {
+    const payloads = (surgicalRows as Record<string, unknown>[]).map((source) => {
+      const payload: Record<string, unknown> = { trans_id: target };
+      for (const [key, val] of Object.entries(source)) {
+        if (ROW_META_KEYS.has(key)) continue;
+        payload[key] = val;
+      }
+      return payload;
+    });
+    const { error: insertError } = await admin.from(SURGICAL_HISTORY_TABLE).insert(payloads);
     if (insertError) errors.push(insertError.message);
     else copiedTables += 1;
   }

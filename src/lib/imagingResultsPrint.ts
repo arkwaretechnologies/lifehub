@@ -29,6 +29,37 @@ import { drawImagingResultsPatientHeader } from "@/lib/imagingResultsPatientHead
 import type { PDFDocument, PDFPage, PDFFont } from "pdf-lib";
 import { rgb } from "pdf-lib";
 
+async function embedImagingResultFonts(doc: PDFDocument): Promise<{ font: PDFFont; boldFont: PDFFont }> {
+  const { StandardFonts } = await import("pdf-lib");
+  let font = await doc.embedFont(StandardFonts.Helvetica);
+  let boldFont = await doc.embedFont(StandardFonts.HelveticaBold);
+
+  try {
+    const fontkit = (await import("@pdf-lib/fontkit")).default;
+    doc.registerFontkit(fontkit);
+
+    const regularCandidates = ["/fonts/cambria.ttf", "/fonts/Cambria.ttf"];
+    for (const url of regularCandidates) {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) continue;
+      font = await doc.embedFont(await res.arrayBuffer(), { subset: true });
+      break;
+    }
+
+    const boldCandidates = ["/fonts/cambriab.ttf", "/fonts/Cambria-Bold.ttf"];
+    for (const url of boldCandidates) {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) continue;
+      boldFont = await doc.embedFont(await res.arrayBuffer(), { subset: true });
+      break;
+    }
+  } catch {
+    // keep Helvetica fallbacks
+  }
+
+  return { font, boldFont };
+}
+
 export type ImagingResultPrintHeader = ImagingRequestHeaderView;
 
 const REF_W = 612;
@@ -503,7 +534,7 @@ function openImagingResultPrintHtml(args: {
   <title>LifeHub — Imaging Result</title>
   <style>
     @page { size: letter; margin: 12mm 14mm; }
-    body { font-family: "Segoe UI", Helvetica, Arial, sans-serif; font-size: 10pt; line-height: 1.35; color: #111; margin: 0; }
+    body { font-family: Cambria, "Times New Roman", Times, serif; font-size: 10pt; line-height: 1.35; color: #111; margin: 0; }
     h1 { font-size: 14pt; text-align: center; color: #1f4e79; margin: 0 0 8px; }
     .printed-at { text-align: center; font-size: 8.5pt; color: #555; margin-bottom: 10px; }
     .pi-title { font-size: 8pt; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; color: #fff; background: #1f4e79; padding: 4px 8px; margin-bottom: 0; }
@@ -610,10 +641,9 @@ export async function openImagingResultPrintWindow(args: {
       return true;
     }
 
-    const { PDFDocument, StandardFonts } = await import("pdf-lib");
+    const { PDFDocument } = await import("pdf-lib");
     const merged = await PDFDocument.create();
-    const font = await merged.embedFont(StandardFonts.Helvetica);
-    const boldFont = await merged.embedFont(StandardFonts.HelveticaBold);
+    const { font, boldFont } = await embedImagingResultFonts(merged);
     const signatories = await fetchSignatoriesForPrint();
     const signatureLayout = registry.signatureByCode.get(templateCode) ?? null;
     const imageCache = await loadImagingSignatureImageCache();

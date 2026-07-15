@@ -39,7 +39,6 @@ import BlockOutlinedIcon from "@mui/icons-material/BlockOutlined";
 import HistoryOutlinedIcon from "@mui/icons-material/HistoryOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import InventoryOutlinedIcon from "@mui/icons-material/InventoryOutlined";
-import BusinessOutlinedIcon from "@mui/icons-material/BusinessOutlined";
 import { CONSULTATION_LAB_REPORTS, POS_REPORTS, RADIOLOGY_REPORTS } from "@/lib/reportsNavLeaves";
 import AdminPanelSettingsOutlinedIcon from "@mui/icons-material/AdminPanelSettingsOutlined";
 import PeopleOutlinedIcon from "@mui/icons-material/PeopleOutlined";
@@ -314,13 +313,6 @@ const menuSections: MenuSection[] = [
             ],
           },
         ],
-      },
-      {
-        kind: "link",
-        label: "branches",
-        icon: <BusinessOutlinedIcon />,
-        href: "/branches",
-        pageKey: "branches",
       },
       {
         kind: "group",

@@ -173,14 +173,6 @@ export const PERMISSION_MODULES: PermissionModule[] = [
     ],
   },
   {
-    kind: "leaf",
-    id: "branches",
-    sectionHeading: "MANAGEMENT",
-    label: "Branches",
-    pageKey: "branches",
-    href: "/branches",
-  },
-  {
     kind: "group",
     id: "user-management",
     sectionHeading: "MANAGEMENT",

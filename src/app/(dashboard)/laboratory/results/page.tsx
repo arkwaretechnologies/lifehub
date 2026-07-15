@@ -71,6 +71,13 @@ import { compareLabTestSortOrder } from "@/lib/labTests";
 import { openLabResultsPrintWindow } from "@/lib/labResultsPrint";
 import { openLabTestChecklistPrintWindow } from "@/lib/labTestChecklistPrint";
 import {
+  convertConventionalToSi,
+  convertSiToConventional,
+  getSiReferenceRange,
+  getSiUnit,
+  isBloodChemSiTestCode,
+} from "@/lib/labBloodChemSiConversion";
+import {
   categoryCollectState,
   isLabItemCollectedFlag,
 } from "@/lib/labCategoryCollectUi";
@@ -234,6 +241,8 @@ export default function LabResultsPage() {
   const [reqLoading, setReqLoading] = useState(false);
   const [reqError, setReqError] = useState("");
   const [reqItems, setReqItems] = useState<LabRequestItemView[]>([]);
+  /** While typing SI, keep the raw draft so intermediate input is not overwritten by reverse conversion. */
+  const [siDraftByItemId, setSiDraftByItemId] = useState<Record<string, string>>({});
   const [testSearchQuery, setTestSearchQuery] = useState("");
   const [reqHeader, setReqHeader] = useState<LabRequestHeaderView | null>(null);
   const [itemSavingId, setItemSavingId] = useState<string | null>(null);
@@ -277,6 +286,7 @@ export default function LabResultsPage() {
   const loadRequest = async (labRequestIdRaw: string) => {
     const labRequestId = (labRequestIdRaw ?? "").trim();
     setReqItems([]);
+    setSiDraftByItemId({});
     setReqHeader(null);
     setReqError("");
     setTestSearchQuery("");
@@ -1541,56 +1551,63 @@ export default function LabResultsPage() {
                           color: "#000",
                         }}
                       >
+                        {priorOptions.length > 0 ? (
+                          <Box sx={{ gridColumn: { xs: "1", sm: "1 / -1" } }}>
+                            <FormFieldLabel htmlFor={`lab-res-${it.id}-prior`} variant="consultation">
+                              Previous result
+                            </FormFieldLabel>
+                            <Button
+                              id={`lab-res-${it.id}-prior`}
+                              variant="outlined"
+                              size="small"
+                              disabled={!categoryCollected || busy}
+                              fullWidth
+                              endIcon={<HistoryOutlinedIcon fontSize="small" />}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPriorMenu({ anchorEl: e.currentTarget, itemId: it.id });
+                              }}
+                              sx={{
+                                borderRadius: 2,
+                                textTransform: "none",
+                                fontWeight: 700,
+                                justifyContent: "space-between",
+                                bgcolor: "#fff",
+                              }}
+                            >
+                              Select previous result…
+                            </Button>
+                            <Menu
+                              anchorEl={priorMenu?.itemId === it.id ? priorMenu.anchorEl : null}
+                              open={priorMenu?.itemId === it.id}
+                              onClose={() => setPriorMenu(null)}
+                              slotProps={{ paper: { sx: { maxWidth: 420 } } }}
+                            >
+                              {priorOptions.map((prior, idx) => (
+                                <MenuItem
+                                  key={`${prior.lab_request_id}-${idx}`}
+                                  sx={{ textTransform: "none", whiteSpace: "normal" }}
+                                  onClick={() => {
+                                    applyPriorResultToItem(it.id, prior);
+                                    setPriorMenu(null);
+                                  }}
+                                >
+                                  {formatPriorResultLabel(prior)}
+                                </MenuItem>
+                              ))}
+                            </Menu>
+                          </Box>
+                        ) : null}
+                        {isBloodChemSiTestCode(it.test_code) ? (
+                          <Box sx={{ gridColumn: { xs: "1", sm: "1 / -1" } }}>
+                            <Typography variant="caption" fontWeight={700} sx={{ display: "block", color: "#000", mb: 0.5 }}>
+                              Conventional system
+                            </Typography>
+                          </Box>
+                        ) : null}
                         <Box sx={{ gridColumn: { xs: "1", sm: "1 / -1" } }}>
-                          {priorOptions.length > 0 ? (
-                            <Box sx={{ mb: 1 }}>
-                              <FormFieldLabel htmlFor={`lab-res-${it.id}-prior`} variant="consultation">
-                                Previous result
-                              </FormFieldLabel>
-                              <Button
-                                id={`lab-res-${it.id}-prior`}
-                                variant="outlined"
-                                size="small"
-                                disabled={!categoryCollected || busy}
-                                fullWidth
-                                endIcon={<HistoryOutlinedIcon fontSize="small" />}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setPriorMenu({ anchorEl: e.currentTarget, itemId: it.id });
-                                }}
-                                sx={{
-                                  borderRadius: 2,
-                                  textTransform: "none",
-                                  fontWeight: 700,
-                                  justifyContent: "space-between",
-                                  bgcolor: "#fff",
-                                }}
-                              >
-                                Select previous result…
-                              </Button>
-                              <Menu
-                                anchorEl={priorMenu?.itemId === it.id ? priorMenu.anchorEl : null}
-                                open={priorMenu?.itemId === it.id}
-                                onClose={() => setPriorMenu(null)}
-                                slotProps={{ paper: { sx: { maxWidth: 420 } } }}
-                              >
-                                {priorOptions.map((prior, idx) => (
-                                  <MenuItem
-                                    key={`${prior.lab_request_id}-${idx}`}
-                                    sx={{ textTransform: "none", whiteSpace: "normal" }}
-                                    onClick={() => {
-                                      applyPriorResultToItem(it.id, prior);
-                                      setPriorMenu(null);
-                                    }}
-                                  >
-                                    {formatPriorResultLabel(prior)}
-                                  </MenuItem>
-                                ))}
-                              </Menu>
-                            </Box>
-                          ) : null}
                           <FormFieldLabel htmlFor={`lab-res-${it.id}-value`} variant="consultation">
-                            Result
+                            {isBloodChemSiTestCode(it.test_code) ? "Conventional result" : "Result"}
                           </FormFieldLabel>
                           <TextField
                             id={`lab-res-${it.id}-value`}
@@ -1599,6 +1616,12 @@ export default function LabResultsPage() {
                             value={it.result_value ?? ""}
                             onChange={(e) => {
                               const v = e.target.value;
+                              setSiDraftByItemId((prev) => {
+                                if (!(it.id in prev)) return prev;
+                                const next = { ...prev };
+                                delete next[it.id];
+                                return next;
+                              });
                               setReqItems((prev) =>
                                 prev.map((x) =>
                                   x.id === it.id
@@ -1650,6 +1673,96 @@ export default function LabResultsPage() {
                             sx={fieldSx}
                           />
                         </Box>
+                        {isBloodChemSiTestCode(it.test_code) ? (
+                          <>
+                            <Box sx={{ gridColumn: { xs: "1", sm: "1 / -1" } }}>
+                              <Typography variant="caption" fontWeight={700} sx={{ display: "block", color: "#000", mb: 0.5 }}>
+                                International system
+                              </Typography>
+                            </Box>
+                            <Box>
+                              <FormFieldLabel htmlFor={`lab-res-${it.id}-si-value`} variant="consultation">
+                                SI result
+                              </FormFieldLabel>
+                              <TextField
+                                id={`lab-res-${it.id}-si-value`}
+                                hiddenLabel
+                                {...commonFieldProps}
+                                value={
+                                  it.id in siDraftByItemId
+                                    ? siDraftByItemId[it.id]
+                                    : convertConventionalToSi(it.test_code, it.result_value)
+                                }
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  setSiDraftByItemId((prev) => ({ ...prev, [it.id]: v }));
+                                  const trimmed = v.trim();
+                                  if (!trimmed) {
+                                    setReqItems((prev) =>
+                                      prev.map((x) =>
+                                        x.id === it.id
+                                          ? mergeAutoFlagIntoLabResultRow(
+                                              { ...x, result_value: "" },
+                                              reqHeader?.patient_sex ?? null,
+                                            )
+                                          : x,
+                                      ),
+                                    );
+                                    return;
+                                  }
+                                  const conventional = convertSiToConventional(it.test_code, v);
+                                  if (!conventional) return;
+                                  setReqItems((prev) =>
+                                    prev.map((x) =>
+                                      x.id === it.id
+                                        ? mergeAutoFlagIntoLabResultRow(
+                                            { ...x, result_value: conventional },
+                                            reqHeader?.patient_sex ?? null,
+                                          )
+                                        : x,
+                                    ),
+                                  );
+                                }}
+                                onBlur={() => {
+                                  setSiDraftByItemId((prev) => {
+                                    if (!(it.id in prev)) return prev;
+                                    const next = { ...prev };
+                                    delete next[it.id];
+                                    return next;
+                                  });
+                                }}
+                                disabled={!categoryCollected || busy}
+                                sx={fieldSx}
+                              />
+                            </Box>
+                            <Box>
+                              <FormFieldLabel htmlFor={`lab-res-${it.id}-si-unit`} variant="consultation">
+                                SI unit
+                              </FormFieldLabel>
+                              <TextField
+                                id={`lab-res-${it.id}-si-unit`}
+                                hiddenLabel
+                                {...commonFieldProps}
+                                value={getSiUnit(it.test_code) ?? "—"}
+                                disabled
+                                sx={[fieldSx, { "& .MuiInputBase-input": { textTransform: "none" } }]}
+                              />
+                            </Box>
+                            <Box>
+                              <FormFieldLabel htmlFor={`lab-res-${it.id}-si-ref`} variant="consultation">
+                                SI reference range
+                              </FormFieldLabel>
+                              <TextField
+                                id={`lab-res-${it.id}-si-ref`}
+                                hiddenLabel
+                                {...commonFieldProps}
+                                value={getSiReferenceRange(it.test_code) ?? "—"}
+                                disabled
+                                sx={fieldSx}
+                              />
+                            </Box>
+                          </>
+                        ) : null}
                         <Box>
                           <FormFieldLabel htmlFor={`lab-res-${it.id}-flag`} variant="consultation">
                             Flag

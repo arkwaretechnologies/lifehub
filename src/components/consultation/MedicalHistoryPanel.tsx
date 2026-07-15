@@ -62,11 +62,13 @@ import {
   type FamilyHistoryForm,
 } from "@/lib/familyHistory";
 import {
-  emptySurgicalHistoryForm,
-  fetchSurgicalHistory,
-  formFromSurgicalRowOrDefault,
-  persistSurgicalHistory,
-  type SurgicalHistoryForm,
+  emptySurgicalHistoryEntry,
+  emptySurgicalHistorySectionState,
+  fetchSurgicalHistoryForEncounter,
+  replaceSurgicalHistoryForEncounter,
+  type SurgicalHistoryEntry,
+  type SurgicalHistoryProcedureKey,
+  type SurgicalHistorySectionState,
 } from "@/lib/surgicalHistory";
 import {
   emptyPreviousHospitalizationEntry,
@@ -707,13 +709,22 @@ const SH_PROCEDURE_KEYS = [
   { key: "c_section", label: "C-section" },
   { key: "hernia_repair", label: "Hernia" },
   { key: "cataract", label: "Cataract" },
-] as const;
+] as const satisfies ReadonlyArray<{ key: SurgicalHistoryProcedureKey; label: string }>;
 
-type ShProcedureKey = (typeof SH_PROCEDURE_KEYS)[number]["key"];
+type SurgicalHistoryEntryRow = SurgicalHistoryEntry & { key: string };
+
+function newSurgicalHistoryEntryRow(): SurgicalHistoryEntryRow {
+  return { key: crypto.randomUUID(), ...emptySurgicalHistoryEntry() };
+}
+
+function surgicalEntriesToRows(entries: SurgicalHistoryEntry[]): SurgicalHistoryEntryRow[] {
+  if (entries.length === 0) return [newSurgicalHistoryEntryRow()];
+  return entries.map((entry) => ({ key: crypto.randomUUID(), ...entry }));
+}
 
 function SurgicalHistorySection({ transId, idPrefix }: { transId: string; idPrefix: string }) {
-  const [form, setForm] = useState<SurgicalHistoryForm>(emptySurgicalHistoryForm);
-  const [rowId, setRowId] = useState<string | null>(null);
+  const [noSurgery, setNoSurgeryFlag] = useState(false);
+  const [entryRows, setEntryRows] = useState<SurgicalHistoryEntryRow[]>([newSurgicalHistoryEntryRow()]);
   const [loadError, setLoadError] = useState("");
   const [saveError, setSaveError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -725,16 +736,18 @@ function SurgicalHistorySection({ transId, idPrefix }: { transId: string; idPref
     setLoading(true);
     setLoadError("");
     void (async () => {
-      const { row, error } = await fetchSurgicalHistory(transId);
+      const { state, error } = await fetchSurgicalHistoryForEncounter(transId);
       if (cancelled) return;
       setLoading(false);
       if (error) {
         setLoadError(error);
-        setForm({ ...emptySurgicalHistoryForm });
-        setRowId(null);
+        setNoSurgeryFlag(false);
+        setEntryRows([newSurgicalHistoryEntryRow()]);
       } else {
-        setRowId(row?.id ?? null);
-        setForm(formFromSurgicalRowOrDefault(row));
+        setNoSurgeryFlag(state.no_surgery);
+        setEntryRows(
+          state.no_surgery ? [newSurgicalHistoryEntryRow()] : surgicalEntriesToRows(state.entries),
+        );
       }
       setHydrated(true);
     })();
@@ -743,52 +756,68 @@ function SurgicalHistorySection({ transId, idPrefix }: { transId: string; idPref
     };
   }, [transId]);
 
+  const persistState = useCallback((): SurgicalHistorySectionState => {
+    if (noSurgery) {
+      return { ...emptySurgicalHistorySectionState(), no_surgery: true };
+    }
+    return {
+      no_surgery: false,
+      entries: entryRows.map(({ key: _key, ...entry }) => entry),
+    };
+  }, [noSurgery, entryRows]);
+
   const runPersist = useCallback(async () => {
     if (!hydrated) return;
     setSaveError("");
     setSaving(true);
-    const { rowId: newId, error } = await persistSurgicalHistory(transId, rowId, form);
+    const { error } = await replaceSurgicalHistoryForEncounter(transId, persistState());
     setSaving(false);
-    if (error) {
-      setSaveError(error);
-      return;
-    }
-    if (newId && !rowId) {
-      setRowId(newId);
-    }
-  }, [hydrated, transId, rowId, form]);
+    if (error) setSaveError(error);
+  }, [hydrated, transId, persistState]);
+
+  const saveTrigger = useMemo(() => persistState(), [persistState]);
 
   useConsultationDebouncedSave({
     ownTabIndex: 0,
     hydrated,
     runPersist,
-    trigger: form,
+    trigger: saveTrigger,
   });
 
   function setNoSurgery(checked: boolean) {
-    setForm((prev) => {
-      if (checked) {
-        return { ...emptySurgicalHistoryForm, no_surgery: true };
-      }
-      return { ...prev, no_surgery: false };
+    if (checked) {
+      setNoSurgeryFlag(true);
+      setEntryRows([newSurgicalHistoryEntryRow()]);
+      return;
+    }
+    setNoSurgeryFlag(false);
+  }
+
+  function updateEntry(key: string, patch: Partial<SurgicalHistoryEntry>) {
+    setNoSurgeryFlag(false);
+    setEntryRows((prev) => prev.map((row) => (row.key === key ? { ...row, ...patch } : row)));
+  }
+
+  function setEntryProcedure(rowKey: string, procKey: SurgicalHistoryProcedureKey, checked: boolean) {
+    setNoSurgeryFlag(false);
+    setEntryRows((prev) =>
+      prev.map((row) => (row.key === rowKey ? { ...row, [procKey]: checked } : row)),
+    );
+  }
+
+  function addEntry() {
+    setNoSurgeryFlag(false);
+    setEntryRows((prev) => [...prev, newSurgicalHistoryEntryRow()]);
+  }
+
+  function removeEntry(key: string) {
+    setEntryRows((prev) => {
+      const next = prev.filter((row) => row.key !== key);
+      return next.length === 0 ? [newSurgicalHistoryEntryRow()] : next;
     });
   }
 
-  function setProcedure(key: ShProcedureKey, checked: boolean) {
-    setForm((prev) => ({
-      ...prev,
-      no_surgery: false,
-      [key]: checked,
-    }));
-  }
-
-  function setOtherProcedures(value: string) {
-    setForm((prev) => ({
-      ...prev,
-      no_surgery: false,
-      other_procedures: value,
-    }));
-  }
+  const fieldsDisabled = loading || noSurgery;
 
   return (
     <Box sx={{ ...panelSectionSx, mb: 2 }}>
@@ -812,50 +841,119 @@ function SurgicalHistorySection({ transId, idPrefix }: { transId: string; idPref
           </Typography>
         ) : null}
       </Box>
-      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, columnGap: 2, rowGap: 0.25 }}>
+      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, columnGap: 2, rowGap: 0.25, mb: 1.5 }}>
         <FormControlLabel
           control={
             <Checkbox
               size="small"
-              checked={form.no_surgery}
-              onChange={(_, c) => setNoSurgery(c)}
+              checked={noSurgery}
+              onChange={(_, v) => setNoSurgery(v)}
               disabled={loading}
             />
           }
           label="Negative"
           sx={controlLabelSx}
         />
-        {SH_PROCEDURE_KEYS.map(({ key, label }) => (
-          <FormControlLabel
-            key={key}
-            control={
-              <Checkbox
-                size="small"
-                checked={form[key]}
-                onChange={(_, c) => setProcedure(key, c)}
-                disabled={loading || form.no_surgery}
-              />
-            }
-            label={label}
-            sx={controlLabelSx}
-          />
-        ))}
       </Box>
-      <Box sx={{ mt: 2 }}>
-        <FormFieldLabel htmlFor={`${idPrefix}-sh-other-procedures`} variant="consultation">
-          Other procedures
-        </FormFieldLabel>
-        <TextField
-          id={`${idPrefix}-sh-other-procedures`}
-          hiddenLabel
-          placeholder="_______________________________________"
-          value={form.other_procedures}
-          onChange={(e) => setOtherProcedures(e.target.value.toUpperCase())}
-          disabled={loading || form.no_surgery}
-          {...commonFieldProps}
-          sx={fieldInputSx}
-        />
-      </Box>
+      {!noSurgery ? (
+        <>
+          {entryRows.map((row, idx) => (
+            <Box
+              key={row.key}
+              sx={{
+                mb: 1.5,
+                p: 1.25,
+                border: "1px solid",
+                borderColor: "divider",
+                borderRadius: 1,
+              }}
+            >
+              <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1.5, alignItems: "flex-start", mb: 1 }}>
+                <Box sx={{ width: 88, flexShrink: 0 }}>
+                  <FormFieldLabel
+                    htmlFor={idx === 0 ? `${idPrefix}-sh-year` : `${idPrefix}-sh-year-${row.key}`}
+                    variant="consultation"
+                  >
+                    Year
+                  </FormFieldLabel>
+                  <TextField
+                    id={idx === 0 ? `${idPrefix}-sh-year` : `${idPrefix}-sh-year-${row.key}`}
+                    hiddenLabel
+                    disabled={fieldsDisabled}
+                    placeholder=" "
+                    value={row.year}
+                    onChange={(e) =>
+                      updateEntry(row.key, {
+                        year: e.target.value.replace(/\D/g, "").slice(0, 4),
+                      })
+                    }
+                    inputProps={{ inputMode: "numeric", maxLength: 4 }}
+                    {...commonFieldProps}
+                    sx={fieldInputSx}
+                  />
+                </Box>
+                <Box sx={{ flex: 1, minWidth: 160 }}>
+                  <FormFieldLabel
+                    htmlFor={idx === 0 ? `${idPrefix}-sh-notes` : `${idPrefix}-sh-notes-${row.key}`}
+                    variant="consultation"
+                  >
+                    Notes
+                  </FormFieldLabel>
+                  <TextField
+                    id={idx === 0 ? `${idPrefix}-sh-notes` : `${idPrefix}-sh-notes-${row.key}`}
+                    hiddenLabel
+                    disabled={fieldsDisabled}
+                    placeholder=" "
+                    value={row.notes}
+                    onChange={(e) => updateEntry(row.key, { notes: e.target.value.toUpperCase() })}
+                    {...commonFieldProps}
+                    sx={fieldInputSx}
+                  />
+                </Box>
+                {entryRows.length > 1 ? (
+                  <IconButton
+                    size="small"
+                    aria-label="Remove procedure"
+                    onClick={() => removeEntry(row.key)}
+                    disabled={fieldsDisabled}
+                    sx={{ mt: 2.5 }}
+                  >
+                    <DeleteOutlineIcon fontSize="small" />
+                  </IconButton>
+                ) : null}
+              </Box>
+              <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, columnGap: 2, rowGap: 0.25 }}>
+                {SH_PROCEDURE_KEYS.map(({ key, label }) => (
+                  <FormControlLabel
+                    key={key}
+                    control={
+                      <Checkbox
+                        size="small"
+                        checked={row[key]}
+                        onChange={(_, c) => setEntryProcedure(row.key, key, c)}
+                        disabled={fieldsDisabled}
+                      />
+                    }
+                    label={label}
+                    sx={controlLabelSx}
+                  />
+                ))}
+              </Box>
+            </Box>
+          ))}
+          <Button
+            type="button"
+            variant="outlined"
+            size="small"
+            onClick={addEntry}
+            disabled={fieldsDisabled}
+            startIcon={<AddOutlinedIcon />}
+            sx={{ textTransform: "none" }}
+          >
+            Add procedure
+          </Button>
+        </>
+      ) : null}
     </Box>
   );
 }

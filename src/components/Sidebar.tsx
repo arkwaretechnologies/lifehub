@@ -134,11 +134,24 @@ const menuSections: MenuSection[] = [
     heading: "OPERATIONS",
     items: [
       {
-        kind: "link",
-        label: "reception",
+        kind: "group",
+        id: "reception",
+        label: "Reception",
         icon: <MeetingRoomOutlinedIcon />,
-        href: "/reception",
-        pageKey: "reception",
+        children: [
+          {
+            label: "Desk",
+            icon: <MeetingRoomOutlinedIcon />,
+            href: "/reception",
+            pageKey: "reception",
+          },
+          {
+            label: "Follow-up calendar",
+            icon: <CalendarMonthOutlinedIcon />,
+            href: "/reception/follow-up-calendar",
+            pageKey: "reception/follow-up-calendar",
+          },
+        ],
       },
       {
         kind: "link",
@@ -352,6 +365,12 @@ const menuSections: MenuSection[] = [
                 href: "/settings/clinical/print-layouts",
                 pageKey: "settings/clinical/print-layouts",
               },
+              {
+                label: "Follow-up SMS",
+                icon: <CalendarMonthOutlinedIcon />,
+                href: "/settings/clinical/follow-up-sms",
+                pageKey: "settings/clinical/follow-up-sms",
+              },
             ],
           },
           {
@@ -522,6 +541,7 @@ const emptyNavMessage =
 
 const defaultOpenGroups: Record<string, boolean> = {
   "patient-care": true,
+  reception: true,
   "user-management": true,
   reports: false,
   "reports-consultation-lab": false,

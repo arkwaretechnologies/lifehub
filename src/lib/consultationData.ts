@@ -69,6 +69,9 @@ export type EncounterRow = {
   plan_referral?: boolean | null;
   plan_notes?: string | null;
   disposition?: string | null;
+  follow_up_date?: string | null;
+  follow_up_sms_2d_sent_at?: string | null;
+  follow_up_sms_dayof_sent_at?: string | null;
   referring_physician: number | null;
   physician_id: number | null;
 };
@@ -1129,7 +1132,21 @@ export type EncounterPlansTreatmentForm = {
   plan_referral: boolean;
   plan_notes: string;
   disposition: EncounterDisposition | null;
+  /** YYYY-MM-DD or empty when no follow-up scheduled. */
+  follow_up_date: string;
 };
+
+export function emptyEncounterPlansTreatmentForm(): EncounterPlansTreatmentForm {
+  return {
+    plan_labs: false,
+    plan_imaging: false,
+    plan_medications: false,
+    plan_referral: false,
+    plan_notes: "",
+    disposition: null,
+    follow_up_date: "",
+  };
+}
 
 function dispositionFromDb(raw: string | null | undefined): EncounterDisposition | null {
   if (raw == null || raw === "") return null;
@@ -1142,6 +1159,11 @@ function bPlan(v: boolean | null | undefined): boolean {
   return !!v;
 }
 
+function followUpDateFromDb(raw: string | null | undefined): string {
+  if (raw == null || String(raw).trim() === "") return "";
+  return String(raw).trim().slice(0, 10);
+}
+
 export async function fetchEncounterPlansTreatment(transId: string): Promise<{
   form: EncounterPlansTreatmentForm;
   error: string | null;
@@ -1149,14 +1171,7 @@ export async function fetchEncounterPlansTreatment(transId: string): Promise<{
   const id = transId.trim();
   if (!isUuid(id)) {
     return {
-      form: {
-        plan_labs: false,
-        plan_imaging: false,
-        plan_medications: false,
-        plan_referral: false,
-        plan_notes: "",
-        disposition: null,
-      },
+      form: emptyEncounterPlansTreatmentForm(),
       error: "Invalid encounter.",
     };
   }
@@ -1164,21 +1179,14 @@ export async function fetchEncounterPlansTreatment(transId: string): Promise<{
   const { data, error } = await supabase
     .from(ENCOUNTERS_TABLE)
     .select(
-      "plan_labs, plan_imaging, plan_medications, plan_referral, plan_notes, disposition"
+      "plan_labs, plan_imaging, plan_medications, plan_referral, plan_notes, disposition, follow_up_date"
     )
     .eq("trans_id", id)
     .maybeSingle();
 
   if (error) {
     return {
-      form: {
-        plan_labs: false,
-        plan_imaging: false,
-        plan_medications: false,
-        plan_referral: false,
-        plan_notes: "",
-        disposition: null,
-      },
+      form: emptyEncounterPlansTreatmentForm(),
       error: error.message,
     };
   }
@@ -1190,6 +1198,7 @@ export async function fetchEncounterPlansTreatment(transId: string): Promise<{
     plan_referral?: boolean | null;
     plan_notes?: string | null;
     disposition?: string | null;
+    follow_up_date?: string | null;
   } | null;
 
   return {
@@ -1200,6 +1209,7 @@ export async function fetchEncounterPlansTreatment(transId: string): Promise<{
       plan_referral: bPlan(row?.plan_referral),
       plan_notes: row?.plan_notes ?? "",
       disposition: dispositionFromDb(row?.disposition),
+      follow_up_date: followUpDateFromDb(row?.follow_up_date),
     },
     error: null,
   };
@@ -1215,6 +1225,21 @@ export async function persistEncounterPlansTreatment(
   }
 
   const notes = form.plan_notes.trim();
+  const nextFollowUp = followUpDateFromDb(form.follow_up_date);
+
+  const { data: existing, error: readErr } = await supabase
+    .from(ENCOUNTERS_TABLE)
+    .select("follow_up_date")
+    .eq("trans_id", id)
+    .maybeSingle();
+  if (readErr) {
+    return { error: readErr.message };
+  }
+
+  const prevFollowUp = followUpDateFromDb(
+    (existing as { follow_up_date?: string | null } | null)?.follow_up_date
+  );
+  const followUpChanged = prevFollowUp !== nextFollowUp;
 
   const { error } = await supabase
     .from(ENCOUNTERS_TABLE)
@@ -1225,6 +1250,13 @@ export async function persistEncounterPlansTreatment(
       plan_referral: form.plan_referral,
       plan_notes: notes || null,
       disposition: form.disposition,
+      follow_up_date: nextFollowUp || null,
+      ...(followUpChanged
+        ? {
+            follow_up_sms_2d_sent_at: null,
+            follow_up_sms_dayof_sent_at: null,
+          }
+        : {}),
     })
     .eq("trans_id", id);
 

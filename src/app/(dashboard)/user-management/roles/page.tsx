@@ -34,6 +34,7 @@ import SaveOutlinedIcon from "@mui/icons-material/SaveOutlined";
 import {
   PERMISSION_MODULES,
   leafKeysForModule,
+  isAllowedPageKey,
   isNavSubgroup,
   type PermissionModule,
 } from "@/lib/navPermissionCatalog";
@@ -129,7 +130,8 @@ export default function RolesPage() {
         setPageKeysDraft(new Set());
         return;
       }
-      setPageKeysDraft(new Set(json.pageKeys ?? []));
+      const loaded = (json.pageKeys ?? []).filter((k) => isAllowedPageKey(k));
+      setPageKeysDraft(new Set(loaded));
     } catch {
       setPagesError("Failed to load menu access.");
       setPageKeysDraft(new Set());

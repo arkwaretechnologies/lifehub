@@ -58,3 +58,6 @@ supabase/.temp/
 supabase/
 debug.log
 scripts/
+
+scripts/sql/_secrets_once.sql
+scripts/sql/_cron_secret_for_env.txt

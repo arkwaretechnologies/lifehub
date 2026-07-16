@@ -63,12 +63,18 @@ export const PERMISSION_MODULES: PermissionModule[] = [
     ],
   },
   {
-    kind: "leaf",
+    kind: "group",
     id: "reception",
     sectionHeading: "OPERATIONS",
     label: "Reception",
-    pageKey: "reception",
-    href: "/reception",
+    children: [
+      { label: "Desk", pageKey: "reception", href: "/reception" },
+      {
+        label: "Follow-up calendar",
+        pageKey: "reception/follow-up-calendar",
+        href: "/reception/follow-up-calendar",
+      },
+    ],
   },
   {
     kind: "leaf",
@@ -197,6 +203,11 @@ export const PERMISSION_MODULES: PermissionModule[] = [
             label: "Print layouts",
             pageKey: "settings/clinical/print-layouts",
             href: "/settings/clinical/print-layouts",
+          },
+          {
+            label: "Follow-up SMS",
+            pageKey: "settings/clinical/follow-up-sms",
+            href: "/settings/clinical/follow-up-sms",
           },
         ],
       },

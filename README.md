@@ -22,15 +22,18 @@ Signed browser sessions use HS256 JWTs on the server. Set these in `.env.local` 
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes (for login / session) | Used by `/api/auth/login` and `/api/auth/session` to call `authenticate_user` and load `users` / RBAC tables. |
 | `NEXT_PUBLIC_SUPABASE_URL` | Yes | Supabase project URL. |
 | `ADMIN_ROLE_NAMES` | No | Comma-separated names matching `users.role` (case-insensitive). These roles may create users, mutate RBAC roles/pages, and load other users’ profiles via `/api/user-profile`. Defaults to `Administrator` if unset. |
+| `CRON_SECRET` | No (optional manual runs) | Shared secret for optional `GET /api/cron/follow-up-reminders/*` triggers. Scheduled reminders run via **Supabase `pg_cron`** and do not require this on Railway. |
+
+Follow-up SMS reminders are scheduled in Supabase (`pg_cron` minute dispatcher reading `clinic_settings`: days prior + prior/day-of send times in Asia/Manila). Configure in Settings → Clinical → Follow-up SMS. Schema: [`scripts/sql/add-follow-up-date.sql`](scripts/sql/add-follow-up-date.sql). Cron setup: [`scripts/sql/follow-up-reminder-cron.sql`](scripts/sql/follow-up-reminder-cron.sql).
 
 Legacy `lifehub_session` entries **without** a `token` field are cleared on load; users sign in again once.
 
 ### API authentication
 
-- `POST` / `GET` `/api/auth/login` is the only API path that works without a session token.
+- `POST` / `GET` `/api/auth/login` is the only API path that works without a session token (except `/api/health/*` and `/api/cron/*`, which use other checks).
 - All other `/api/*` routes require `Authorization: Bearer <JWT>` (see `src/middleware.ts`). Browser code should use `authenticatedFetch` from `src/lib/authenticatedFetch.ts` so the token from `lifehub_session` is sent automatically.
 - `POST /api/auth/login` applies per-IP and per-identifier rate limits (`src/lib/loginRateLimit.ts`).
-
+- `/api/cron/*` is exempt from session JWT checks and requires `CRON_SECRET` instead (optional manual trigger; production schedule is Supabase cron).
 ### Session hardening (evaluation)
 
 The JWT is stored in **localStorage** (`AuthProvider`), which is vulnerable to XSS token theft. Mitigations to consider:

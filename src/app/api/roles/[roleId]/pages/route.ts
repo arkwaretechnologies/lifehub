@@ -82,8 +82,9 @@ export async function PUT(
     if (k.length > 80) {
       return NextResponse.json({ error: `Invalid page key (too long): ${k.slice(0, 20)}…` }, { status: 400 });
     }
+    // Drop legacy keys removed from the catalog (e.g. old `branches`) so Save is not blocked.
     if (!isAllowedPageKey(k)) {
-      return NextResponse.json({ error: `Unknown page key: ${k}` }, { status: 400 });
+      continue;
     }
     if (!pageKeys.includes(k)) pageKeys.push(k);
   }

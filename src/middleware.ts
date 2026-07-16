@@ -59,6 +59,11 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
+  // Supabase pg_cron jobs authenticate with CRON_SECRET inside the route handler.
+  if (pathname.startsWith("/api/cron/")) {
+    return NextResponse.next();
+  }
+
   const authHeader =
     request.headers.get("authorization") ?? request.headers.get("Authorization") ?? "";
   const m = authHeader.match(/^Bearer\s+(.+)$/i);

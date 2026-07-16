@@ -49,6 +49,7 @@ import { consultFormControlLabelSx } from "@/components/consultation/Consultatio
 import { useConsultationSave } from "@/components/consultation/consultationSaveContext";
 import {
   ENCOUNTER_DISPOSITION_VALUES,
+  emptyEncounterPlansTreatmentForm,
   fetchEncounterPlansTreatment,
   persistEncounterPlansTreatment,
   type EncounterDisposition,
@@ -202,14 +203,7 @@ function isCollectedY(v: string | null | undefined): boolean {
   return String(v ?? "").trim().toUpperCase() === "Y";
 }
 
-const emptyPlansForm: EncounterPlansTreatmentForm = {
-  plan_labs: false,
-  plan_imaging: false,
-  plan_medications: false,
-  plan_referral: false,
-  plan_notes: "",
-  disposition: null,
-};
+const emptyPlansForm: EncounterPlansTreatmentForm = emptyEncounterPlansTreatmentForm();
 
 /** Imaging checklist + notes block helpers: `@/lib/imagingCatalog`. */
 
@@ -447,6 +441,7 @@ export default function PlansTreatmentPanel({
 }) {
   const { profile } = useAuth();
   const dispositionLabelId = `plans-disp-${useId().replace(/\W/g, "")}`;
+  const followUpDateLabelId = `plans-follow-up-${useId().replace(/\W/g, "")}`;
   const [form, setForm] = useState<EncounterPlansTreatmentForm>(emptyPlansForm);
   const [loadError, setLoadError] = useState("");
   const [saveError, setSaveError] = useState("");
@@ -3112,6 +3107,44 @@ export default function PlansTreatmentPanel({
               ))}
             </RadioGroup>
           </FormControl>
+
+          <Typography {...sectionLabelProps} sx={{ mt: 3 }} id={followUpDateLabelId}>
+            FOLLOW-UP DATE:
+          </Typography>
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            spacing={1}
+            alignItems={{ xs: "stretch", sm: "center" }}
+            sx={{ maxWidth: 360 }}
+          >
+            <TextField
+              type="date"
+              size="small"
+              fullWidth
+              hiddenLabel
+              variant="outlined"
+              value={form.follow_up_date}
+              disabled={loading}
+              aria-labelledby={followUpDateLabelId}
+              InputLabelProps={{ shrink: true }}
+              onChange={(e) =>
+                setForm((f) => ({
+                  ...f,
+                  follow_up_date: e.target.value.slice(0, 10),
+                }))
+              }
+              sx={notesFieldSx}
+            />
+            <Button
+              size="small"
+              variant="text"
+              disabled={loading || form.follow_up_date === ""}
+              onClick={() => setForm((f) => ({ ...f, follow_up_date: "" }))}
+              sx={{ flexShrink: 0, alignSelf: { xs: "flex-start", sm: "center" } }}
+            >
+              Clear
+            </Button>
+          </Stack>
         </Box>
       </Box>
 

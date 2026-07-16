@@ -7,6 +7,7 @@ import {
   LAB_RESULT_TEMPLATES_TABLE,
   normalizeLabResultTemplateCode,
   parseTemplateSignatureLayoutInput,
+  parseResultDohLicensePrintInput,
   type LabResultTemplateRow,
 } from "@/lib/labResultTemplates";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
@@ -60,6 +61,7 @@ export async function POST(req: Request) {
     sort_order?: number | null;
     is_active?: boolean;
     signature_layout?: unknown;
+    doh_license_print?: unknown;
   } | null;
 
   const code = normalizeLabResultTemplateCode(body?.code);
@@ -71,6 +73,11 @@ export async function POST(req: Request) {
   const layoutParsed = parseTemplateSignatureLayoutInput(body?.signature_layout ?? null);
   if (!layoutParsed.ok) {
     return NextResponse.json({ error: layoutParsed.error }, { status: 400 });
+  }
+
+  const dohParsed = parseResultDohLicensePrintInput(body?.doh_license_print ?? null);
+  if (!dohParsed.ok) {
+    return NextResponse.json({ error: dohParsed.error }, { status: 400 });
   }
 
   const file_name =
@@ -90,9 +97,10 @@ export async function POST(req: Request) {
       sort_order: sort_order != null && Number.isFinite(sort_order) ? Math.trunc(sort_order) : null,
       is_active,
       signature_layout: layoutParsed.value,
+      doh_license_print: dohParsed.value,
       updated_at: new Date().toISOString(),
     })
-    .select("id, code, name, file_name, sort_order, is_active, signature_layout, created_at, updated_at")
+    .select("id, code, name, file_name, sort_order, is_active, signature_layout, doh_license_print, created_at, updated_at")
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });

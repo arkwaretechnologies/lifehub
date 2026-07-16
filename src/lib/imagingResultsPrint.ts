@@ -26,7 +26,8 @@ import {
   type ResultsPrintPatientHeader,
 } from "@/lib/resultsPrintPatientFields";
 import { drawImagingResultsPatientHeader } from "@/lib/imagingResultsPatientHeader";
-import type { PDFDocument, PDFPage, PDFFont } from "pdf-lib";
+import { drawDohLicenseNo, type ResultDohLicensePrint } from "@/lib/resultDohLicensePrint";
+import type { PDFDocument, PDFPage, PDFFont, RGB } from "pdf-lib";
 import { rgb } from "pdf-lib";
 
 async function embedImagingResultFonts(doc: PDFDocument): Promise<{ font: PDFFont; boldFont: PDFFont }> {
@@ -70,6 +71,7 @@ type TemplateRegistry = {
   allowedCodes: Set<string>;
   layoutByCode: Map<string, ImagingResultTemplateResultLayout | null>;
   signatureByCode: Map<string, ImagingResultTemplateSignatureLayout | null>;
+  dohLicenseByCode: Map<string, ResultDohLicensePrint | null>;
 };
 
 type SignatureImageCache = Record<ImagingSignatureRole, Uint8Array | null>;
@@ -200,7 +202,7 @@ function drawAtTopRef(
   refFromTop: number,
   refSize: number,
   font: PDFFont,
-  opts?: { maxWidth?: number; lineHeight?: number },
+  opts?: { maxWidth?: number; lineHeight?: number; color?: RGB },
 ): void {
   const t = text.trim();
   if (!t) return;
@@ -218,7 +220,7 @@ function drawAtTopRef(
     font,
     maxWidth: opts?.maxWidth != null ? opts.maxWidth * sx : undefined,
     lineHeight: opts?.lineHeight != null ? opts.lineHeight * scale : undefined,
-    color: PRINT_TEXT_BLACK,
+    color: opts?.color ?? PRINT_TEXT_BLACK,
   });
 }
 
@@ -452,19 +454,22 @@ async function fetchTemplateRegistry(): Promise<TemplateRegistry | null> {
       code?: string;
       result_layout?: ImagingResultTemplateResultLayout | null;
       signature_layout?: ImagingResultTemplateSignatureLayout | null;
+      doh_license_print?: ResultDohLicensePrint | null;
     }>;
   } | null;
   const allowedCodes = new Set<string>();
   const layoutByCode = new Map<string, ImagingResultTemplateResultLayout | null>();
   const signatureByCode = new Map<string, ImagingResultTemplateSignatureLayout | null>();
+  const dohLicenseByCode = new Map<string, ResultDohLicensePrint | null>();
   for (const t of json?.templates ?? []) {
     const code = String(t.code ?? "").trim().toUpperCase();
     if (!code) continue;
     allowedCodes.add(code);
     layoutByCode.set(code, t.result_layout ?? null);
     signatureByCode.set(code, t.signature_layout ?? null);
+    dohLicenseByCode.set(code, t.doh_license_print ?? null);
   }
-  return { allowedCodes, layoutByCode, signatureByCode };
+  return { allowedCodes, layoutByCode, signatureByCode, dohLicenseByCode };
 }
 
 async function fetchImagingResultTemplateBytes(code: string): Promise<Uint8Array | null> {
@@ -646,6 +651,7 @@ export async function openImagingResultPrintWindow(args: {
     const { font, boldFont } = await embedImagingResultFonts(merged);
     const signatories = await fetchSignatoriesForPrint();
     const signatureLayout = registry.signatureByCode.get(templateCode) ?? null;
+    const dohLicense = registry.dohLicenseByCode.get(templateCode) ?? null;
     const imageCache = await loadImagingSignatureImageCache();
     const embeddedSignatureImages = new Map<string, import("pdf-lib").PDFImage>();
     const src = await PDFDocument.load(bytes);
@@ -667,6 +673,7 @@ export async function openImagingResultPrintWindow(args: {
         embeddedSignatureImages,
         templateCode,
       );
+      drawDohLicenseNo(page, dohLicense, font, drawAtTopRef, i);
     }
 
     const examinationName = formatImagingExaminationName(item);

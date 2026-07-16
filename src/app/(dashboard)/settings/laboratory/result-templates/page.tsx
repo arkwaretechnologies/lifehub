@@ -36,11 +36,16 @@ import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import type { LabResultTemplateRow } from "@/lib/labResultTemplates";
 import {
   buildTemplateSignatureLayoutFromFormFields,
+  buildResultDohLicensePrintFromFormFields,
   defaultLabResultTemplateFileName,
+  dohLicensePrintFormFieldsFromDb,
+  emptyDohLicensePrintFormFields,
   emptyTemplateSignatureLayoutFormFields,
   templateSignatureLayoutFormFieldsFromDb,
   type TemplateSignatureLayoutFormFields,
 } from "@/lib/labResultTemplates";
+import type { DohLicensePrintFormFields } from "@/lib/resultDohLicensePrint";
+import { DohLicensePrintFields } from "@/components/laboratory/DohLicensePrintFields";
 import type { PrintLayoutFormFields, ImageLayoutFormFields } from "@/lib/labResultsPrintLayout";
 
 type ResultTemplateRow = LabResultTemplateRow & { has_file?: boolean };
@@ -52,6 +57,7 @@ type TemplateForm = {
   sort_order: string;
   is_active: boolean;
   signature: TemplateSignatureLayoutFormFields;
+  doh_license: DohLicensePrintFormFields;
 };
 
 const fieldSx = {
@@ -75,6 +81,7 @@ function emptyForm(): TemplateForm {
     sort_order: "",
     is_active: true,
     signature: emptyTemplateSignatureLayoutFormFields(),
+    doh_license: emptyDohLicensePrintFormFields(),
   };
 }
 
@@ -86,6 +93,7 @@ function rowToForm(r: ResultTemplateRow): TemplateForm {
     sort_order: r.sort_order == null ? "" : String(r.sort_order),
     is_active: r.is_active !== false,
     signature: templateSignatureLayoutFormFieldsFromDb(r.signature_layout),
+    doh_license: dohLicensePrintFormFieldsFromDb(r.doh_license_print),
   };
 }
 
@@ -254,6 +262,8 @@ export default function SettingsLabResultTemplatesPage() {
     const code = f.code.trim().toUpperCase();
     const layoutBuilt = buildTemplateSignatureLayoutFromFormFields(f.signature);
     if (!layoutBuilt.ok) return { error: layoutBuilt.error } as const;
+    const dohBuilt = buildResultDohLicensePrintFromFormFields(f.doh_license);
+    if (!dohBuilt.ok) return { error: dohBuilt.error } as const;
     return {
       payload: {
         code,
@@ -262,6 +272,7 @@ export default function SettingsLabResultTemplatesPage() {
         sort_order: f.sort_order.trim() === "" ? null : Number(f.sort_order),
         is_active: f.is_active,
         signature_layout: layoutBuilt.value,
+        doh_license_print: dohBuilt.value,
       },
     } as const;
   };
@@ -461,6 +472,10 @@ export default function SettingsLabResultTemplatesPage() {
         onChange={(pathologist_signature) =>
           setForm({ ...form, signature: { ...form.signature, pathologist_signature } })
         }
+      />
+      <DohLicensePrintFields
+        fields={form.doh_license}
+        onChange={(doh_license) => setForm({ ...form, doh_license })}
       />
     </Stack>
   );

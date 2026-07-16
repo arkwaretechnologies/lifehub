@@ -26,6 +26,7 @@ import {
 } from "@/lib/labBloodChemSiConversion";
 import type { PDFDocument, PDFFont } from "pdf-lib";
 import { rgb } from "pdf-lib";
+import { drawDohLicenseNo, type ResultDohLicensePrint } from "@/lib/resultDohLicensePrint";
 
 async function embedLabResultFonts(doc: PDFDocument): Promise<PDFFont> {
   const { StandardFonts } = await import("pdf-lib");
@@ -56,6 +57,7 @@ const REF_H = 792;
 type TemplateRegistry = {
   allowedCodes: Set<string>;
   signatureByCode: Map<string, LabResultTemplateSignatureLayout | null>;
+  dohLicenseByCode: Map<string, ResultDohLicensePrint | null>;
   sortTemplates: Array<{ code: string; sort_order: number | null }>;
 };
 
@@ -69,20 +71,23 @@ async function fetchTemplateRegistry(): Promise<TemplateRegistry | null> {
       code?: string;
       sort_order?: number | null;
       signature_layout?: LabResultTemplateSignatureLayout | null;
+      doh_license_print?: ResultDohLicensePrint | null;
     }>;
   } | null;
   const templates = json?.templates ?? [];
   const allowedCodes = new Set<string>();
   const signatureByCode = new Map<string, LabResultTemplateSignatureLayout | null>();
+  const dohLicenseByCode = new Map<string, ResultDohLicensePrint | null>();
   const sortTemplates: Array<{ code: string; sort_order: number | null }> = [];
   for (const t of templates) {
     const code = String(t.code ?? "").trim().toUpperCase();
     if (!code) continue;
     allowedCodes.add(code);
     signatureByCode.set(code, t.signature_layout ?? null);
+    dohLicenseByCode.set(code, t.doh_license_print ?? null);
     sortTemplates.push({ code, sort_order: t.sort_order ?? null });
   }
-  return { allowedCodes, signatureByCode, sortTemplates };
+  return { allowedCodes, signatureByCode, dohLicenseByCode, sortTemplates };
 }
 
 async function fetchSignatoriesForPrint(): Promise<LabResultSignatoriesMap | null> {
@@ -450,6 +455,7 @@ export async function openLabResultsPrintWindow(args: {
       }
       const pageCount = copied.length;
       const signatureLayout = registry.signatureByCode.get(code) ?? null;
+      const dohLicense = registry.dohLicenseByCode.get(code) ?? null;
       for (let i = 0; i < pageCount; i++) {
         const page = merged.getPage(templatePageStart + i);
         drawLabResultsPatientHeader(page, header, font);
@@ -462,6 +468,7 @@ export async function openLabResultsPrintWindow(args: {
           imageCache,
           embeddedSignatureImages,
         );
+        drawDohLicenseNo(page, dohLicense, font, drawAtTopRef, i);
       }
       drawGroupResultsForTemplate(
         merged,

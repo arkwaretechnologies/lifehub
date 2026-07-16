@@ -3,6 +3,7 @@ import {
   LAB_RESULT_TEMPLATES_TABLE,
   normalizeLabResultTemplateCode,
   parseTemplateSignatureLayoutInput,
+  parseResultDohLicensePrintInput,
   type LabResultTemplateRow,
 } from "@/lib/labResultTemplates";
 import { LAB_TESTS_TABLE } from "@/lib/labTests";
@@ -49,6 +50,7 @@ export async function PATCH(
     sort_order?: number | null;
     is_active?: boolean;
     signature_layout?: unknown;
+    doh_license_print?: unknown;
   } | null;
 
   if (!body || Object.keys(body).length === 0) {
@@ -84,12 +86,19 @@ export async function PATCH(
     }
     patch.signature_layout = layoutParsed.value;
   }
+  if (body.doh_license_print !== undefined) {
+    const dohParsed = parseResultDohLicensePrintInput(body.doh_license_print);
+    if (!dohParsed.ok) {
+      return NextResponse.json({ error: dohParsed.error }, { status: 400 });
+    }
+    patch.doh_license_print = dohParsed.value;
+  }
 
   const { data, error } = await db
     .from(LAB_RESULT_TEMPLATES_TABLE)
     .update(patch)
     .eq("id", templateId)
-    .select("id, code, name, file_name, sort_order, is_active, signature_layout, created_at, updated_at")
+    .select("id, code, name, file_name, sort_order, is_active, signature_layout, doh_license_print, created_at, updated_at")
     .maybeSingle();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });

@@ -14,6 +14,22 @@ import {
   type PrintLayoutFormFields,
   type ImageLayoutFormFields,
 } from "@/lib/labResultsPrintLayout";
+import {
+  dohLicensePrintFormFieldsFromDb,
+  emptyDohLicensePrintFormFields,
+  parseResultDohLicensePrint,
+  type DohLicensePrintFormFields,
+  type ResultDohLicensePrint,
+} from "@/lib/resultDohLicensePrint";
+
+export type { DohLicensePrintFormFields, ResultDohLicensePrint };
+export {
+  buildResultDohLicensePrintFromFormFields,
+  dohLicensePrintFormFieldsFromDb,
+  emptyDohLicensePrintFormFields,
+  parseResultDohLicensePrint,
+  parseResultDohLicensePrintInput,
+} from "@/lib/resultDohLicensePrint";
 
 export const LAB_RESULT_TEMPLATES_TABLE = "lab_result_templates" as const;
 
@@ -36,12 +52,13 @@ export type LabResultTemplateRow = {
   sort_order: number | null;
   is_active: boolean;
   signature_layout: LabResultTemplateSignatureLayout | null;
+  doh_license_print: ResultDohLicensePrint | null;
   created_at: string | null;
   updated_at: string | null;
 };
 
 const TEMPLATE_SELECT =
-  "id, code, name, file_name, sort_order, is_active, signature_layout, created_at, updated_at";
+  "id, code, name, file_name, sort_order, is_active, signature_layout, doh_license_print, created_at, updated_at";
 
 function parseSignatureSlot(raw: unknown): LabResultTemplateSignatureSlot {
   const empty: LabResultTemplateSignatureSlot = { name: null, license: null, signature: null };
@@ -79,6 +96,7 @@ function mapTemplateRow(row: Record<string, unknown>): LabResultTemplateRow {
     sort_order: row.sort_order == null ? null : Number(row.sort_order),
     is_active: row.is_active !== false,
     signature_layout: parseTemplateSignatureLayout(row.signature_layout),
+    doh_license_print: parseResultDohLicensePrint(row.doh_license_print),
     created_at: row.created_at != null ? String(row.created_at) : null,
     updated_at: row.updated_at != null ? String(row.updated_at) : null,
   };

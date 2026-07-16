@@ -21,6 +21,7 @@ export async function GET(req: Request) {
       sort_order: t.sort_order,
       is_active: t.is_active,
       signature_layout: t.signature_layout,
+      doh_license_print: t.doh_license_print,
     })),
   });
 }

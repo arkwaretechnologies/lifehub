@@ -22,6 +22,7 @@ export async function GET(req: Request) {
       is_active: t.is_active,
       result_layout: t.result_layout,
       signature_layout: t.signature_layout,
+      doh_license_print: t.doh_license_print,
     })),
   });
 }

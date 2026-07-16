@@ -5,6 +5,7 @@ import {
   normalizeImagingResultTemplateCode,
   parseTemplateResultLayoutInput,
   parseTemplateSignatureLayoutInput,
+  parseResultDohLicensePrintInput,
   type ImagingResultTemplateRow,
 } from "@/lib/imagingResultTemplates";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
@@ -51,6 +52,7 @@ export async function PATCH(
     is_active?: boolean;
     result_layout?: unknown;
     signature_layout?: unknown;
+    doh_license_print?: unknown;
   } | null;
 
   if (!body || Object.keys(body).length === 0) {
@@ -93,12 +95,19 @@ export async function PATCH(
     }
     patch.signature_layout = signatureParsed.value;
   }
+  if (body.doh_license_print !== undefined) {
+    const dohParsed = parseResultDohLicensePrintInput(body.doh_license_print);
+    if (!dohParsed.ok) {
+      return NextResponse.json({ error: dohParsed.error }, { status: 400 });
+    }
+    patch.doh_license_print = dohParsed.value;
+  }
 
   const { data, error } = await db
     .from(IMAGING_RESULT_TEMPLATES_TABLE)
     .update(patch)
     .eq("id", templateId)
-    .select("id, code, name, file_name, sort_order, is_active, result_layout, signature_layout, created_at, updated_at")
+    .select("id, code, name, file_name, sort_order, is_active, result_layout, signature_layout, doh_license_print, created_at, updated_at")
     .maybeSingle();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });

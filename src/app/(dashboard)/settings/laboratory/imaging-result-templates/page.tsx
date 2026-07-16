@@ -37,7 +37,10 @@ import type { ImagingResultTemplateRow } from "@/lib/imagingResultTemplates";
 import {
   buildTemplateResultLayoutFromFormFields,
   buildTemplateSignatureLayoutFromFormFields,
+  buildResultDohLicensePrintFromFormFields,
   defaultImagingResultTemplateFileName,
+  dohLicensePrintFormFieldsFromDb,
+  emptyDohLicensePrintFormFields,
   emptyTemplateResultLayoutFormFields,
   emptyTemplateSignatureLayoutFormFields,
   templateResultLayoutFormFieldsFromDb,
@@ -45,6 +48,8 @@ import {
   type TemplateResultLayoutFormFields,
   type TemplateSignatureLayoutFormFields,
 } from "@/lib/imagingResultTemplates";
+import type { DohLicensePrintFormFields } from "@/lib/resultDohLicensePrint";
+import { DohLicensePrintFields } from "@/components/laboratory/DohLicensePrintFields";
 import type { ImageLayoutFormFields, PrintLayoutFormFields } from "@/lib/labResultsPrintLayout";
 import { IMAGING_SIGNATURE_LAYOUT_ROLES, IMAGING_SIGNATURE_ROLE_LABELS } from "@/lib/imagingResultSignatures";
 
@@ -58,6 +63,7 @@ type TemplateForm = {
   is_active: boolean;
   layout: TemplateResultLayoutFormFields;
   signature: TemplateSignatureLayoutFormFields;
+  doh_license: DohLicensePrintFormFields;
 };
 
 const fieldSx = {
@@ -82,6 +88,7 @@ function emptyForm(): TemplateForm {
     is_active: true,
     layout: emptyTemplateResultLayoutFormFields(),
     signature: emptyTemplateSignatureLayoutFormFields(),
+    doh_license: emptyDohLicensePrintFormFields(),
   };
 }
 
@@ -94,6 +101,7 @@ function rowToForm(r: ResultTemplateRow): TemplateForm {
     is_active: r.is_active !== false,
     layout: templateResultLayoutFormFieldsFromDb(r.result_layout),
     signature: templateSignatureLayoutFormFieldsFromDb(r.signature_layout),
+    doh_license: dohLicensePrintFormFieldsFromDb(r.doh_license_print),
   };
 }
 
@@ -332,6 +340,8 @@ export default function SettingsImagingResultTemplatesPage() {
     if (!layoutBuilt.ok) return { error: layoutBuilt.error } as const;
     const signatureBuilt = buildTemplateSignatureLayoutFromFormFields(f.signature);
     if (!signatureBuilt.ok) return { error: signatureBuilt.error } as const;
+    const dohBuilt = buildResultDohLicensePrintFromFormFields(f.doh_license);
+    if (!dohBuilt.ok) return { error: dohBuilt.error } as const;
     return {
       payload: {
         code,
@@ -341,6 +351,7 @@ export default function SettingsImagingResultTemplatesPage() {
         is_active: f.is_active,
         result_layout: layoutBuilt.value,
         signature_layout: signatureBuilt.value,
+        doh_license_print: dohBuilt.value,
       },
     } as const;
   };
@@ -527,6 +538,10 @@ export default function SettingsImagingResultTemplatesPage() {
           />
         </Box>
       ))}
+      <DohLicensePrintFields
+        fields={form.doh_license}
+        onChange={(doh_license) => setForm({ ...form, doh_license })}
+      />
     </Stack>
   );
 

@@ -24,8 +24,30 @@ import {
   isBloodChemSiTemplateCode,
   isBloodChemSiTestCode,
 } from "@/lib/labBloodChemSiConversion";
-import type { PDFDocument } from "pdf-lib";
+import type { PDFDocument, PDFFont } from "pdf-lib";
 import { rgb } from "pdf-lib";
+
+async function embedLabResultFonts(doc: PDFDocument): Promise<PDFFont> {
+  const { StandardFonts } = await import("pdf-lib");
+  let font = await doc.embedFont(StandardFonts.Helvetica);
+
+  try {
+    const fontkit = (await import("@pdf-lib/fontkit")).default;
+    doc.registerFontkit(fontkit);
+
+    const candidates = ["/fonts/cambria.ttf", "/fonts/Cambria.ttf"];
+    for (const url of candidates) {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) continue;
+      font = await doc.embedFont(await res.arrayBuffer(), { subset: true });
+      break;
+    }
+  } catch {
+    // keep Helvetica fallback
+  }
+
+  return font;
+}
 
 /** US Letter reference size (points) for coordinate calibration; scaled to each template page. */
 const REF_W = 612;
@@ -388,11 +410,11 @@ export async function openLabResultsPrintWindow(args: {
     ]);
     if (!registry || !signatories) return false;
 
-    const { PDFDocument, StandardFonts } = await import("pdf-lib");
+    const { PDFDocument } = await import("pdf-lib");
 
     const merged = await PDFDocument.create();
-    const font = await merged.embedFont(StandardFonts.Helvetica);
-    const mono = await merged.embedFont(StandardFonts.Courier);
+    const font = await embedLabResultFonts(merged);
+    const mono = font;
     const embeddedSignatureImages = new Map<string, import("pdf-lib").PDFImage>();
 
     const byTpl = new Map<string, LabRequestItemView[]>();

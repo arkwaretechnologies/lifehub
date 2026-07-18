@@ -155,7 +155,10 @@ function testsCoveredByPackageNums(
   return s;
 }
 
-/** Build lab create payload for a new unpaid request (excludes paid-locked tests/packages). */
+/** Build lab create payload for a new unpaid request (excludes paid-locked tests/packages).
+ * Unpaid package members are included in `labTestIds` so `lab_request_items` are created for lab workflow;
+ * cashier still prices covered members via package bundling, not à la carte.
+ */
 export function computeUnpaidLabSavePayload(
   selectedTestIds: Iterable<string>,
   selectedPackageCatalogIds: Iterable<string>,
@@ -172,12 +175,12 @@ export function computeUnpaidLabSavePayload(
 
   const unpaidPkgNums = new Set(packageIds);
   const paidPkgCovered = testsCoveredByPackageNums(packages, paidLockedPackageNums, catalog);
-  const unpaidPkgCovered = testsCoveredByPackageNums(packages, unpaidPkgNums, catalog);
+  const unpaidPkgMembers = testsCoveredByPackageNums(packages, unpaidPkgNums, catalog);
 
-  const collapsed = collapseComponentsToPanel(selectedTestIds, catalog);
+  const merged = new Set<string>([...selectedTestIds, ...unpaidPkgMembers]);
+  const collapsed = collapseComponentsToPanel(merged, catalog);
   const labTestIds = collapsed.filter(
-    (tid) =>
-      !paidLockedTestIds.has(tid) && !paidPkgCovered.has(tid) && !unpaidPkgCovered.has(tid),
+    (tid) => !paidLockedTestIds.has(tid) && !paidPkgCovered.has(tid),
   );
 
   return { labTestIds, packageIds };

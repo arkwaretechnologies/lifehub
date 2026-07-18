@@ -7,6 +7,7 @@ import { syncUnpaidImagingItemsToPackageCoverage, ensureImagingRequestForLabPack
 import { attachPanelLinksToCatalogItems } from "@/lib/labTestPanelLinks";
 import {
   buildLabRequestItemRows,
+  collapseComponentsToPanel,
   filterLabRequestItemsForResultEntry,
   fetchLabTestCatalogRows,
   isMissingDbColumnError,
@@ -105,6 +106,22 @@ export async function createLabRequestWithItems(
     if (validated.error) return { labRequestId: null, error: validated.error };
     labTestIdsToSave = validated.labTestIds;
     packageIdsToSave = validated.packageIds;
+  }
+
+  // Ensure package member tests are always persisted as items (lab queue / results),
+  // even if the caller only passed packageIds.
+  if (packageIdsToSave.length > 0) {
+    const members = await fetchLabPackageMemberTestIdsMap(supabase, packageIdsToSave);
+    if (members.error) return { labRequestId: null, error: members.error };
+    const merged = new Set(labTestIdsToSave);
+    for (const list of members.byPackageId.values()) {
+      for (const tid of list) merged.add(tid);
+    }
+    if (merged.size > labTestIdsToSave.length) {
+      const loaded = await loadCatalog();
+      if (loaded.error) return { labRequestId: null, error: loaded.error };
+      labTestIdsToSave = collapseComponentsToPanel([...merged], loaded.catalog);
+    }
   }
 
   if (labTestIdsToSave.length === 0 && packageIdsToSave.length === 0) {

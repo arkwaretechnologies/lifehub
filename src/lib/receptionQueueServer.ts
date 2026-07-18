@@ -37,10 +37,12 @@ import {
 import { attachPanelLinksToCatalogItems } from "@/lib/labTestPanelLinks";
 import {
   buildLabRequestItemRows,
+  collapseComponentsToPanel,
   LAB_TEST_CATALOG_SELECT,
   LAB_TESTS_TABLE,
   mapLabTestCatalogItem,
 } from "@/lib/labTests";
+import { fetchLabPackageMemberTestIdsMap } from "@/lib/labPackages";
 import { LAB_SALES_TABLE } from "@/lib/cashierPayments";
 import {
   adminLabRequestIdsWithLabSales,
@@ -581,6 +583,26 @@ async function adminCreateLabRequestWithItems(input: {
     if (validated.error) return { labRequestId: null, imagingRequestId: null, error: validated.error };
     testIds = validated.labTestIds;
     packageIdsToSave = validated.packageIds;
+  }
+
+  if (packageIdsToSave.length > 0) {
+    const members = await fetchLabPackageMemberTestIdsMap(admin, packageIdsToSave);
+    if (members.error) return { labRequestId: null, imagingRequestId: null, error: members.error };
+    const merged = new Set(testIds);
+    for (const list of members.byPackageId.values()) {
+      for (const tid of list) merged.add(tid);
+    }
+    if (merged.size > testIds.length) {
+      const { data: testRows, error: catErr } = await admin
+        .from(LAB_TESTS_TABLE)
+        .select(LAB_TEST_CATALOG_SELECT);
+      if (catErr) return { labRequestId: null, imagingRequestId: null, error: catErr.message };
+      let catalog = ((testRows ?? []) as Record<string, unknown>[]).map((raw) => mapLabTestCatalogItem(raw));
+      const attached = await attachPanelLinksToCatalogItems(admin, catalog);
+      if (attached.error) return { labRequestId: null, imagingRequestId: null, error: attached.error };
+      catalog = attached.tests;
+      testIds = collapseComponentsToPanel([...merged], catalog);
+    }
   }
 
   if (testIds.length === 0 && packageIdsToSave.length === 0) {

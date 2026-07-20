@@ -112,6 +112,11 @@ export const PERMISSION_MODULES: PermissionModule[] = [
     children: [
       { label: "Reading Queue", pageKey: "radiology/patients", href: "/radiology/patients" },
       { label: "Reading Assignment", pageKey: "radiology/assignment", href: "/radiology/assignment" },
+      {
+        label: "Approve imaging findings requests",
+        pageKey: "radiology/approve-tech-findings",
+        href: "/imaging/results",
+      },
     ],
   },
   {
@@ -321,6 +326,14 @@ export function canApprovePharmacyLineRequests(
 ): boolean {
   const s = pageKeys instanceof Set ? pageKeys : new Set(pageKeys);
   return s.has("pharmacy/approve-line-requests");
+}
+
+/** Explicit only — grant `radiology/approve-tech-findings` to the super-admin role. */
+export function canApproveImagingEditRequests(
+  pageKeys: ReadonlySet<string> | Iterable<string>,
+): boolean {
+  const s = pageKeys instanceof Set ? pageKeys : new Set(pageKeys);
+  return s.has("radiology/approve-tech-findings");
 }
 
 /** `/pharmacy` hub: Overview (`pharmacy`), any capability, or legacy single-key pharmacy. */

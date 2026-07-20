@@ -38,7 +38,12 @@ import CalendarMonthOutlinedIcon from "@mui/icons-material/CalendarMonthOutlined
 import RefreshIcon from "@mui/icons-material/Refresh";
 import { FormFieldLabel } from "@/components/FormFieldLabel";
 import { DatePickerField } from "@/components/DatePickerField";
-import { commonFieldProps, fieldInputSx } from "@/components/fieldInputStyles";
+import {
+  commonFieldProps,
+  dateFieldInputSx,
+  fieldInputSx,
+  filterToolbarButtonSx,
+} from "@/components/fieldInputStyles";
 import { supabase } from "@/lib/supabaseClient";
 import { formatDateMMDDYYYY } from "@/lib/dateDisplay";
 import {
@@ -48,7 +53,10 @@ import {
   type ConsultationPatientListRow,
 } from "@/lib/consultationData";
 import type { ConsultationEncounterSummary } from "@/components/consultation/consultationTypes";
+import { CONSULTATION_BRANDING } from "@/components/consultation/consultationTypes";
 import { ConsultationSectionTitle } from "@/components/consultation/ConsultationSectionTitle";
+import { openCashierAcknowledgementReceiptPrint } from "@/lib/cashierAcknowledgementReceiptPrint";
+import type { CashierInvoiceSummary } from "@/lib/cashierInvoiceHistory";
 import {
   consultBodyTypoSx,
   consultTableBodyCellSx,
@@ -141,6 +149,13 @@ export default function CashierHome() {
   const [walkInRequests, setWalkInRequests] = useState<EncounterLabRequestSummary[]>([]);
   const [walkInLoading, setWalkInLoading] = useState(false);
   const [walkInError, setWalkInError] = useState("");
+
+  const [invoiceDate, setInvoiceDate] = useState<string>(() => clinicDateYmd());
+  const [invoiceQuery, setInvoiceQuery] = useState("");
+  const [invoiceRows, setInvoiceRows] = useState<CashierInvoiceSummary[]>([]);
+  const [invoiceLoading, setInvoiceLoading] = useState(false);
+  const [invoiceError, setInvoiceError] = useState("");
+  const [invoiceReprintingOr, setInvoiceReprintingOr] = useState<string | null>(null);
 
   const [labQueueReprintOffer, setLabQueueReprintOffer] = useState<CashierLabQueueReprintStored | null>(null);
   const [labQueueReprintBusy, setLabQueueReprintBusy] = useState(false);
@@ -241,7 +256,7 @@ export default function CashierHome() {
 
   useEffect(() => {
     const t = searchParams.get("tab");
-    setCashierTab(t === "walkin" ? 1 : 0);
+    setCashierTab(t === "walkin" ? 1 : t === "history" ? 2 : 0);
   }, [searchParams]);
 
   useEffect(() => {
@@ -286,8 +301,129 @@ export default function CashierHome() {
 
   const handleCashierTabChange = (_: React.SyntheticEvent, value: number) => {
     setCashierTab(value);
-    router.replace(value === 1 ? "/cashier?tab=walkin" : "/cashier?tab=visit", { scroll: false });
+    const href = value === 1 ? "/cashier?tab=walkin" : value === 2 ? "/cashier?tab=history" : "/cashier?tab=visit";
+    router.replace(href, { scroll: false });
   };
+
+  const loadInvoicesForDate = useCallback(async (dateYmd: string) => {
+    setInvoiceError("");
+    setInvoiceLoading(true);
+    try {
+      const res = await authenticatedFetch(
+        `/api/cashier/invoices?date=${encodeURIComponent(dateYmd)}`,
+        { cache: "no-store" },
+      );
+      const payload = (await res.json().catch(() => ({}))) as {
+        invoices?: CashierInvoiceSummary[];
+        error?: string;
+      };
+      if (!res.ok) {
+        setInvoiceRows([]);
+        setInvoiceError(payload.error ?? "Could not load invoices.");
+        return;
+      }
+      setInvoiceRows(payload.invoices ?? []);
+    } finally {
+      setInvoiceLoading(false);
+    }
+  }, []);
+
+  const runInvoiceSearch = useCallback(async () => {
+    const q = invoiceQuery.trim();
+    if (!q) {
+      void loadInvoicesForDate(invoiceDate);
+      return;
+    }
+    setInvoiceError("");
+    setInvoiceLoading(true);
+    try {
+      const res = await authenticatedFetch(
+        `/api/cashier/invoices?q=${encodeURIComponent(q)}`,
+        { cache: "no-store" },
+      );
+      const payload = (await res.json().catch(() => ({}))) as {
+        invoices?: CashierInvoiceSummary[];
+        error?: string;
+      };
+      if (!res.ok) {
+        setInvoiceRows([]);
+        setInvoiceError(payload.error ?? "Search failed.");
+        return;
+      }
+      const rows = payload.invoices ?? [];
+      setInvoiceRows(rows);
+      if (rows.length === 0) setInvoiceError("No invoices match that OR # / patient name.");
+    } finally {
+      setInvoiceLoading(false);
+    }
+  }, [invoiceQuery, invoiceDate, loadInvoicesForDate]);
+
+  const reprintInvoice = useCallback(async (baseOr: string) => {
+    setInvoiceReprintingOr(baseOr);
+    setInvoiceError("");
+    try {
+      const res = await authenticatedFetch(
+        `/api/cashier/invoices/reprint?or=${encodeURIComponent(baseOr)}`,
+        { cache: "no-store" },
+      );
+      const payload = (await res.json().catch(() => ({}))) as {
+        data?: {
+          baseOr: string;
+          saleDate: string | null;
+          saleTime: string | null;
+          patientName: string | null;
+          patientAddress: string | null;
+          transId: string | null;
+          paymentMethodLabel: string | null;
+          paymentLines: Array<{ label: string; amount: number }>;
+          subtotal: number;
+          discountAmount: number;
+          totalDue: number;
+          amountTendered: number | null;
+          changeAmount: number | null;
+        };
+        error?: string;
+      };
+      if (!res.ok || !payload.data) {
+        setInvoiceError(payload.error ?? "Could not load invoice for reprint.");
+        return;
+      }
+      const d = payload.data;
+      const soldAt =
+        d.saleDate && d.saleTime
+          ? new Date(`${d.saleDate}T${d.saleTime}`)
+          : d.saleDate
+            ? new Date(`${d.saleDate}T00:00:00`)
+            : undefined;
+      await openCashierAcknowledgementReceiptPrint({
+        facilityName: "LifeHub Medical & Diagnostic Center",
+        facilityAddressLines: ["Poblacion, Imelda, Zamboanga Sibugay"],
+        facilityContactLine: `Contact: ${CONSULTATION_BRANDING.tel}`,
+        facilityEmailLine: `Email: ${CONSULTATION_BRANDING.email}`,
+        customerName: (d.patientName ?? "").trim() || "Customer",
+        customerAddress: (d.patientAddress ?? "").trim() || "—",
+        transId: d.transId ?? undefined,
+        orNumber: d.baseOr,
+        paymentMethodLabel: d.paymentMethodLabel ?? undefined,
+        paymentLines: d.paymentLines,
+        subtotal: d.subtotal,
+        discountAmount: d.discountAmount,
+        totalDue: d.totalDue,
+        amountTendered: d.amountTendered,
+        changeAmount: d.changeAmount,
+        openCashDrawer: false,
+        soldAt: soldAt && !Number.isNaN(soldAt.getTime()) ? soldAt : undefined,
+      });
+    } finally {
+      setInvoiceReprintingOr(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (cashierTab !== 2) return;
+    void loadInvoicesForDate(invoiceDate);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cashierTab]);
 
   useEffect(() => {
     let cancelled = false;
@@ -819,6 +955,7 @@ export default function CashierHome() {
       <Tabs value={cashierTab} onChange={handleCashierTabChange} sx={{ mb: 2 }}>
         <Tab label="Visit checkout" />
         <Tab label="Laboratory only (walk-in)" />
+        <Tab label="Invoice history" />
       </Tabs>
 
       {cashierTab === 0 ? (
@@ -1109,7 +1246,7 @@ export default function CashierHome() {
           ) : null}
         </CardContent>
       </Card>
-      ) : (
+      ) : cashierTab === 1 ? (
         <Card>
           <CardContent sx={{ p: 3 }} id="cashier-panel-walkin" role="tabpanel">
             <ConsultationSectionTitle>Walk-in laboratory orders</ConsultationSectionTitle>
@@ -1204,6 +1341,160 @@ export default function CashierHome() {
                         </TableCell>
                       </TableRow>
                     ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
+          </CardContent>
+        </Card>
+      ) : (
+        <Card>
+          <CardContent sx={{ p: 3 }} id="cashier-panel-history" role="tabpanel">
+            <ConsultationSectionTitle>Invoice history</ConsultationSectionTitle>
+            <Typography variant="body2" color="text.primary" sx={{ ...consultBodyTypoSx, mb: 2, display: "block" }}>
+              Browse a day&apos;s official receipts, or search by OR number / patient name across all dates, then reprint.
+            </Typography>
+
+            <Box sx={{ display: "flex", gap: 1.5, flexWrap: "wrap", alignItems: "flex-end", mb: 2 }}>
+              <Box sx={{ width: 170 }}>
+                <FormFieldLabel htmlFor="cashier-invoice-date" variant="consultation">
+                  Date
+                </FormFieldLabel>
+                <TextField
+                  id="cashier-invoice-date"
+                  type="date"
+                  hiddenLabel
+                  value={invoiceDate}
+                  onChange={(e) => {
+                    const d = e.target.value;
+                    setInvoiceDate(d);
+                    setInvoiceQuery("");
+                    void loadInvoicesForDate(d);
+                  }}
+                  disabled={invoiceLoading}
+                  {...commonFieldProps}
+                  sx={dateFieldInputSx}
+                />
+              </Box>
+              <Box sx={{ flex: 1, minWidth: 260 }}>
+                <FormFieldLabel htmlFor="cashier-invoice-search" variant="consultation">
+                  Search OR # / patient (all dates)
+                </FormFieldLabel>
+                <TextField
+                  id="cashier-invoice-search"
+                  hiddenLabel
+                  placeholder="OR number or patient name…"
+                  value={invoiceQuery}
+                  onChange={(e) => setInvoiceQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void runInvoiceSearch();
+                    }
+                  }}
+                  disabled={invoiceLoading}
+                  {...commonFieldProps}
+                  sx={[fieldInputSx, { "& .MuiInputBase-input": { textTransform: "none" } }]}
+                  slotProps={{
+                    input: {
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <SearchIcon fontSize="small" sx={{ color: "info.main" }} />
+                        </InputAdornment>
+                      ),
+                    },
+                  }}
+                />
+              </Box>
+              <Button
+                variant="contained"
+                disabled={invoiceLoading}
+                onClick={() => void runInvoiceSearch()}
+                sx={filterToolbarButtonSx}
+              >
+                Search
+              </Button>
+              <Tooltip title="Reload this date">
+                <span>
+                  <Button
+                    variant="outlined"
+                    startIcon={<RefreshIcon />}
+                    disabled={invoiceLoading}
+                    onClick={() => {
+                      setInvoiceQuery("");
+                      void loadInvoicesForDate(invoiceDate);
+                    }}
+                    sx={filterToolbarButtonSx}
+                  >
+                    Refresh
+                  </Button>
+                </span>
+              </Tooltip>
+            </Box>
+
+            {invoiceError ? (
+              <Alert severity="warning" sx={{ mb: 2 }} onClose={() => setInvoiceError("")}>
+                {invoiceError}
+              </Alert>
+            ) : null}
+
+            {invoiceLoading ? (
+              <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
+                <CircularProgress size={28} />
+              </Box>
+            ) : (
+              <TableContainer>
+                <Table size="small" sx={consultTableSx}>
+                  <TableHead>
+                    <TableRow sx={consultTableHeadRowSx}>
+                      <TableCell sx={consultTableHeadCellSx}>OR #</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>Time</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>Patient</TableCell>
+                      <TableCell align="right" sx={consultTableHeadCellSx}>
+                        Total
+                      </TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>Payment</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>Status</TableCell>
+                      <TableCell align="right" sx={consultTableHeadCellSx}>
+                        Action
+                      </TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {invoiceRows.map((inv) => (
+                      <TableRow key={inv.baseOr}>
+                        <TableCell sx={{ ...consultTableBodyCellSx, fontFamily: "monospace" }}>{inv.baseOr}</TableCell>
+                        <TableCell sx={consultTableBodyCellSx}>{inv.saleTime ?? inv.saleDate ?? "—"}</TableCell>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "capitalize" }}>
+                          {inv.patientName?.toLowerCase() ?? "—"}
+                        </TableCell>
+                        <TableCell align="right" sx={consultTableBodyCellSx}>
+                          ₱{(Number(inv.totalAmount) || 0).toFixed(2)}
+                        </TableCell>
+                        <TableCell sx={consultTableBodyCellSx}>{inv.paymentMethodLabel ?? "—"}</TableCell>
+                        <TableCell sx={consultTableBodyCellSx}>{inv.status}</TableCell>
+                        <TableCell align="right" sx={{ ...consultTableBodyCellSx, whiteSpace: "nowrap" }}>
+                          <Button
+                            variant="outlined"
+                            color="secondary"
+                            size="small"
+                            disabled={invoiceReprintingOr != null}
+                            onClick={() => void reprintInvoice(inv.baseOr)}
+                          >
+                            {invoiceReprintingOr === inv.baseOr ? "Printing…" : "Reprint"}
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    {invoiceRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={7} align="center" sx={consultTableBodyCellSx}>
+                          <Typography variant="body2" color="text.secondary">
+                            No invoices to show.
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
                   </TableBody>
                 </Table>
               </TableContainer>

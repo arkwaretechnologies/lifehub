@@ -71,6 +71,8 @@ export type NotificationRow = {
   created_at: string;
   /** Set by GET /api/notifications for pharmacy line requests (pending → show Approve/Reject). */
   cartLineRequestStatus?: CartLineRequestStatus | null;
+  /** Set by GET /api/notifications for imaging edit requests (pending → show Approve/Reject). */
+  imagingEditRequestStatus?: "pending" | "approved" | "rejected" | null;
 };
 
 export const NOTIFICATION_TYPE_PHARMACY_CART_LINE = "pharmacy_cart_line_request" as const;

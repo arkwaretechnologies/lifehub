@@ -22,7 +22,10 @@ import {
   NOTIFICATION_TYPE_LAB_QUEUE_NEW,
   userCanReceiveLabQueueNotifications,
 } from "@/lib/labQueueNotificationServer";
-import { canApprovePharmacyLineRequests } from "@/lib/navPermissionCatalog";
+import {
+  canApproveImagingEditRequests,
+  canApprovePharmacyLineRequests,
+} from "@/lib/navPermissionCatalog";
 import {
   playNotificationChime,
   primeNotificationSound,
@@ -33,6 +36,11 @@ import {
   rejectCartLineRequestApi,
   subscribeNotificationsForUser,
 } from "@/lib/pharmacyCartLineRequests";
+import {
+  approveImagingEditRequestApi,
+  rejectImagingEditRequestApi,
+} from "@/lib/imagingEditRequests";
+import { NOTIFICATION_TYPE_IMAGING_EDIT } from "@/lib/imagingEditRequestServer";
 import { NOTIFICATION_TYPE_PHARMACY_CART_LINE, type NotificationRow } from "@/lib/pharmacyLineRequestServer";
 
 const POLL_MS = 5000;
@@ -45,8 +53,10 @@ export default function NotificationBell() {
 
   const canPharmacy =
     menuAccess.rbac && canApprovePharmacyLineRequests(menuAccess.pageKeys);
+  const canImaging =
+    menuAccess.rbac && canApproveImagingEditRequests(menuAccess.pageKeys);
   const canLab = userCanReceiveLabQueueNotifications(profile?.role);
-  const canView = canPharmacy || canLab;
+  const canView = canPharmacy || canImaging || canLab;
 
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
@@ -146,6 +156,30 @@ export default function NotificationBell() {
     }
   };
 
+  const handleApproveImaging = async (requestId: string, notifId: string) => {
+    setActionBusyId(notifId);
+    const { error } = await approveImagingEditRequestApi(requestId);
+    setActionBusyId(null);
+    if (!error) {
+      await authenticatedFetch(`/api/notifications/${encodeURIComponent(notifId)}`, {
+        method: "PATCH",
+      });
+      void load();
+    }
+  };
+
+  const handleRejectImaging = async (requestId: string, notifId: string) => {
+    setActionBusyId(notifId);
+    const { error } = await rejectImagingEditRequestApi(requestId);
+    setActionBusyId(null);
+    if (!error) {
+      await authenticatedFetch(`/api/notifications/${encodeURIComponent(notifId)}`, {
+        method: "PATCH",
+      });
+      void load();
+    }
+  };
+
   const handleOpenLabQueue = async (notifId: string, href: string) => {
     setActionBusyId(notifId);
     await authenticatedFetch(`/api/notifications/${encodeURIComponent(notifId)}`, {
@@ -227,6 +261,17 @@ export default function NotificationBell() {
                 typeof pharmacyRequestIdRaw === "string" && pharmacyRequestIdRaw.trim().length > 0
                   ? pharmacyRequestIdRaw.trim()
                   : null;
+              const imagingPayload =
+                n.type === NOTIFICATION_TYPE_IMAGING_EDIT ? n.payload : undefined;
+              const imagingRequestIdRaw =
+                imagingPayload != null && typeof imagingPayload === "object"
+                  ? (imagingPayload as { requestId?: string; request_id?: string }).requestId ??
+                    (imagingPayload as { request_id?: string }).request_id
+                  : undefined;
+              const imagingRequestId =
+                typeof imagingRequestIdRaw === "string" && imagingRequestIdRaw.trim().length > 0
+                  ? imagingRequestIdRaw.trim()
+                  : null;
               const labHref =
                 n.type === NOTIFICATION_TYPE_LAB_QUEUE_NEW
                   ? String((n.payload as { href?: string } | undefined)?.href ?? "/laboratory").trim() ||
@@ -238,6 +283,11 @@ export default function NotificationBell() {
                 n.type === NOTIFICATION_TYPE_PHARMACY_CART_LINE &&
                 n.cartLineRequestStatus !== "approved" &&
                 n.cartLineRequestStatus !== "rejected";
+              const imagingPending =
+                imagingRequestId != null &&
+                n.type === NOTIFICATION_TYPE_IMAGING_EDIT &&
+                n.imagingEditRequestStatus !== "approved" &&
+                n.imagingEditRequestStatus !== "rejected";
               return (
                 <ListItem
                   key={n.id}
@@ -272,6 +322,28 @@ export default function NotificationBell() {
                         color="error"
                         disabled={busy}
                         onClick={() => void handleReject(pharmacyRequestId, n.id)}
+                      >
+                        Reject
+                      </Button>
+                    </Stack>
+                  )}
+                  {imagingRequestId != null && imagingPending && (
+                    <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+                      <Button
+                        size="small"
+                        variant="contained"
+                        color="success"
+                        disabled={busy}
+                        onClick={() => void handleApproveImaging(imagingRequestId, n.id)}
+                      >
+                        Approve
+                      </Button>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        color="error"
+                        disabled={busy}
+                        onClick={() => void handleRejectImaging(imagingRequestId, n.id)}
                       >
                         Reject
                       </Button>

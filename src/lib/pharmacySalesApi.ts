@@ -1,5 +1,48 @@
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
-import type { PharmacySaleSearchRow, PharmacySaleVoidDetail } from "@/lib/pharmacyPosDb";
+import type {
+  PharmacySaleReprintDetail,
+  PharmacySaleSearchRow,
+  PharmacySaleVoidDetail,
+} from "@/lib/pharmacyPosDb";
+
+export async function listPharmacySalesForDateApi(
+  dateYmd: string,
+  limit = 200,
+): Promise<{ sales: PharmacySaleSearchRow[]; error: string | null }> {
+  const d = dateYmd.trim();
+  if (!d) return { sales: [], error: null };
+
+  const res = await authenticatedFetch(
+    `/api/pharmacy/sales/history?date=${encodeURIComponent(d)}&limit=${limit}`,
+  );
+  const payload = (await res.json().catch(() => ({}))) as {
+    sales?: PharmacySaleSearchRow[];
+    error?: string;
+  };
+  if (!res.ok) {
+    return { sales: [], error: payload.error ?? "Could not load invoice history." };
+  }
+  return { sales: payload.sales ?? [], error: null };
+}
+
+export async function fetchPharmacySaleForReprintApi(
+  saleId: string,
+): Promise<{ detail: PharmacySaleReprintDetail | null; error: string | null }> {
+  const id = saleId.trim();
+  if (!id) return { detail: null, error: "Sale id required." };
+
+  const res = await authenticatedFetch(
+    `/api/pharmacy/sales/${encodeURIComponent(id)}/reprint`,
+  );
+  const payload = (await res.json().catch(() => ({}))) as {
+    detail?: PharmacySaleReprintDetail;
+    error?: string;
+  };
+  if (!res.ok) {
+    return { detail: null, error: payload.error ?? "Could not load sale." };
+  }
+  return { detail: payload.detail ?? null, error: null };
+}
 
 export async function searchPharmacySalesByOrApi(
   orQuery: string,

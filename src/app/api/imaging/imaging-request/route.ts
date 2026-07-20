@@ -8,7 +8,8 @@ import {
   imagingItemHasPrintableResult,
 } from "@/lib/imagingRequests";
 import { syncImagingQueueTicketsForRequest } from "@/lib/imagingQueueSync";
-import { assertRadiologistMayEditItem, userIsRadiologist } from "@/lib/radiologyRole";
+import { assertRadiologistMayEditItem, userIsRadiologist, userIsRadTech } from "@/lib/radiologyRole";
+import { consumeApprovedImagingEdit, techHasApprovedEdit } from "@/lib/imagingEditRequestServer";
 import { getBearerSessionUserId } from "@/lib/requireSession";
 import { queueAdminClient } from "@/lib/receptionQueueServer";
 import {
@@ -245,6 +246,17 @@ export async function PATCH(req: Request) {
     }
   }
 
+  const isTech = !isAdmin && !isRad ? await userIsRadTech(admin, sessionUserId) : false;
+  if (isTech) {
+    const approved = await techHasApprovedEdit(admin, imagingRequestItemIdForAuth, sessionUserId);
+    if (!approved) {
+      return NextResponse.json(
+        { error: "Super-admin approval is required before editing this study's findings." },
+        { status: 403 },
+      );
+    }
+  }
+
   const existingStatus = String((existingItem as { status?: string }).status ?? "").trim();
   const markReadingDone = body.markReadingDone === true;
 
@@ -312,6 +324,10 @@ export async function PATCH(req: Request) {
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  if (markReadingDone) {
+    await consumeApprovedImagingEdit(admin, imagingRequestItemIdForAuth);
+  }
 
   const imagingRequestId = (data as { imaging_request_id?: string }).imaging_request_id;
   if (imagingRequestId) {

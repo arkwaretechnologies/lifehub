@@ -717,6 +717,26 @@ export async function searchCompletedPharmacySalesByOrNumber(
   return { sales, error: null };
 }
 
+/** List sales for a given clinic date (YYYY-MM-DD), newest first. Includes all statuses. */
+export async function listPharmacySalesForDate(
+  dateYmd: string,
+  limit = 200,
+  db: SupabaseClient = supabase,
+): Promise<{ sales: PharmacySaleSearchRow[]; error: string | null }> {
+  const d = (dateYmd ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return { sales: [], error: "Invalid date." };
+  const { data, error } = await db
+    .from(PHARMACY_SALES_TABLE)
+    .select("id, or_number, sale_date, sale_time, total_amount, payment_method, status, shift_id")
+    .eq("sale_date", d)
+    .order("sale_time", { ascending: false })
+    .limit(Math.min(Math.max(1, limit), 500));
+
+  if (error) return { sales: [], error: error.message };
+  const sales = (data ?? []) as PharmacySaleSearchRow[];
+  return { sales, error: null };
+}
+
 export type PharmacySaleVoidLine = {
   id: string;
   linenum: number;
@@ -793,6 +813,86 @@ export async function fetchPharmacySaleWithItemsForVoid(
       unit_price: Number(row.unit_price) || 0,
       line_total: row.line_total != null ? Number(row.line_total) : null,
       discount: disc,
+      generic_name: nm?.generic_name ?? "(unknown product)",
+      brand_name: nm?.brand_name ?? null,
+    };
+  });
+
+  return { detail: { sale: s, lines }, error: null };
+}
+
+export type PharmacySaleReprintDetail = {
+  sale: PharmacySaleSearchRow & {
+    notes: string | null;
+    patient_id: number | null;
+    subtotal: number | null;
+    vat_amount: number | null;
+    discount_amount: number | null;
+    amount_tendered: number | null;
+    change_amount: number | null;
+  };
+  lines: PharmacySaleVoidLine[];
+};
+
+/**
+ * Fetch a sale + items with all fields needed to reprint the thermal receipt.
+ * Unlike the void fetch, this does NOT restrict to Completed status (voided
+ * sales can still be reprinted for reference).
+ */
+export async function fetchPharmacySaleForReprint(
+  saleId: string,
+  db: SupabaseClient = supabase,
+): Promise<{ detail: PharmacySaleReprintDetail | null; error: string | null }> {
+  const { data: sale, error: sErr } = await db
+    .from(PHARMACY_SALES_TABLE)
+    .select(
+      "id, or_number, sale_date, sale_time, total_amount, payment_method, status, shift_id, notes, patient_id, subtotal, vat_amount, discount_amount, amount_tendered, change_amount",
+    )
+    .eq("id", saleId)
+    .maybeSingle();
+  if (sErr) return { detail: null, error: sErr.message };
+  if (!sale) return { detail: null, error: "Sale not found." };
+  const s = sale as PharmacySaleReprintDetail["sale"];
+
+  const { data: rawItems, error: iErr } = await db
+    .from(PHARMACY_SALE_ITEMS_TABLE)
+    .select("id, linenum, product_id, quantity, unit_price, line_total, discount")
+    .eq("pharmacy_sale_id", saleId)
+    .order("linenum", { ascending: true });
+  if (iErr) return { detail: null, error: iErr.message };
+
+  const items = (rawItems ?? []) as Array<{
+    id: string;
+    linenum: number;
+    product_id: string;
+    quantity: number;
+    unit_price: number;
+    line_total: number | null;
+    discount: number | null;
+  }>;
+  const productIds = [...new Set(items.map((i) => i.product_id))];
+  const nameById = new Map<string, { generic_name: string; brand_name: string | null }>();
+  if (productIds.length > 0) {
+    const { data: prows, error: pErr } = await db
+      .from(PRODUCTS_TABLE)
+      .select("id, generic_name, brand_name")
+      .in("id", productIds);
+    if (pErr) return { detail: null, error: pErr.message };
+    for (const p of (prows ?? []) as Array<{ id: string; generic_name: string; brand_name: string | null }>) {
+      nameById.set(p.id, { generic_name: p.generic_name, brand_name: p.brand_name });
+    }
+  }
+
+  const lines: PharmacySaleVoidLine[] = items.map((row) => {
+    const nm = nameById.get(row.product_id);
+    return {
+      id: row.id,
+      linenum: row.linenum,
+      product_id: row.product_id,
+      quantity: Math.round(Number(row.quantity)) || 0,
+      unit_price: Number(row.unit_price) || 0,
+      line_total: row.line_total != null ? Number(row.line_total) : null,
+      discount: Number(row.discount) || 0,
       generic_name: nm?.generic_name ?? "(unknown product)",
       brand_name: nm?.brand_name ?? null,
     };

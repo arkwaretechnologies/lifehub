@@ -50,6 +50,7 @@ import PlaylistPlayIcon from "@mui/icons-material/PlaylistPlay";
 import LocalOfferIcon from "@mui/icons-material/LocalOffer";
 import RemoveShoppingCartOutlinedIcon from "@mui/icons-material/RemoveShoppingCartOutlined";
 import AssignmentReturnOutlinedIcon from "@mui/icons-material/AssignmentReturnOutlined";
+import ReceiptLongOutlinedIcon from "@mui/icons-material/ReceiptLongOutlined";
 import { useAuth } from "@/components/AuthProvider";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import {
@@ -94,9 +95,12 @@ import {
 } from "@/lib/pharmacyPosDb";
 import {
   fetchPharmacySaleDetailApi,
+  fetchPharmacySaleForReprintApi,
+  listPharmacySalesForDateApi,
   searchPharmacySalesByOrApi,
   voidPharmacySaleApi,
 } from "@/lib/pharmacySalesApi";
+import { clinicDateYmd } from "@/lib/queueTicketDate";
 import SupervisorPasswordDialog, {
   type SupervisorCartAction,
 } from "@/components/pharmacy/SupervisorPasswordDialog";
@@ -348,6 +352,15 @@ export default function PharmacyPosWorkspace() {
   const [voidSaleDetailLoading, setVoidSaleDetailLoading] = useState(false);
   const [voidSaleBusy, setVoidSaleBusy] = useState(false);
   const [voidReason, setVoidReason] = useState("");
+
+  /** Invoice history: browse today's sales (or search by sale #) and reprint receipts. */
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyDate, setHistoryDate] = useState<string>(() => clinicDateYmd());
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [historyRows, setHistoryRows] = useState<PharmacySaleSearchRow[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyErr, setHistoryErr] = useState<string | null>(null);
+  const [historyReprintingId, setHistoryReprintingId] = useState<string | null>(null);
 
   /** Return / refund: partial or full line returns on a completed sale (stock back + totals adjusted). */
   const [returnSaleOpen, setReturnSaleOpen] = useState(false);
@@ -1563,6 +1576,104 @@ export default function PharmacyPosWorkspace() {
     setPosInfo(`Voided sale ${voidSaleDetail.sale.or_number}.`);
   }, [voidSaleSelectedId, voidSaleDetail, voidReason]);
 
+  const loadHistoryForDate = useCallback(async (dateYmd: string) => {
+    setHistoryErr(null);
+    setHistoryLoading(true);
+    try {
+      const { sales, error } = await listPharmacySalesForDateApi(dateYmd, 300);
+      if (error) {
+        setHistoryRows([]);
+        setHistoryErr(error);
+        return;
+      }
+      setHistoryRows(sales);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  const runHistorySearch = useCallback(async () => {
+    const q = historyQuery.trim();
+    if (!q) {
+      void loadHistoryForDate(historyDate);
+      return;
+    }
+    setHistoryErr(null);
+    setHistoryLoading(true);
+    try {
+      const { sales, error } = await searchPharmacySalesByOrApi(q, 60);
+      if (error) {
+        setHistoryRows([]);
+        setHistoryErr(error);
+        return;
+      }
+      setHistoryRows(sales);
+      if (sales.length === 0) {
+        setHistoryErr("No completed sales match that sale # / reference.");
+      }
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [historyQuery, historyDate, loadHistoryForDate]);
+
+  const openHistoryModal = useCallback(() => {
+    const today = clinicDateYmd();
+    setHistoryDate(today);
+    setHistoryQuery("");
+    setHistoryErr(null);
+    setHistoryRows([]);
+    setHistoryOpen(true);
+    void loadHistoryForDate(today);
+  }, [loadHistoryForDate]);
+
+  const reprintSaleFromHistory = useCallback(
+    async (saleId: string) => {
+      setHistoryReprintingId(saleId);
+      setHistoryErr(null);
+      try {
+        const { detail, error } = await fetchPharmacySaleForReprintApi(saleId);
+        if (error || !detail) {
+          setHistoryErr(error ?? "Could not load sale for reprint.");
+          return;
+        }
+        const sale = detail.sale;
+        const lines = detail.lines.map((ln) => ({
+          name: ln.brand_name ? `${ln.generic_name} (${ln.brand_name})` : ln.generic_name,
+          qty: ln.quantity,
+          unitPrice: ln.unit_price,
+          lineTotal: ln.line_total != null ? ln.line_total : ln.quantity * ln.unit_price,
+        }));
+        const itemsGross = lines.reduce((s, l) => s + l.lineTotal, 0);
+        const discountAmount = Number(sale.discount_amount) || 0;
+        const soldAt =
+          sale.sale_date && sale.sale_time
+            ? new Date(`${sale.sale_date}T${sale.sale_time}`)
+            : sale.sale_date
+              ? new Date(`${sale.sale_date}T00:00:00`)
+              : undefined;
+        openPharmacySaleReceiptPrint({
+          orNumber: sale.or_number,
+          branchCode: profile?.branch_code ?? null,
+          cashierName: profile?.fullname?.trim() || profile?.username?.trim() || null,
+          patientName: null,
+          paymentMethod: sale.payment_method ?? "—",
+          lines,
+          itemsGross,
+          discountLabel: discountAmount > 0 ? "Discount" : null,
+          discountAmount,
+          vatAmount: Number(sale.vat_amount) || 0,
+          totalAmount: Number(sale.total_amount) || 0,
+          amountTendered: sale.amount_tendered != null ? Number(sale.amount_tendered) : null,
+          changeAmount: sale.change_amount != null ? Number(sale.change_amount) : null,
+          soldAt: soldAt && !Number.isNaN(soldAt.getTime()) ? soldAt : undefined,
+        });
+      } finally {
+        setHistoryReprintingId(null);
+      }
+    },
+    [profile],
+  );
+
   const openReturnSaleModal = useCallback(() => {
     setReturnOrQuery("");
     setReturnSaleResults([]);
@@ -2281,6 +2392,18 @@ export default function PharmacyPosWorkspace() {
             onClick={() => openVoidSaleModal()}
           >
             Void paid sale
+          </Button>
+        </Tooltip>
+        <Tooltip title="Browse today's sales and reprint a receipt">
+          <Button
+            variant="contained"
+            color="secondary"
+            size="medium"
+            sx={POS_FOOTER_BTN_SX}
+            startIcon={<ReceiptLongOutlinedIcon />}
+            onClick={() => openHistoryModal()}
+          >
+            Invoice history
           </Button>
         </Tooltip>
         <Tooltip title="Look up price in a window (F5)">
@@ -3157,6 +3280,117 @@ export default function PharmacyPosWorkspace() {
           >
             {voidSaleBusy ? "Voiding…" : "Void this sale"}
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        container={posDialogContainer}
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle>Invoice history</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Browse a day&apos;s sales, or search by sale # across all dates, then reprint the receipt.
+          </Typography>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 2 }} alignItems={{ sm: "center" }}>
+            <TextField
+              type="date"
+              hiddenLabel
+              size="small"
+              value={historyDate}
+              onChange={(e) => {
+                const d = e.target.value;
+                setHistoryDate(d);
+                setHistoryQuery("");
+                void loadHistoryForDate(d);
+              }}
+              disabled={historyLoading}
+              sx={{ minWidth: 180 }}
+            />
+            <TextField
+              fullWidth
+              hiddenLabel
+              size="small"
+              placeholder="Search sale # (all dates)…"
+              value={historyQuery}
+              onChange={(e) => setHistoryQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void runHistorySearch();
+                }
+              }}
+              disabled={historyLoading}
+            />
+            <Button variant="contained" disabled={historyLoading} onClick={() => void runHistorySearch()}>
+              Search
+            </Button>
+          </Stack>
+          {historyErr && (
+            <Alert severity="warning" sx={{ mb: 2 }} onClose={() => setHistoryErr(null)}>
+              {historyErr}
+            </Alert>
+          )}
+          {historyLoading ? (
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 3 }} justifyContent="center">
+              <CircularProgress size={22} />
+              <Typography variant="body2" color="text.secondary">
+                Loading sales…
+              </Typography>
+            </Stack>
+          ) : (
+            <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 380 }}>
+              <Table size="small" stickyHeader>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Sale #</TableCell>
+                    <TableCell>Time</TableCell>
+                    <TableCell align="right">Total</TableCell>
+                    <TableCell>Payment</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell align="right">Action</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {historyRows.map((s) => (
+                    <TableRow key={s.id} hover>
+                      <TableCell>{s.or_number}</TableCell>
+                      <TableCell>{s.sale_time ?? s.sale_date}</TableCell>
+                      <TableCell align="right">₱{(Number(s.total_amount) || 0).toFixed(2)}</TableCell>
+                      <TableCell>{s.payment_method ?? "—"}</TableCell>
+                      <TableCell>{s.status ?? "—"}</TableCell>
+                      <TableCell align="right">
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          startIcon={<ReceiptLongOutlinedIcon />}
+                          disabled={historyReprintingId != null}
+                          onClick={() => void reprintSaleFromHistory(s.id)}
+                        >
+                          {historyReprintingId === s.id ? "Printing…" : "Reprint"}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {historyRows.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={6} align="center">
+                        <Typography variant="body2" color="text.secondary">
+                          No sales to show.
+                        </Typography>
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setHistoryOpen(false)}>Close</Button>
         </DialogActions>
       </Dialog>
 

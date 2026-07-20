@@ -3,6 +3,13 @@ import { userHasAdminRole, userHasRbacPageAccess } from "@/lib/adminRole";
 
 export const RADIOLOGIST_ROLE_NAME = "RADIOLOGIST";
 
+/** Comma-separated role names from `users.role`; match is case-insensitive. RAD TECH does not exist on dev. */
+export function parseRadTechRoleNames(): string[] {
+  const raw = process.env.RADTECH_ROLE_NAMES?.trim();
+  if (!raw) return ["RAD TECH", "RADTECH"];
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
 async function sessionUserRoleName(admin: SupabaseClient, userId: number): Promise<string | null> {
   const { data, error } = await admin.from("users").select("role").eq("user_id", userId).maybeSingle();
   if (error || !data?.role) return null;
@@ -15,9 +22,20 @@ export function isRadiologistRoleName(roleName: string | null | undefined): bool
   return roleName.trim().toLowerCase() === RADIOLOGIST_ROLE_NAME.toLowerCase();
 }
 
+export function isRadTechRoleName(roleName: string | null | undefined): boolean {
+  if (!roleName) return false;
+  const lower = roleName.trim().toLowerCase();
+  return parseRadTechRoleNames().some((n) => n.toLowerCase() === lower);
+}
+
 export async function userIsRadiologist(admin: SupabaseClient, userId: number): Promise<boolean> {
   const roleName = await sessionUserRoleName(admin, userId);
   return isRadiologistRoleName(roleName);
+}
+
+export async function userIsRadTech(admin: SupabaseClient, userId: number): Promise<boolean> {
+  const roleName = await sessionUserRoleName(admin, userId);
+  return isRadTechRoleName(roleName);
 }
 
 export async function userCanAssignRadiology(admin: SupabaseClient, userId: number): Promise<boolean> {

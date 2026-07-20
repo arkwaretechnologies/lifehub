@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
 import CameraAltOutlinedIcon from "@mui/icons-material/CameraAltOutlined";
+import EditNoteOutlinedIcon from "@mui/icons-material/EditNoteOutlined";
+import HourglassEmptyOutlinedIcon from "@mui/icons-material/HourglassEmptyOutlined";
 import PrintOutlinedIcon from "@mui/icons-material/PrintOutlined";
 import RefreshOutlinedIcon from "@mui/icons-material/RefreshOutlined";
 import SearchIcon from "@mui/icons-material/Search";
@@ -37,8 +39,16 @@ import {
 } from "@mui/material";
 import { commonFieldProps, fieldInputSx } from "@/components/fieldInputStyles";
 import { FormFieldLabel } from "@/components/FormFieldLabel";
+import { useAuth } from "@/components/AuthProvider";
+import ImagingReportTextField from "@/components/radiology/ImagingReportTextField";
 import type { ImagingQueueRow } from "@/app/api/imaging/imaging-queue/route";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
+import {
+  createImagingEditRequestApi,
+  fetchImagingItemEditStatesApi,
+  subscribeImagingEditRequestsForUser,
+  type ImagingItemEditState,
+} from "@/lib/imagingEditRequests";
 import { formatQueueTicketWhen } from "@/lib/dateDisplay";
 import { canOpenImagingResultsQueueTicket } from "@/lib/diagnosticQueueUi";
 import { imagingDisplayStatusChipColor } from "@/lib/imagingQueueUi";
@@ -61,6 +71,9 @@ function formatSmsSentAt(value: string | null | undefined): string {
 export default function ImagingResultsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { profile } = useAuth();
+  const currentUserId =
+    profile != null && typeof profile.user_id === "number" ? profile.user_id : null;
 
   const [queueSearch, setQueueSearch] = useState("");
   const [debouncedQueueSearch, setDebouncedQueueSearch] = useState("");
@@ -81,6 +94,11 @@ export default function ImagingResultsPage() {
   const [reqError, setReqError] = useState("");
   const [header, setHeader] = useState<ImagingRequestHeader | null>(null);
   const [items, setItems] = useState<ImagingRequestItemRow[]>([]);
+  const [editStates, setEditStates] = useState<Record<string, ImagingItemEditState>>({});
+  const [drafts, setDrafts] = useState<Record<string, { findings: string; remarks: string }>>({});
+  const [requestingId, setRequestingId] = useState<string | null>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [markingDoneId, setMarkingDoneId] = useState<string | null>(null);
   const [sendSmsBusy, setSendSmsBusy] = useState(false);
   const [resendSmsDialogOpen, setResendSmsDialogOpen] = useState(false);
   const [toastOpen, setToastOpen] = useState(false);
@@ -137,6 +155,16 @@ export default function ImagingResultsPage() {
       setHeader(json.header ?? json.request ?? null);
       const list = Array.isArray(json.items) ? json.items : [];
       setItems(list);
+      setDrafts((prev) => {
+        const next: Record<string, { findings: string; remarks: string }> = {};
+        for (const it of list) {
+          // Keep in-progress edits for items already being edited; otherwise sync from server.
+          next[it.id] = prev[it.id] ?? { findings: it.findings ?? "", remarks: it.remarks ?? "" };
+        }
+        return next;
+      });
+      const { states } = await fetchImagingItemEditStatesApi(imagingRequestId);
+      setEditStates(states);
     } catch {
       setReqError("Failed to load imaging request.");
     } finally {
@@ -366,6 +394,128 @@ export default function ImagingResultsPage() {
       setItemBusyId(null);
     }
   };
+
+  const reloadEditStates = useCallback(async () => {
+    if (!selectedRequestId) return;
+    const { states } = await fetchImagingItemEditStatesApi(selectedRequestId);
+    setEditStates(states);
+  }, [selectedRequestId]);
+
+  const requestEditApproval = async (item: ImagingRequestItemRow) => {
+    setRequestingId(item.id);
+    setReqError("");
+    try {
+      const studyLabel = `${item.study_name}${item.view_text ? ` (${item.view_text})` : ""}`;
+      const { error, warning } = await createImagingEditRequestApi({
+        imagingRequestItemId: item.id,
+        imagingRequestId: selectedRequestId,
+        study_snapshot: {
+          study_name: item.study_name,
+          view_text: item.view_text ?? null,
+          patient_name: header?.patient_name ?? null,
+        },
+        note: `ENABLE FINDINGS: ${studyLabel}`,
+      });
+      if (error) {
+        setToastSeverity("error");
+        setToastMessage(error);
+        setToastOpen(true);
+        return;
+      }
+      setToastSeverity(warning ? "error" : "success");
+      setToastMessage(warning ?? "ENABLE FINDINGS request sent to admin.");
+      setToastOpen(true);
+      await reloadEditStates();
+    } finally {
+      setRequestingId(null);
+    }
+  };
+
+  const saveTechFindings = async (itemId: string) => {
+    const d = drafts[itemId] ?? { findings: "", remarks: "" };
+    setSavingId(itemId);
+    setReqError("");
+    try {
+      const res = await authenticatedFetch("/api/imaging/imaging-request", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imagingRequestItemId: itemId,
+          findings: d.findings,
+          remarks: d.remarks,
+        }),
+      });
+      const json = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        setToastSeverity("error");
+        setToastMessage(json.error ?? `Request failed (${res.status})`);
+        setToastOpen(true);
+        return;
+      }
+      setToastSeverity("success");
+      setToastMessage("Findings saved.");
+      setToastOpen(true);
+      await loadRequest(selectedRequestId, { silent: true });
+    } catch {
+      setToastSeverity("error");
+      setToastMessage("Failed to save findings.");
+      setToastOpen(true);
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const markTechReadingDone = async (itemId: string) => {
+    const d = drafts[itemId] ?? { findings: "", remarks: "" };
+    setMarkingDoneId(itemId);
+    setReqError("");
+    try {
+      const res = await authenticatedFetch("/api/imaging/imaging-request", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imagingRequestItemId: itemId,
+          findings: d.findings,
+          remarks: d.remarks,
+          markReadingDone: true,
+        }),
+      });
+      const json = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        setToastSeverity("error");
+        setToastMessage(json.error ?? `Request failed (${res.status})`);
+        setToastOpen(true);
+        return;
+      }
+      setToastSeverity("success");
+      setToastMessage("Reading marked as done.");
+      setToastOpen(true);
+      await loadRequest(selectedRequestId, { silent: true });
+      await loadQueue();
+    } catch {
+      setToastSeverity("error");
+      setToastMessage("Failed to mark reading as done.");
+      setToastOpen(true);
+    } finally {
+      setMarkingDoneId(null);
+    }
+  };
+
+  const hasPendingEditState = useMemo(
+    () => Object.values(editStates).some((s) => s === "pending"),
+    [editStates],
+  );
+
+  // Live + polling refresh while any edit request is awaiting approval.
+  useEffect(() => {
+    if (!selectedRequestId || currentUserId == null || !hasPendingEditState) return;
+    const unsub = subscribeImagingEditRequestsForUser(currentUserId, () => void reloadEditStates());
+    const poll = setInterval(() => void reloadEditStates(), 5000);
+    return () => {
+      clearInterval(poll);
+      unsub();
+    };
+  }, [selectedRequestId, currentUserId, hasPendingEditState, reloadEditStates]);
 
   return (
     <>
@@ -805,6 +955,10 @@ export default function ImagingResultsPage() {
                       const resultReceived = isImagingItemResultReceived(it.status);
                       const rowBusy = itemBusyId === it.id;
                       const canPrintResult = imagingItemHasPrintableResult(it);
+                      const editState: ImagingItemEditState = editStates[it.id] ?? "none";
+                      const canEditFindings = editState === "approved";
+                      const studyLabel = `${it.study_name}${it.view_text ? ` (${it.view_text})` : ""}`;
+                      const draft = drafts[it.id] ?? { findings: it.findings ?? "", remarks: it.remarks ?? "" };
                       return (
                       <TableRow key={it.id}>
                         <TableCell sx={{ verticalAlign: "middle" }}>{it.study_name}</TableCell>
@@ -845,43 +999,135 @@ export default function ImagingResultsPage() {
                           />
                         </TableCell>
                         <TableCell sx={{ minWidth: 200, maxWidth: 280, verticalAlign: "top" }}>
-                          <Typography
-                            variant="body2"
-                            sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.45 }}
-                          >
-                            {(it.findings ?? "").trim() || "—"}
-                          </Typography>
+                          {canEditFindings ? (
+                            <ImagingReportTextField
+                              label="Findings"
+                              studyLabel={studyLabel}
+                              value={draft.findings}
+                              onChange={(findings) =>
+                                setDrafts((prev) => ({
+                                  ...prev,
+                                  [it.id]: { findings, remarks: prev[it.id]?.remarks ?? (it.remarks ?? "") },
+                                }))
+                              }
+                            />
+                          ) : (
+                            <Typography
+                              variant="body2"
+                              sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.45 }}
+                            >
+                              {(it.findings ?? "").trim() || "—"}
+                            </Typography>
+                          )}
                         </TableCell>
                         <TableCell sx={{ minWidth: 160, maxWidth: 220, verticalAlign: "top" }}>
-                          <Typography
-                            variant="body2"
-                            sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.45 }}
-                          >
-                            {(it.remarks ?? "").trim() || "—"}
-                          </Typography>
+                          {canEditFindings ? (
+                            <ImagingReportTextField
+                              label="Impression"
+                              studyLabel={studyLabel}
+                              value={draft.remarks}
+                              onChange={(remarks) =>
+                                setDrafts((prev) => ({
+                                  ...prev,
+                                  [it.id]: { findings: prev[it.id]?.findings ?? (it.findings ?? ""), remarks },
+                                }))
+                              }
+                            />
+                          ) : (
+                            <Typography
+                              variant="body2"
+                              sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.45 }}
+                            >
+                              {(it.remarks ?? "").trim() || "—"}
+                            </Typography>
+                          )}
                         </TableCell>
                         <TableCell sx={{ whiteSpace: "nowrap" }}>{imagingItemStatusLabel(it.status)}</TableCell>
                         <TableCell align="right" sx={{ verticalAlign: "middle", whiteSpace: "nowrap" }}>
-                          <Tooltip
-                            title={
-                              canPrintResult
-                                ? "Print findings and impression"
-                                : "Enter findings or impression in radiology before printing"
-                            }
-                          >
-                            <span>
-                              <Button
+                          <Stack direction="row" spacing={1} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
+                            {editState === "can_request" ? (
+                              <Tooltip title="Ask admin to unlock Findings and Impression for this study">
+                                <span>
+                                  <Button
+                                    size="small"
+                                    variant="contained"
+                                    color="secondary"
+                                    startIcon={
+                                      requestingId === it.id ? (
+                                        <CircularProgress size={16} color="inherit" />
+                                      ) : (
+                                        <EditNoteOutlinedIcon fontSize="small" />
+                                      )
+                                    }
+                                    disabled={requestingId === it.id}
+                                    onClick={() => void requestEditApproval(it)}
+                                    sx={{ textTransform: "none", fontWeight: 700 }}
+                                  >
+                                    ENABLE FINDINGS
+                                  </Button>
+                                </span>
+                              </Tooltip>
+                            ) : null}
+                            {editState === "pending" ? (
+                              <Chip
                                 size="small"
-                                variant="outlined"
-                                startIcon={<PrintOutlinedIcon fontSize="small" />}
-                                disabled={!canPrintResult}
-                                onClick={() => handlePrintResult(it)}
-                                sx={{ textTransform: "none", fontWeight: 700 }}
-                              >
-                                Print Result
-                              </Button>
-                            </span>
-                          </Tooltip>
+                                color="warning"
+                                icon={<HourglassEmptyOutlinedIcon fontSize="small" />}
+                                label="Waiting for approval"
+                              />
+                            ) : null}
+                            {editState === "approved" ? (
+                              <>
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  disabled={savingId === it.id || markingDoneId === it.id}
+                                  startIcon={
+                                    savingId === it.id ? <CircularProgress size={16} color="inherit" /> : undefined
+                                  }
+                                  onClick={() => void saveTechFindings(it.id)}
+                                  sx={{ textTransform: "none", fontWeight: 700 }}
+                                >
+                                  Save
+                                </Button>
+                                <Button
+                                  size="small"
+                                  variant="contained"
+                                  color="success"
+                                  disabled={savingId === it.id || markingDoneId === it.id}
+                                  startIcon={
+                                    markingDoneId === it.id ? (
+                                      <CircularProgress size={16} color="inherit" />
+                                    ) : undefined
+                                  }
+                                  onClick={() => void markTechReadingDone(it.id)}
+                                  sx={{ textTransform: "none", fontWeight: 700 }}
+                                >
+                                  Mark done
+                                </Button>
+                              </>
+                            ) : null}
+                            <Tooltip
+                              title={
+                                canPrintResult
+                                  ? "Print findings and impression"
+                                  : "Enter findings or impression in radiology before printing"
+                              }
+                            >
+                              <span>
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  startIcon={<PrintOutlinedIcon fontSize="small" />}
+                                  disabled={!canPrintResult}
+                                  onClick={() => handlePrintResult(it)}
+                                  sx={{ textTransform: "none", fontWeight: 700 }}
+                                >
+                                  Print Result
+                                </Button>
+                              </span>
+                            </Tooltip>
+                          </Stack>
                         </TableCell>
                       </TableRow>
                     );

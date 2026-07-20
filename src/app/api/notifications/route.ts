@@ -6,6 +6,12 @@ import {
   userCanApprovePharmacyLineRequests,
   type CartLineRequestStatus,
 } from "@/lib/pharmacyLineRequestServer";
+import {
+  IMAGING_EDIT_REQUESTS_TABLE,
+  NOTIFICATION_TYPE_IMAGING_EDIT,
+  userCanApproveImagingEditRequests,
+  type ImagingEditRequestStatus,
+} from "@/lib/imagingEditRequestServer";
 import { getBearerSessionUserId } from "@/lib/requireSession";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
 
@@ -26,8 +32,9 @@ export async function GET(req: Request) {
   }
 
   const canPharmacy = userCanApprovePharmacyLineRequests(session.menuAccess);
+  const canImaging = userCanApproveImagingEditRequests(session.menuAccess);
   const canLab = userCanReceiveLabQueueNotifications(session.profile.role);
-  if (!canPharmacy && !canLab) {
+  if (!canPharmacy && !canImaging && !canLab) {
     return NextResponse.json({ notifications: [], unreadCount: 0 });
   }
 
@@ -85,6 +92,29 @@ export async function GET(req: Request) {
     }
   }
 
+  const imagingRequestIds = [
+    ...new Set(
+      rows
+        .filter((n) => (n as { type: string }).type === NOTIFICATION_TYPE_IMAGING_EDIT)
+        .map((n) => parseNotificationPayload((n as { payload?: unknown }).payload).requestId)
+        .filter((id): id is string => typeof id === "string" && id.length > 0),
+    ),
+  ];
+
+  const imagingStatusByRequestId: Record<string, ImagingEditRequestStatus> = {};
+  if (canImaging && imagingRequestIds.length > 0) {
+    const { data: reqs, error: reqErr } = await db
+      .from(IMAGING_EDIT_REQUESTS_TABLE)
+      .select("id, status")
+      .in("id", imagingRequestIds);
+    if (!reqErr) {
+      for (const r of reqs ?? []) {
+        const row = r as { id: string; status: ImagingEditRequestStatus };
+        imagingStatusByRequestId[row.id] = row.status;
+      }
+    }
+  }
+
   const notifications = rows.map((n) => {
     const row = n as { type: string; payload?: unknown };
     const requestId =
@@ -92,9 +122,15 @@ export async function GET(req: Request) {
         ? parseNotificationPayload(row.payload).requestId
         : undefined;
     const status = requestId ? statusByRequestId[requestId] : undefined;
+    const imagingRequestId =
+      row.type === NOTIFICATION_TYPE_IMAGING_EDIT
+        ? parseNotificationPayload(row.payload).requestId
+        : undefined;
+    const imagingStatus = imagingRequestId ? imagingStatusByRequestId[imagingRequestId] : undefined;
     return {
       ...n,
       cartLineRequestStatus: requestId ? (status ?? "pending") : null,
+      imagingEditRequestStatus: imagingRequestId ? (imagingStatus ?? "pending") : null,
     };
   });
   const unreadCount = notifications.filter((n) => (n as { read_at: string | null }).read_at == null).length;

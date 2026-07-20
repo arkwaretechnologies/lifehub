@@ -36,6 +36,8 @@ export type CashierAcknowledgementReceiptArgs = {
   changeAmount?: number | null;
   /** Pulse cash drawer when printing (cash payments). */
   openCashDrawer?: boolean;
+  /** Original transaction timestamp; defaults to now (used for reprints). */
+  soldAt?: Date;
 };
 
 /**
@@ -43,7 +45,7 @@ export type CashierAcknowledgementReceiptArgs = {
  * Uses a simple fixed-width layout suitable for thermal printers.
  */
 export async function openCashierAcknowledgementReceiptPrint(args: CashierAcknowledgementReceiptArgs): Promise<void> {
-  const when = new Date().toLocaleString(undefined, {
+  const when = (args.soldAt ?? new Date()).toLocaleString(undefined, {
     dateStyle: "medium",
     timeStyle: "short",
   });

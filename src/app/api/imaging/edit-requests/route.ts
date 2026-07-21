@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { fetchUserProfileById } from "@/lib/authSessionPayload";
-import { parseAdminRoleNames } from "@/lib/adminRole";
+import { parseAdminRoleNames, userHasAdminRole } from "@/lib/adminRole";
 import {
   IMAGING_EDIT_REQUESTS_TABLE,
   listUserIdsWhoCanApproveImagingEdits,
@@ -54,10 +54,19 @@ export async function GET(req: Request) {
   const items = (itemRows ?? []) as Array<{ id: string; status: string | null }>;
 
   const states: Record<string, ImagingItemEditState> = {};
+
+  // Admin may edit Findings/Impression on Imaging Results without approval.
+  if (await userHasAdminRole(db, sessionUserId)) {
+    for (const it of items) {
+      states[it.id] = REQUESTABLE_STATUSES.has(String(it.status ?? "").trim()) ? "approved" : "none";
+    }
+    return NextResponse.json({ states });
+  }
+
   const isTech = await userIsRadTech(db, sessionUserId);
 
-  // Only RAD TECH may unlock Findings on Imaging Results via approval.
-  // Admin / radiologist / others stay read-only here (edit via Reading Queue).
+  // Only RAD TECH may unlock Findings via ENABLE FINDINGS approval.
+  // Radiologist / others stay read-only here (edit via Reading Queue).
   if (!isTech) {
     for (const it of items) states[it.id] = "none";
     return NextResponse.json({ states });

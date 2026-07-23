@@ -1474,15 +1474,15 @@ export async function fetchPrescriptionCartByEncounterWithClient(
   const tid = transId.trim();
   if (!tid) return { prescriptionId: null, patientId: null, patientName: null, lines: [], error: null };
 
-  const { data: presc, error: pErr } = await client
+  const { data: prescRows, error: pErr } = await client
     .from(PRESCRIPTIONS_TABLE)
     .select("id, patient_id")
     .eq("encounter_id", tid)
     .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(1);
 
   if (pErr) return { prescriptionId: null, patientId: null, patientName: null, lines: [], error: pErr.message };
+  const presc = (prescRows ?? [])[0] as { id: string; patient_id: number | null } | undefined;
   if (!presc) {
     return { prescriptionId: null, patientId: null, patientName: null, lines: [], error: null };
   }
@@ -1553,17 +1553,21 @@ export async function upsertPrescriptionForEncounterWithClient(
   const today = now.slice(0, 10);
   const rxNumber = `RX-${args.transId.slice(0, 8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
 
-  const { data: existing, error: exErr } = await client
+  // Prefer newest when duplicates exist (legacy data); .maybeSingle() alone fails on 2+ rows.
+  const { data: existingPrescriptionRows, error: exErr } = await client
     .from(PRESCRIPTIONS_TABLE)
     .select("id")
     .eq("encounter_id", args.transId)
-    .maybeSingle();
+    .order("created_at", { ascending: false })
+    .limit(1);
   if (exErr) return { prescriptionId: null, error: exErr.message };
+
+  const existing = (existingPrescriptionRows ?? [])[0] as { id: string } | undefined;
 
   let prescriptionId: string;
   let isNewPrescription = false;
-  if (existing) {
-    prescriptionId = (existing as { id: string }).id;
+  if (existing?.id) {
+    prescriptionId = existing.id;
   } else {
     isNewPrescription = true;
     const { data: ins, error: iErr } = await client
@@ -1580,8 +1584,22 @@ export async function upsertPrescriptionForEncounterWithClient(
       })
       .select("id")
       .single();
-    if (iErr) return { prescriptionId: null, error: iErr.message };
-    prescriptionId = (ins as { id: string }).id;
+    if (iErr) {
+      // Concurrent create race: another request may have inserted the same encounter.
+      const { data: raced, error: racedErr } = await client
+        .from(PRESCRIPTIONS_TABLE)
+        .select("id")
+        .eq("encounter_id", args.transId)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (racedErr) return { prescriptionId: null, error: iErr.message };
+      const racedId = ((raced ?? [])[0] as { id?: string } | undefined)?.id;
+      if (!racedId) return { prescriptionId: null, error: iErr.message };
+      prescriptionId = racedId;
+      isNewPrescription = false;
+    } else {
+      prescriptionId = (ins as { id: string }).id;
+    }
   }
 
   const normalizedLines = args.rxLines

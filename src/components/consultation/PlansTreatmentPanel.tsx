@@ -2911,12 +2911,21 @@ export default function PlansTreatmentPanel({
                     >
                       {canViewLabResults ? "View result" : "View catalog"}
                     </Button>
-                    {canEditPaidLabs ? (
+                    {canEditPaidLabs || canEditUnpaidLabOrders ? (
                       <Button
                         type="button"
                         variant="text"
                         size="small"
-                        onClick={() => void openLabAmendModal()}
+                        onClick={() => {
+                          // Unpaid visit orders: open catalog so additions merge into the unpaid request.
+                          // Paid-only visits: use amend flow (cashier balance / warnings).
+                          if (canEditUnpaidLabOrders) {
+                            setLabsModalMode("order");
+                            setLabsModalOpen(true);
+                            return;
+                          }
+                          void openLabAmendModal();
+                        }}
                         sx={{ textTransform: "uppercase", minWidth: "auto", py: 0.25, px: 0.75 }}
                       >
                         Edit or add test

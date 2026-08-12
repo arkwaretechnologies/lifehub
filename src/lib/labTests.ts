@@ -193,44 +193,15 @@ export async function fetchLabTestUnitPricesByIds(ids: string[]): Promise<{
 }
 
 /**
- * Checkout (cashier / lab sale lines): **`lab_tests` list/catalog price first**, then active
- * `lab_service_prices` for gaps. Consultation bundles may advertise a `lab_packages.package_price`, but each
- * saved `lab_request_item` is billed at its test’s catalog fee unless the catalog column is unset.
+ * Checkout (cashier / lab sale lines): same price source as consultation / Settings.
+ * Settings persist to `lab_service_prices` (not `lab_tests.price`), so prefer service prices
+ * first, then fall back to price-like columns on `lab_tests`.
  */
 export async function fetchLabTestCheckoutPricesByIds(ids: string[]): Promise<{
   unitPriceById: Map<string, number>;
   error: string | null;
 }> {
-  const unique = [...new Set(ids.map((x) => x.trim()).filter(Boolean))];
-  if (unique.length === 0) return { unitPriceById: new Map(), error: null };
-
-  const m = new Map<string, number>();
-  for (const id of unique) m.set(id, 0);
-
-  await mergeLabTestsTableColumnPrices(unique, m);
-
-  const missing = unique.filter((id) => (m.get(id) ?? 0) <= 0);
-  let svcErr: string | null = null;
-  if (missing.length > 0) {
-    const svc = await fetchActiveLabPricesByTestIds(missing);
-    svcErr = svc.error;
-    if (!svc.error) {
-      for (const id of missing) {
-        const p = svc.pricesByTestId.get(id);
-        if (p != null && Number.isFinite(p) && p > 0) m.set(id, p);
-      }
-    }
-  }
-
-  const unresolved = unique.filter((id) => (m.get(id) ?? 0) <= 0);
-  if (unresolved.length === 0) return { unitPriceById: m, error: null };
-
-  return {
-    unitPriceById: m,
-    error:
-      svcErr ??
-      "Some lab tests have no catalog or service price. Set `lab_tests.price` or an active `lab_service_prices` row.",
-  };
+  return fetchLabTestUnitPricesByIds(ids);
 }
 
 function idStr(v: string | number | undefined | null): string {

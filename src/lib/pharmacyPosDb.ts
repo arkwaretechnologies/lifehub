@@ -2187,7 +2187,7 @@ export type ProductAdminWriteRow = {
 };
 
 function productWriteToDbColumns(row: ProductAdminWriteRow): Record<string, unknown> {
-  const vatExempt = row.vatExempt ?? false;
+  const vatExempt = row.vatExempt ?? true;
   const vatRate =
     row.vatRate != null && Number.isFinite(row.vatRate)
       ? row.vatRate

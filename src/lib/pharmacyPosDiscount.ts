@@ -42,13 +42,13 @@ export const POS_BUILTIN_DISCOUNT_PRESETS: Array<
     kind: "sc",
     label: "Senior Citizen",
     typeCode: "SC",
-    description: "20% discount + VAT exempt on medicines (RA 9994 / RA 10754)",
+    description: "20% off selling price",
   },
   {
     kind: "pwd",
     label: "PWD",
     typeCode: "PWD",
-    description: "20% discount + VAT exempt on medicines (RA 10754)",
+    description: "20% off selling price",
   },
   {
     kind: "employee",
@@ -103,15 +103,12 @@ export function vatPortionFromInclusive(gross: number, vatPct: number): number {
 }
 
 /**
- * SC / PWD on VAT-inclusive medicine price: 20% off net-of-VAT amount plus VAT waived.
- * Payable = net × 0.80; discount = gross − payable.
+ * SC / PWD: flat 20% off the VAT-inclusive selling price (gross).
+ * Payable = gross × 0.80; discount = gross − payable.
  */
-export function scPwdLineDiscountAmount(lineGross: number, vatPct: number): number {
+export function scPwdLineDiscountAmount(lineGross: number, _vatPct?: number): number {
   if (lineGross <= 0) return 0;
-  if (vatPct <= 0) return round2(lineGross * (SC_PWD_DISCOUNT_PCT / 100));
-  const netOfVat = lineGross / (1 + vatPct / 100);
-  const payable = netOfVat * (1 - SC_PWD_DISCOUNT_PCT / 100);
-  return round2(lineGross - payable);
+  return round2(lineGross * (SC_PWD_DISCOUNT_PCT / 100));
 }
 
 export function isStatutoryScPwdCode(code: string | null | undefined): "sc" | "pwd" | null {

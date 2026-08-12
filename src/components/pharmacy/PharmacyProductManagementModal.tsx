@@ -180,7 +180,7 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
   const [prodRequiresRx, setProdRequiresRx] = useState(false);
   const [prodReorderLevel, setProdReorderLevel] = useState("");
   const [prodReorderQty, setProdReorderQty] = useState("");
-  const [prodVatExempt, setProdVatExempt] = useState(false);
+  const [prodVatExempt, setProdVatExempt] = useState(true);
   const [prodVatRate, setProdVatRate] = useState("12");
   const [prodIsActive, setProdIsActive] = useState(true);
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
@@ -291,8 +291,8 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
     setProdRequiresRx(false);
     setProdReorderLevel("");
     setProdReorderQty("");
-    setProdVatExempt(false);
-    setProdVatRate("12");
+    setProdVatExempt(true);
+    setProdVatRate("0");
     setProdIsActive(true);
     setProdMsg(null);
     if (categories.length > 0) setProdCategoryId(categories[0]!.id);
@@ -458,8 +458,8 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
       setProdRequiresRx(false);
       setProdReorderLevel("");
       setProdReorderQty("");
-      setProdVatExempt(false);
-      setProdVatRate("12");
+      setProdVatExempt(true);
+      setProdVatRate("0");
       setProdIsActive(true);
       setProdCategoryId("");
       setCatMsg(null);
@@ -843,8 +843,8 @@ export default function PharmacyProductManagementModal({ open, onClose }: Props)
                         requires_prescription: false,
                         reorder_level: null,
                         reorder_quantity: null,
-                        vat_exempt: false,
-                        vat_rate: 12,
+                        vat_exempt: true,
+                        vat_rate: 0,
                         is_active: prodIsActive,
                       });
                     }}

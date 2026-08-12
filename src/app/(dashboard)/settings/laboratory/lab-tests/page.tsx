@@ -50,6 +50,7 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import {
   buildPrintLayoutJsonFromFormFields,
+  parseResultsPrintLayout,
   printLayoutFormFieldsFromDb,
 } from "@/lib/labResultsPrintLayout";
 import { splitAllowlistedResultsTemplateCodes } from "@/lib/labResultTemplates";
@@ -454,7 +455,7 @@ export default function SettingsLabTestsPage() {
     setDeleteOpen(true);
   };
 
-  const buildPayloadFromForm = (f: TestForm) => {
+  const buildPayloadFromForm = (f: TestForm, existingPrintLayout?: unknown) => {
     const category_id = Number.parseInt(f.category_id, 10);
     if (!Number.isFinite(category_id) || category_id <= 0) {
       return { error: "Select a category." as const };
@@ -482,14 +483,18 @@ export default function SettingsLabTestsPage() {
       };
     }
 
-    const layoutBuilt = buildPrintLayoutJsonFromFormFields({
-      print_ref_x: f.print_ref_x,
-      print_ref_from_top: f.print_ref_from_top,
-      print_font_size: f.print_font_size,
-      print_max_width: f.print_max_width,
-      print_line_height: f.print_line_height,
-      print_page_index: f.print_page_index,
-    });
+    const existingLayout = existingPrintLayout != null ? parseResultsPrintLayout(existingPrintLayout) : null;
+    const layoutBuilt = buildPrintLayoutJsonFromFormFields(
+      {
+        print_ref_x: f.print_ref_x,
+        print_ref_from_top: f.print_ref_from_top,
+        print_font_size: f.print_font_size,
+        print_max_width: f.print_max_width,
+        print_line_height: f.print_line_height,
+        print_page_index: f.print_page_index,
+      },
+      existingLayout,
+    );
     if (!layoutBuilt.ok) {
       return { error: layoutBuilt.error };
     }
@@ -546,7 +551,8 @@ export default function SettingsLabTestsPage() {
 
   const handleEditSave = async () => {
     if (editingId == null) return;
-    const built = buildPayloadFromForm(editForm);
+    const existingRow = tests.find((r) => r.id === editingId);
+    const built = buildPayloadFromForm(editForm, existingRow?.results_print_layout);
     if ("error" in built) {
       setEditError(built.error ?? "Invalid form.");
       return;

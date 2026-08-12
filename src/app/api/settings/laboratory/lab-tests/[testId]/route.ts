@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { fetchActiveLabResultTemplateCodes, isAllowedLabResultTemplateCode } from "@/lib/labResultTemplates";
-import { parseResultsPrintLayoutInput } from "@/lib/labResultsPrintLayout";
+import { parseResultsPrintLayoutInput, mergePreservedInternationalLayout } from "@/lib/labResultsPrintLayout";
 import {
   LAB_CATEGORIES_TABLE,
   LAB_TEST_CATALOG_SELECT,
@@ -166,7 +166,11 @@ export async function PATCH(
     if (!layoutParsed.ok) {
       return NextResponse.json({ error: layoutParsed.error }, { status: 400 });
     }
-    patch.results_print_layout = layoutParsed.value;
+    patch.results_print_layout = mergePreservedInternationalLayout(
+      layoutParsed.value,
+      existing.results_print_layout,
+      body.results_print_layout,
+    );
   }
   if (body.turnaround_hours !== undefined) {
     if (body.turnaround_hours === null) patch.turnaround_hours = null;

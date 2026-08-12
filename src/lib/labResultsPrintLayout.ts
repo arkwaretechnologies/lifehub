@@ -202,9 +202,14 @@ function parseOptionalNonNegativeInt(raw: string): number | undefined {
   return Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
-/** Build jsonb value for `lab_tests.results_print_layout` from Settings form fields. */
+/**
+ * Build jsonb value for `lab_tests.results_print_layout` from Settings form fields.
+ * When `existingLayout` has a valid `international` slot, keep it on the rebuilt object
+ * (Settings form does not edit international coords). Clearing all print fields still yields null.
+ */
 export function buildPrintLayoutJsonFromFormFields(
   fields: PrintLayoutFormFields,
+  existingLayout?: LabResultPrintPosition | null,
 ): { ok: true; value: LabResultPrintPosition | null } | { ok: false; error: string } {
   const hasAny = [
     fields.print_ref_x,
@@ -248,7 +253,52 @@ export function buildPrintLayoutJsonFromFormFields(
   if (maxWidth != null) value.maxWidth = maxWidth;
   if (lineHeight != null) value.lineHeight = lineHeight;
   if (pageIndex != null) value.pageIndex = pageIndex;
+
+  const existingIntl = existingLayout?.international;
+  if (
+    existingIntl != null &&
+    Number.isFinite(existingIntl.refX) &&
+    Number.isFinite(existingIntl.refFromTop)
+  ) {
+    value.international = { ...existingIntl };
+  }
+
   return { ok: true, value };
+}
+
+/**
+ * If `incoming` omits `international` (key absent after parse), copy a valid international
+ * slot from `existing`. Explicit `international: null` on the raw body is left alone by callers
+ * that pass a parsed object already containing `international: null`.
+ */
+export function mergePreservedInternationalLayout(
+  incoming: LabResultPrintPosition | null,
+  existingRaw: unknown,
+  rawBodyLayout: unknown,
+): LabResultPrintPosition | null {
+  if (incoming == null) return null;
+  if (incoming.international !== undefined) return incoming;
+
+  // Body explicitly set international to null → do not restore.
+  if (
+    rawBodyLayout != null &&
+    typeof rawBodyLayout === "object" &&
+    !Array.isArray(rawBodyLayout) &&
+    Object.prototype.hasOwnProperty.call(rawBodyLayout, "international")
+  ) {
+    return incoming;
+  }
+
+  const existing = parseResultsPrintLayout(existingRaw);
+  const existingIntl = existing?.international;
+  if (
+    existingIntl == null ||
+    !Number.isFinite(existingIntl.refX) ||
+    !Number.isFinite(existingIntl.refFromTop)
+  ) {
+    return incoming;
+  }
+  return { ...incoming, international: { ...existingIntl } };
 }
 
 /** Parse API body `results_print_layout` (object or null). */

@@ -263,26 +263,14 @@ export default function ConsultationHome() {
   );
 
   const rangeLabel = useMemo(() => {
-    const daysLabel = formatEncounterRangeDaysLabel(encounterRangeDays);
     const dates = `${formatDateMMDDYYYY(encounterFrom)} – ${formatDateMMDDYYYY(encounterTo)}`;
-    const presetLabel =
-      encounterRangePreset === "today"
-        ? "Today"
-        : encounterRangePreset === "yesterday"
-          ? "Yesterday"
-          : encounterRangePreset === "last3"
-            ? "Last 3 days"
-            : encounterRangePreset === "last7"
-              ? "Last 7 days"
-              : encounterRangePreset === "last15"
-                ? "Last 15 days"
-                : encounterRangePreset === "last30"
-                  ? "Last 30 days"
-                  : null;
-    // Exact From/To day count always shown (e.g. "Last 15 days · 15 days · 07-30-2026 – 08-13-2026").
-    if (presetLabel == null) return `${daysLabel} · ${dates}`;
-    if (presetLabel === "Today" || presetLabel === "Yesterday") return `${presetLabel} · ${dates}`;
-    return `${presetLabel} · ${daysLabel} · ${dates}`;
+    if (encounterRangePreset === "today") return `Today · ${dates}`;
+    if (encounterRangePreset === "yesterday") return `Yesterday · ${dates}`;
+    // Always derive "Last N days" from the actual From/To span (no duplicate count).
+    const n = encounterRangeDays;
+    if (n == null) return `Invalid range · ${dates}`;
+    const lastLabel = n === 1 ? "Last 1 day" : `Last ${n} days`;
+    return `${lastLabel} · ${dates}`;
   }, [encounterFrom, encounterTo, encounterRangePreset, encounterRangeDays]);
 
   useEffect(() => {

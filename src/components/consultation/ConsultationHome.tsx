@@ -60,8 +60,26 @@ const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 
 type UserIdNameRow = { user_id: string | number; fullname: string | null };
 
+type EncounterRangePreset = "today" | "yesterday" | "last3" | "last7" | "last15" | "last30" | "custom";
+
 function patientKey(p: ConsultationPatientListRow): string {
   return String(p.id);
+}
+
+/** Inclusive calendar-day span for `YYYY-MM-DD` From/To (null if invalid or To < From). */
+function inclusiveEncounterRangeDays(fromYmd: string, toYmd: string): number | null {
+  const from = (fromYmd ?? "").trim().slice(0, 10);
+  const to = (toYmd ?? "").trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return null;
+  const fromMs = Date.parse(`${from}T00:00:00`);
+  const toMs = Date.parse(`${to}T00:00:00`);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs < fromMs) return null;
+  return Math.floor((toMs - fromMs) / 86_400_000) + 1;
+}
+
+function formatEncounterRangeDaysLabel(days: number | null): string {
+  if (days == null) return "Invalid range";
+  return days === 1 ? "1 day" : `${days} days`;
 }
 
 export default function ConsultationHome() {
@@ -83,9 +101,7 @@ export default function ConsultationHome() {
   const [createEncounterError, setCreateEncounterError] = useState("");
 
   const [encounterRangeAnchor, setEncounterRangeAnchor] = useState<HTMLElement | null>(null);
-  const [encounterRangePreset, setEncounterRangePreset] = useState<"today" | "yesterday" | "last3" | "last7" | "last15" | "last30">(
-    "last15",
-  );
+  const [encounterRangePreset, setEncounterRangePreset] = useState<EncounterRangePreset>("last15");
   const [encounterFrom, setEncounterFrom] = useState("");
   const [encounterTo, setEncounterTo] = useState("");
   const [encounterChiefSearch, setEncounterChiefSearch] = useState("");
@@ -198,7 +214,8 @@ export default function ConsultationHome() {
     };
   }, [selectedPatient]);
 
-  const applyEncounterPreset = useCallback((preset: typeof encounterRangePreset) => {
+  const applyEncounterPreset = useCallback((preset: EncounterRangePreset) => {
+    if (preset === "custom") return;
     const now = new Date();
     const today = clinicDateYmd(now);
     if (preset === "today") {
@@ -240,8 +257,15 @@ export default function ConsultationHome() {
     return filteredEncounters.filter((e) => (e.chiefComplaint ?? "").toLowerCase().includes(q));
   }, [filteredEncounters, encounterChiefSearch]);
 
+  const encounterRangeDays = useMemo(
+    () => inclusiveEncounterRangeDays(encounterFrom, encounterTo),
+    [encounterFrom, encounterTo],
+  );
+
   const rangeLabel = useMemo(() => {
-    const label =
+    const daysLabel = formatEncounterRangeDaysLabel(encounterRangeDays);
+    const dates = `${formatDateMMDDYYYY(encounterFrom)} – ${formatDateMMDDYYYY(encounterTo)}`;
+    const presetLabel =
       encounterRangePreset === "today"
         ? "Today"
         : encounterRangePreset === "yesterday"
@@ -252,9 +276,14 @@ export default function ConsultationHome() {
               ? "Last 7 days"
               : encounterRangePreset === "last15"
                 ? "Last 15 days"
-                : "Last 30 days";
-    return `${label} · ${formatDateMMDDYYYY(encounterFrom)} – ${formatDateMMDDYYYY(encounterTo)}`;
-  }, [encounterFrom, encounterTo, encounterRangePreset]);
+                : encounterRangePreset === "last30"
+                  ? "Last 30 days"
+                  : null;
+    // Exact From/To day count always shown (e.g. "Last 15 days · 15 days · 07-30-2026 – 08-13-2026").
+    if (presetLabel == null) return `${daysLabel} · ${dates}`;
+    if (presetLabel === "Today" || presetLabel === "Yesterday") return `${presetLabel} · ${dates}`;
+    return `${presetLabel} · ${daysLabel} · ${dates}`;
+  }, [encounterFrom, encounterTo, encounterRangePreset, encounterRangeDays]);
 
   useEffect(() => {
     setCreateEncounterError("");
@@ -549,20 +578,19 @@ export default function ConsultationHome() {
           >
             <List dense disablePadding sx={{ mb: 1 }}>
               {[
-                { key: "today", label: "Today" },
-                { key: "yesterday", label: "Yesterday" },
-                { key: "last3", label: "Last 3 days" },
-                { key: "last7", label: "Last 7 days" },
-                { key: "last15", label: "Last 15 days" },
-                { key: "last30", label: "Last 30 days" },
+                { key: "today" as const, label: "Today" },
+                { key: "yesterday" as const, label: "Yesterday" },
+                { key: "last3" as const, label: "Last 3 days" },
+                { key: "last7" as const, label: "Last 7 days" },
+                { key: "last15" as const, label: "Last 15 days" },
+                { key: "last30" as const, label: "Last 30 days" },
               ].map((p) => (
                 <ListItemButton
                   key={p.key}
-                  selected={encounterRangePreset === (p.key as any)}
+                  selected={encounterRangePreset === p.key}
                   onClick={() => {
-                    const k = p.key as typeof encounterRangePreset;
-                    setEncounterRangePreset(k);
-                    applyEncounterPreset(k);
+                    setEncounterRangePreset(p.key);
+                    applyEncounterPreset(p.key);
                     setEncounterRangeAnchor(null);
                   }}
                 >
@@ -577,7 +605,7 @@ export default function ConsultationHome() {
                   label="From"
                   value={encounterFrom}
                   onChange={(e) => {
-                    setEncounterRangePreset("last15");
+                    setEncounterRangePreset("custom");
                     setEncounterFrom(e.target.value);
                   }}
                 />
@@ -588,12 +616,22 @@ export default function ConsultationHome() {
                   label="To"
                   value={encounterTo}
                   onChange={(e) => {
-                    setEncounterRangePreset("last15");
+                    setEncounterRangePreset("custom");
                     setEncounterTo(e.target.value);
                   }}
                 />
               </Box>
             </Box>
+            <Typography
+              variant="caption"
+              color={encounterRangeDays == null ? "error" : "text.secondary"}
+              sx={{ display: "block", mt: 1, px: 0.25, fontWeight: 600 }}
+            >
+              {formatEncounterRangeDaysLabel(encounterRangeDays)}
+              {encounterRangeDays != null
+                ? ` (${formatDateMMDDYYYY(encounterFrom)} – ${formatDateMMDDYYYY(encounterTo)})`
+                : ""}
+            </Typography>
           </Popover>
 
           {selectedPatient && filteredEncounters.length > 0 ? (

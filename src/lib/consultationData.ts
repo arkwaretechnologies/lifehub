@@ -911,7 +911,7 @@ export async function fetchEncountersForPatient(
     .eq("patient_id", patientId)
     .order("encounter_date", { ascending: false })
     .order("encounter_time", { ascending: false })
-    .limit(500);
+    .limit(2000);
 
   if (error) {
     return { encounters: [], error: error.message };

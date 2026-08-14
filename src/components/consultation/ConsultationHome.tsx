@@ -60,7 +60,15 @@ const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 
 type UserIdNameRow = { user_id: string | number; fullname: string | null };
 
-type EncounterRangePreset = "today" | "yesterday" | "last3" | "last7" | "last15" | "last30" | "custom";
+type EncounterRangePreset =
+  | "today"
+  | "yesterday"
+  | "last3"
+  | "last7"
+  | "last15"
+  | "last30"
+  | "custom"
+  | "all";
 
 function patientKey(p: ConsultationPatientListRow): string {
   return String(p.id);
@@ -105,6 +113,8 @@ export default function ConsultationHome() {
   const [encounterFrom, setEncounterFrom] = useState("");
   const [encounterTo, setEncounterTo] = useState("");
   const [encounterChiefSearch, setEncounterChiefSearch] = useState("");
+  const [encounterPage, setEncounterPage] = useState(0);
+  const [encounterPageSize, setEncounterPageSize] = useState<number>(20);
 
   /** `user_id` → display name for numeric `patients.referring_physician` FKs (any role). */
   const [referringNameByUserId, setReferringNameByUserId] = useState<Map<string, string>>(() => new Map());
@@ -216,6 +226,11 @@ export default function ConsultationHome() {
 
   const applyEncounterPreset = useCallback((preset: EncounterRangePreset) => {
     if (preset === "custom") return;
+    if (preset === "all") {
+      setEncounterFrom("");
+      setEncounterTo("");
+      return;
+    }
     const now = new Date();
     const today = clinicDateYmd(now);
     if (preset === "today") {
@@ -231,6 +246,7 @@ export default function ConsultationHome() {
     }
     const days =
       preset === "last3" ? 3 : preset === "last7" ? 7 : preset === "last15" ? 15 : 30;
+    // Start Date = Today - (Total Days - 1); To = today (included).
     setEncounterFrom(clinicAddDays(-(days - 1), now));
     setEncounterTo(today);
   }, []);
@@ -242,14 +258,14 @@ export default function ConsultationHome() {
   }, []);
 
   const filteredEncounters = useMemo(() => {
-    if (!encounterFrom || !encounterTo) return encounters;
+    if (encounterRangePreset === "all" || !encounterFrom || !encounterTo) return encounters;
     const from = encounterFrom;
     const to = encounterTo;
     return encounters.filter((e) => {
       const d = (e.date ?? "").slice(0, 10);
       return d >= from && d <= to;
     });
-  }, [encounters, encounterFrom, encounterTo]);
+  }, [encounters, encounterFrom, encounterTo, encounterRangePreset]);
 
   const visibleEncounters = useMemo(() => {
     const q = encounterChiefSearch.trim().toLowerCase();
@@ -257,12 +273,23 @@ export default function ConsultationHome() {
     return filteredEncounters.filter((e) => (e.chiefComplaint ?? "").toLowerCase().includes(q));
   }, [filteredEncounters, encounterChiefSearch]);
 
+  const pagedEncounters = useMemo(() => {
+    const start = encounterPage * encounterPageSize;
+    return visibleEncounters.slice(start, start + encounterPageSize);
+  }, [visibleEncounters, encounterPage, encounterPageSize]);
+
+  useEffect(() => {
+    setEncounterPage(0);
+  }, [selectedPatient, encounterRangePreset, encounterFrom, encounterTo, encounterChiefSearch, encounterPageSize]);
+
   const encounterRangeDays = useMemo(
-    () => inclusiveEncounterRangeDays(encounterFrom, encounterTo),
-    [encounterFrom, encounterTo],
+    () =>
+      encounterRangePreset === "all" ? null : inclusiveEncounterRangeDays(encounterFrom, encounterTo),
+    [encounterFrom, encounterTo, encounterRangePreset],
   );
 
   const rangeLabel = useMemo(() => {
+    if (encounterRangePreset === "all") return "All records";
     const dates = `${formatDateMMDDYYYY(encounterFrom)} – ${formatDateMMDDYYYY(encounterTo)}`;
     if (encounterRangePreset === "today") return `Today · ${dates}`;
     if (encounterRangePreset === "yesterday") return `Yesterday · ${dates}`;
@@ -311,6 +338,15 @@ export default function ConsultationHome() {
   const handleRowsPerPageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setPageSize(Number.parseInt(e.target.value, 10));
     setPage(0);
+  };
+
+  const handleEncounterPageChange = (_: unknown, newPage: number) => {
+    setEncounterPage(newPage);
+  };
+
+  const handleEncounterRowsPerPageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setEncounterPageSize(Number.parseInt(e.target.value, 10));
+    setEncounterPage(0);
   };
 
   const emptyPatientMessage =
@@ -566,6 +602,7 @@ export default function ConsultationHome() {
           >
             <List dense disablePadding sx={{ mb: 1 }}>
               {[
+                { key: "all" as const, label: "All Records" },
                 { key: "today" as const, label: "Today" },
                 { key: "yesterday" as const, label: "Yesterday" },
                 { key: "last3" as const, label: "Last 3 days" },
@@ -586,40 +623,52 @@ export default function ConsultationHome() {
                 </ListItemButton>
               ))}
             </List>
-            <Box sx={{ display: "flex", gap: 1 }}>
-              <Box sx={{ flex: 1 }}>
-                <DatePickerField
-                  id="consultation-encounter-from"
-                  label="From"
-                  value={encounterFrom}
-                  onChange={(e) => {
-                    setEncounterRangePreset("custom");
-                    setEncounterFrom(e.target.value);
-                  }}
-                />
-              </Box>
-              <Box sx={{ flex: 1 }}>
-                <DatePickerField
-                  id="consultation-encounter-to"
-                  label="To"
-                  value={encounterTo}
-                  onChange={(e) => {
-                    setEncounterRangePreset("custom");
-                    setEncounterTo(e.target.value);
-                  }}
-                />
-              </Box>
-            </Box>
-            <Typography
-              variant="caption"
-              color={encounterRangeDays == null ? "error" : "text.secondary"}
-              sx={{ display: "block", mt: 1, px: 0.25, fontWeight: 600 }}
-            >
-              {formatEncounterRangeDaysLabel(encounterRangeDays)}
-              {encounterRangeDays != null
-                ? ` (${formatDateMMDDYYYY(encounterFrom)} – ${formatDateMMDDYYYY(encounterTo)})`
-                : ""}
-            </Typography>
+            {encounterRangePreset === "all" ? (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ display: "block", mt: 0.5, px: 0.25, fontWeight: 600 }}
+              >
+                All records
+              </Typography>
+            ) : (
+              <>
+                <Box sx={{ display: "flex", gap: 1 }}>
+                  <Box sx={{ flex: 1 }}>
+                    <DatePickerField
+                      id="consultation-encounter-from"
+                      label="From"
+                      value={encounterFrom}
+                      onChange={(e) => {
+                        setEncounterRangePreset("custom");
+                        setEncounterFrom(e.target.value);
+                      }}
+                    />
+                  </Box>
+                  <Box sx={{ flex: 1 }}>
+                    <DatePickerField
+                      id="consultation-encounter-to"
+                      label="To"
+                      value={encounterTo}
+                      onChange={(e) => {
+                        setEncounterRangePreset("custom");
+                        setEncounterTo(e.target.value);
+                      }}
+                    />
+                  </Box>
+                </Box>
+                <Typography
+                  variant="caption"
+                  color={encounterRangeDays == null ? "error" : "text.secondary"}
+                  sx={{ display: "block", mt: 1, px: 0.25, fontWeight: 600 }}
+                >
+                  {formatEncounterRangeDaysLabel(encounterRangeDays)}
+                  {encounterRangeDays != null
+                    ? ` (${formatDateMMDDYYYY(encounterFrom)} – ${formatDateMMDDYYYY(encounterTo)})`
+                    : ""}
+                </Typography>
+              </>
+            )}
           </Popover>
 
           {selectedPatient && filteredEncounters.length > 0 ? (
@@ -669,54 +718,82 @@ export default function ConsultationHome() {
             </Box>
           ) : visibleEncounters.length === 0 ? (
             <Typography variant="body2" color="text.primary" sx={consultBodyTypoSx}>
-              {encounterChiefSearch.trim() ? "No encounters match this chief complaint." : "No encounters in this date range."}
+              {encounterChiefSearch.trim()
+                ? "No encounters match this chief complaint."
+                : encounterRangePreset === "all"
+                  ? "No encounters for this patient."
+                  : "No encounters in this date range."}
             </Typography>
           ) : (
-            <TableContainer>
-              <Table size="small" sx={consultTableSx}>
-                <TableHead>
-                  <TableRow sx={consultTableHeadRowSx}>
-                    <TableCell sx={consultTableHeadCellSx}>Date</TableCell>
-                    <TableCell sx={consultTableHeadCellSx}>Time</TableCell>
-                    <TableCell sx={consultTableHeadCellSx}>Queue</TableCell>
-                    <TableCell sx={consultTableHeadCellSx}>Chief complaint</TableCell>
-                    <TableCell align="right" sx={consultTableHeadCellSx}>
-                      Action
-                    </TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {visibleEncounters.map((e) => (
-                    <TableRow key={e.id}>
-                      <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
-                        {formatDateMMDDYYYY(e.date)}
-                      </TableCell>
-                      <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
-                        {e.time || "—"}
-                      </TableCell>
-                      <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
-                        {e.queueNo ?? "—"}
-                      </TableCell>
-                      <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
-                        {e.chiefComplaint ?? "—"}
-                      </TableCell>
-                      <TableCell align="right" sx={{ ...consultTableBodyCellSx, whiteSpace: "nowrap" }}>
-                        <Button
-                          component={Link}
-                          href={`/consultation/${e.id}`}
-                          variant="contained"
-                          color="secondary"
-                          size="small"
-                          sx={{ textTransform: "uppercase" }}
-                        >
-                          Open
-                        </Button>
+            <>
+              <TableContainer>
+                <Table size="small" sx={consultTableSx}>
+                  <TableHead>
+                    <TableRow sx={consultTableHeadRowSx}>
+                      <TableCell sx={consultTableHeadCellSx}>Date</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>Time</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>Queue</TableCell>
+                      <TableCell sx={consultTableHeadCellSx}>Chief complaint</TableCell>
+                      <TableCell align="right" sx={consultTableHeadCellSx}>
+                        Action
                       </TableCell>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
+                  </TableHead>
+                  <TableBody>
+                    {pagedEncounters.map((e) => (
+                      <TableRow key={e.id}>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
+                          {formatDateMMDDYYYY(e.date)}
+                        </TableCell>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
+                          {e.time || "—"}
+                        </TableCell>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
+                          {e.queueNo ?? "—"}
+                        </TableCell>
+                        <TableCell sx={{ ...consultTableBodyCellSx, textTransform: "uppercase" }}>
+                          {e.chiefComplaint ?? "—"}
+                        </TableCell>
+                        <TableCell align="right" sx={{ ...consultTableBodyCellSx, whiteSpace: "nowrap" }}>
+                          <Button
+                            component={Link}
+                            href={`/consultation/${e.id}`}
+                            variant="contained"
+                            color="secondary"
+                            size="small"
+                            sx={{ textTransform: "uppercase" }}
+                          >
+                            Open
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+              <TablePagination
+                component="div"
+                count={visibleEncounters.length}
+                page={encounterPage}
+                onPageChange={handleEncounterPageChange}
+                rowsPerPage={encounterPageSize}
+                rowsPerPageOptions={[...PAGE_SIZE_OPTIONS]}
+                onRowsPerPageChange={handleEncounterRowsPerPageChange}
+                labelRowsPerPage="Rows per page"
+                sx={{
+                  "& .MuiTablePagination-toolbar": {
+                    textTransform: "none",
+                    ...consultBodyTypoSx,
+                    color: "text.primary",
+                  },
+                  "& .MuiTablePagination-select": { textTransform: "none" },
+                  "& .MuiTablePagination-selectLabel, & .MuiTablePagination-displayedRows": {
+                    ...consultBodyTypoSx,
+                    color: "text.primary",
+                  },
+                }}
+              />
+            </>
           )}
         </CardContent>
       </Card>

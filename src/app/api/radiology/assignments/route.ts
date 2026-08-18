@@ -7,6 +7,7 @@ import {
   upsertRadiologistAssignment,
 } from "@/lib/radiologyAssignments";
 import {
+  isRadiologistRoleName,
   userCanAssignRadiology,
   userCanViewRadiologyAssignmentList,
 } from "@/lib/radiologyRole";
@@ -99,15 +100,16 @@ export async function PUT(req: Request) {
 
   const { data: radUser, error: radErr } = await admin
     .from("users")
-    .select("user_id, role")
+    .select("user_id, role, can_read_imaging")
     .eq("user_id", radId)
     .maybeSingle();
 
   if (radErr) return NextResponse.json({ error: radErr.message }, { status: 500 });
   if (!radUser) return NextResponse.json({ error: "Radiologist user not found." }, { status: 404 });
 
-  const role = String((radUser as { role?: string }).role ?? "").trim().toLowerCase();
-  if (role !== "radiologist") {
+  const role = String((radUser as { role?: string }).role ?? "").trim();
+  const canReadImaging = (radUser as { can_read_imaging?: boolean | null }).can_read_imaging === true;
+  if (!canReadImaging && !isRadiologistRoleName(role)) {
     return NextResponse.json({ error: "Selected user is not a radiologist." }, { status: 400 });
   }
 

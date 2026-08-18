@@ -24,6 +24,8 @@ import {
   Tooltip,
   Grid,
   MenuItem,
+  FormControlLabel,
+  Switch,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import EditIcon from "@mui/icons-material/Edit";
@@ -49,6 +51,7 @@ type AppUserRow = {
   license_no: string | null;
   s2_no: string | null;
   ptr_no: string | null;
+  can_read_imaging?: boolean | null;
   signature_storage_path?: string | null;
   created_at: string | null;
   updated_at: string | null;
@@ -67,6 +70,7 @@ type UserForm = {
   s2_no: string;
   ptr_no: string;
   password: string;
+  can_read_imaging: boolean;
 };
 
 const emptyForm: UserForm = {
@@ -82,6 +86,7 @@ const emptyForm: UserForm = {
   s2_no: "",
   ptr_no: "",
   password: "",
+  can_read_imaging: false,
 };
 
 /** Add/Edit user dialogs: medium inputs with consistent min height (matches Role select). */
@@ -129,6 +134,7 @@ function rowToForm(r: AppUserRow): UserForm {
     s2_no: r.s2_no ?? "",
     ptr_no: r.ptr_no ?? "",
     password: "",
+    can_read_imaging: r.can_read_imaging === true,
   };
 }
 
@@ -147,6 +153,7 @@ function formToUpdatePayload(f: UserForm) {
     license_no: labSig ? f.license_no.trim() || null : null,
     s2_no: ph ? f.s2_no.trim() || null : null,
     ptr_no: ph ? f.ptr_no.trim() || null : null,
+    can_read_imaging: f.can_read_imaging === true,
   };
 }
 
@@ -679,6 +686,21 @@ export default function UsersPage() {
                   </Grid>
                 </Grid>
               ) : null}
+              <Grid size={{ xs: 12 }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={addForm.can_read_imaging}
+                      onChange={(_, c) => setAddForm((p) => ({ ...p, can_read_imaging: c }))}
+                      color="primary"
+                    />
+                  }
+                  label="Imaging reading queue"
+                />
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ ml: 6, mt: -0.5 }}>
+                  Appears in Assign and can open Reading Queue for studies assigned to this user.
+                </Typography>
+              </Grid>
             </Grid>
           </Box>
         </DialogContent>
@@ -878,6 +900,21 @@ export default function UsersPage() {
                   </Box>
                 </Grid>
               ) : null}
+              <Grid size={{ xs: 12 }}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={editForm.can_read_imaging}
+                      onChange={(_, c) => setEditForm((p) => ({ ...p, can_read_imaging: c }))}
+                      color="primary"
+                    />
+                  }
+                  label="Imaging reading queue"
+                />
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ ml: 6, mt: -0.5 }}>
+                  Appears in Assign and can open Reading Queue for studies assigned to this user.
+                </Typography>
+              </Grid>
             </Grid>
           </Box>
         </DialogContent>

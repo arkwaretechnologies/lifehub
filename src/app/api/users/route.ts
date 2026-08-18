@@ -59,6 +59,7 @@ export async function POST(req: Request) {
     license_no: body.license_no ? String(body.license_no).trim() || null : null,
     s2_no: body.s2_no ? String(body.s2_no).trim() || null : null,
     ptr_no: body.ptr_no ? String(body.ptr_no).trim() || null : null,
+    can_read_imaging: body.can_read_imaging === true,
     password: passwordHash,
   };
 

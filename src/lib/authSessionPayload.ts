@@ -1,7 +1,19 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { UserProfile } from "@/lib/types";
 import { defaultMenuAccess, type MenuAccessState } from "@/lib/menuAccess";
+import { userCanReadImaging } from "@/lib/radiologyRole";
 import { getMenuAccessForRoleName } from "@/lib/roleMenuAccessServer";
+
+const IMAGING_READER_PAGE_KEY = "radiology/patients";
+
+export function withImagingReaderMenuAccess(
+  menuAccess: MenuAccessState,
+  canReadImaging: boolean,
+): MenuAccessState {
+  if (!canReadImaging || !menuAccess.rbac) return menuAccess;
+  if (menuAccess.pageKeys.includes(IMAGING_READER_PAGE_KEY)) return menuAccess;
+  return { ...menuAccess, pageKeys: [...menuAccess.pageKeys, IMAGING_READER_PAGE_KEY] };
+}
 
 const USER_SELECT = [
   "user_id",
@@ -45,6 +57,8 @@ export async function buildAuthSessionPayload(
   const { profile, error } = await fetchUserProfileById(admin, userId);
   if (error) return { ok: false, error };
   if (!profile) return { ok: false, error: "User not found." };
-  const menuAccess = profile.role ? await getMenuAccessForRoleName(admin, String(profile.role)) : defaultMenuAccess;
+  const baseMenu = profile.role ? await getMenuAccessForRoleName(admin, String(profile.role)) : defaultMenuAccess;
+  const canReadImaging = await userCanReadImaging(admin, userId);
+  const menuAccess = withImagingReaderMenuAccess(baseMenu, canReadImaging);
   return { ok: true, user: sessionUserFromProfile(profile), profile, menuAccess };
 }

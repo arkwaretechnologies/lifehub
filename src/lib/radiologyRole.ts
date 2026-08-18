@@ -3,6 +3,13 @@ import { userHasAdminRole, userHasRbacPageAccess } from "@/lib/adminRole";
 
 export const RADIOLOGIST_ROLE_NAME = "RADIOLOGIST";
 
+/** Comma-separated role names from `users.role`; match is case-insensitive. */
+export function parseRadiologistRoleNames(): string[] {
+  const raw = process.env.RADIOLOGIST_ROLE_NAMES?.trim();
+  if (!raw) return ["RADIOLOGIST"];
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
 /** Comma-separated role names from `users.role`; match is case-insensitive. RAD TECH does not exist on dev. */
 export function parseRadTechRoleNames(): string[] {
   const raw = process.env.RADTECH_ROLE_NAMES?.trim();
@@ -17,9 +24,16 @@ async function sessionUserRoleName(admin: SupabaseClient, userId: number): Promi
   return role || null;
 }
 
+export async function userCanReadImaging(admin: SupabaseClient, userId: number): Promise<boolean> {
+  const { data, error } = await admin.from("users").select("can_read_imaging").eq("user_id", userId).maybeSingle();
+  if (error || !data) return false;
+  return (data as { can_read_imaging?: boolean | null }).can_read_imaging === true;
+}
+
 export function isRadiologistRoleName(roleName: string | null | undefined): boolean {
   if (!roleName) return false;
-  return roleName.trim().toLowerCase() === RADIOLOGIST_ROLE_NAME.toLowerCase();
+  const lower = roleName.trim().toLowerCase();
+  return parseRadiologistRoleNames().some((n) => n.toLowerCase() === lower);
 }
 
 export function isRadTechRoleName(roleName: string | null | undefined): boolean {
@@ -29,8 +43,15 @@ export function isRadTechRoleName(roleName: string | null | undefined): boolean 
 }
 
 export async function userIsRadiologist(admin: SupabaseClient, userId: number): Promise<boolean> {
-  const roleName = await sessionUserRoleName(admin, userId);
-  return isRadiologistRoleName(roleName);
+  const { data, error } = await admin
+    .from("users")
+    .select("role, can_read_imaging")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error || !data) return false;
+  const row = data as { role?: string | null; can_read_imaging?: boolean | null };
+  if (row.can_read_imaging === true) return true;
+  return isRadiologistRoleName(row.role);
 }
 
 export async function userIsRadTech(admin: SupabaseClient, userId: number): Promise<boolean> {
@@ -115,14 +136,20 @@ export async function listRadiologistUsers(
 ): Promise<{ rows: Array<{ user_id: number; fullname: string }>; error: string | null }> {
   const { data, error } = await admin
     .from("users")
-    .select("user_id, fullname")
-    .ilike("role", RADIOLOGIST_ROLE_NAME)
+    .select("user_id, fullname, role, can_read_imaging")
     .order("fullname", { ascending: true });
 
   if (error) return { rows: [], error: error.message };
-  const rows = ((data ?? []) as Array<{ user_id: number; fullname: string }>).map((r) => ({
-    user_id: r.user_id,
-    fullname: String(r.fullname ?? "").trim() || `User ${r.user_id}`,
-  }));
+  const rows = ((data ?? []) as Array<{
+    user_id: number;
+    fullname: string;
+    role?: string | null;
+    can_read_imaging?: boolean | null;
+  }>)
+    .filter((r) => r.can_read_imaging === true || isRadiologistRoleName(r.role))
+    .map((r) => ({
+      user_id: r.user_id,
+      fullname: String(r.fullname ?? "").trim() || `User ${r.user_id}`,
+    }));
   return { rows, error: null };
 }

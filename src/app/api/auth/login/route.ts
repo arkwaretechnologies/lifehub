@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { withImagingReaderMenuAccess } from "@/lib/authSessionPayload";
 import { signSessionToken } from "@/lib/authJwt";
 import { allowRateLimit, clientIpFromRequest } from "@/lib/loginRateLimit";
+import { userCanReadImaging } from "@/lib/radiologyRole";
 import { getMenuAccessForRoleName } from "@/lib/roleMenuAccessServer";
 import { numericSessionUserId, numericUserIdFromRecord } from "@/lib/sessionUserId";
 
@@ -160,7 +162,8 @@ export async function POST(req: Request) {
   }
 
   const role = profileOut.role != null ? String(profileOut.role) : "";
-  const menuAccess = role ? await getMenuAccessForRoleName(admin, role) : { rbac: false, pageKeys: [] as string[] };
+  const baseMenu = role ? await getMenuAccessForRoleName(admin, role) : { rbac: false, pageKeys: [] as string[] };
+  const menuAccess = withImagingReaderMenuAccess(baseMenu, await userCanReadImaging(admin, userId));
 
   const user = row.user ?? { user_id: userId };
 

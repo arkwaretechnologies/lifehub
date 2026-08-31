@@ -240,6 +240,30 @@ function medicationRowsMissingManualName(lines: MedicationLineDraft[]): boolean 
   );
 }
 
+/** Another list row already carries this catalog product or manual name. */
+function findDuplicateMedicationLine(
+  lines: MedicationLineDraft[],
+  currentKey: string,
+  candidate: { productId?: string; manualName?: string },
+): MedicationLineDraft | null {
+  const productId = (candidate.productId ?? "").trim();
+  if (productId) {
+    return (
+      lines.find((l) => l.key !== currentKey && l.productId.trim() === productId) ?? null
+    );
+  }
+  const manualName = (candidate.manualName ?? "").trim().toLowerCase();
+  if (!manualName) return null;
+  return (
+    lines.find(
+      (l) =>
+        l.key !== currentKey &&
+        (l.manualEntry || l.productId.trim() === "") &&
+        l.manualName.trim().toLowerCase() === manualName,
+    ) ?? null
+  );
+}
+
 function medicationLineDisplayName(
   line: MedicationLineDraft,
   productCache: Record<string, ProductCatalogRow>,
@@ -527,7 +551,13 @@ export default function PlansTreatmentPanel({
   const [medVisitSettledHint, setMedVisitSettledHint] = useState(false);
   const [medToastOpen, setMedToastOpen] = useState(false);
   const [medToastMessage, setMedToastMessage] = useState("");
-  const [medToastSeverity, setMedToastSeverity] = useState<"success" | "error">("success");
+  const [medToastSeverity, setMedToastSeverity] = useState<"success" | "error" | "warning" | "info">(
+    "success",
+  );
+  const [medicationFocusKey, setMedicationFocusKey] = useState<string | null>(null);
+  const [medInputRemountNonce, setMedInputRemountNonce] = useState<Record<string, number>>({});
+  const medicationRowRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const medicationFocusClearTimerRef = useRef<number | null>(null);
   const [printRxLoading, setPrintRxLoading] = useState(false);
   const [printPlansLoading, setPrintPlansLoading] = useState(false);
   const [medicationLines, setMedicationLines] = useState<MedicationLineDraft[]>([]);
@@ -732,6 +762,44 @@ export default function PlansTreatmentPanel({
       return next;
     });
   }, []);
+
+  const notifyDuplicateMedication = useCallback((existingKey: string, currentKey?: string) => {
+    setMedToastSeverity("warning");
+    setMedToastMessage("Medication already on this list.");
+    setMedToastOpen(true);
+    setMedicationFocusKey(existingKey);
+    if (currentKey) {
+      setMedInputRemountNonce((prev) => ({
+        ...prev,
+        [currentKey]: (prev[currentKey] ?? 0) + 1,
+      }));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!medicationFocusKey) return;
+    const el = medicationRowRefs.current.get(medicationFocusKey);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      const focusable = el.querySelector<HTMLElement>(
+        "input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
+      );
+      window.setTimeout(() => focusable?.focus(), 50);
+    }
+    if (medicationFocusClearTimerRef.current != null) {
+      window.clearTimeout(medicationFocusClearTimerRef.current);
+    }
+    medicationFocusClearTimerRef.current = window.setTimeout(() => {
+      setMedicationFocusKey(null);
+      medicationFocusClearTimerRef.current = null;
+    }, 2000);
+    return () => {
+      if (medicationFocusClearTimerRef.current != null) {
+        window.clearTimeout(medicationFocusClearTimerRef.current);
+        medicationFocusClearTimerRef.current = null;
+      }
+    };
+  }, [medicationFocusKey]);
 
   const medicationProductIdsKey = useMemo(
     () => [...new Set(medicationLines.map((l) => l.productId).filter(Boolean))].sort().join(","),
@@ -4036,8 +4104,29 @@ export default function PlansTreatmentPanel({
                 const selected = line.productId ? (productCache[line.productId] ?? null) : null;
                 const lineFilled = isMedicationLineFilled(line);
                 const rowLocked = line.dispensedLocked === true;
+                const rowFocused = medicationFocusKey === line.key;
                 return (
-                  <Box key={line.key} sx={{ mb: 1.75 }}>
+                  <Box
+                    key={line.key}
+                    ref={(node: HTMLDivElement | null) => {
+                      if (node) medicationRowRefs.current.set(line.key, node);
+                      else medicationRowRefs.current.delete(line.key);
+                    }}
+                    sx={{
+                      mb: 1.75,
+                      borderRadius: 1,
+                      transition: "background-color 0.2s ease, box-shadow 0.2s ease",
+                      ...(rowFocused
+                        ? {
+                            bgcolor: "action.selected",
+                            boxShadow: (theme) => `inset 0 0 0 2px ${theme.palette.warning.main}`,
+                            px: 1,
+                            py: 1,
+                            mx: -1,
+                          }
+                        : null),
+                    }}
+                  >
                     <Grid container spacing={1.5} alignItems="flex-start">
                       <Grid size={{ xs: 12, sm: 5 }}>
                         {rowLocked ? (
@@ -4066,17 +4155,39 @@ export default function PlansTreatmentPanel({
                                 rows.map((r) => (r.key === line.key ? { ...r, manualName: e.target.value } : r)),
                               )
                             }
+                            onBlur={(e) => {
+                              const name = e.target.value.trim();
+                              if (!name) return;
+                              const dup = findDuplicateMedicationLine(medicationLines, line.key, {
+                                manualName: name,
+                              });
+                              if (!dup) return;
+                              setMedicationLines((rows) =>
+                                rows.map((r) => (r.key === line.key ? { ...r, manualName: "" } : r)),
+                              );
+                              notifyDuplicateMedication(dup.key, line.key);
+                            }}
                             sx={medicationOutlinedFieldSx}
                           />
                         ) : (
                           <MedicationProductAutocomplete
+                            key={`${line.key}-ac-${medInputRemountNonce[line.key] ?? 0}`}
                             previewProducts={medProductPreview}
                             previewLoading={medProductsLoading}
                             value={selected}
                             textFieldSx={medicationOutlinedFieldSx}
                             onChange={(p) => {
                               if (rowLocked) return;
-                              if (p) mergeIntoProductCache([p]);
+                              if (p) {
+                                const dup = findDuplicateMedicationLine(medicationLines, line.key, {
+                                  productId: p.id,
+                                });
+                                if (dup) {
+                                  notifyDuplicateMedication(dup.key, line.key);
+                                  return;
+                                }
+                                mergeIntoProductCache([p]);
+                              }
                               setMedicationLines((rows) =>
                                 rows.map((r) =>
                                   r.key === line.key

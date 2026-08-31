@@ -15,14 +15,16 @@ const PRINT_TEXT_BLACK = rgb(0, 0, 0);
 const LAB_PATIENT_HEADER_SLOTS = {
   name: { refX: 118, refFromTop: 194, fontSize: 9 },
   dateRequested: { refX: 395, refFromTop: 194, fontSize: 9 },
-  patientId: { refX: 376, refFromTop: 254, fontSize: 9 },
-  ageSex: { refX: 118, refFromTop: 213, fontSize: 8 },
-  dob: { refX: 225, refFromTop: 213, fontSize: 8 },
-  dateReleased: { refX: 395, refFromTop: 212, fontSize: 8 },
-  address: { refX: 118, refFromTop: 233, fontSize: 8, maxWidth: 100, lineHeight: 8 },
-  contact: { refX: 245, refFromTop: 233, fontSize: 8, maxWidth: 260, lineHeight: 7 },
-  philhealth: { refX: 500, refFromTop: 233, fontSize: 8, maxWidth: 250, lineHeight: 7 },
-  physician: { refX: 172, refFromTop: 253, fontSize: 8, maxWidth: 470 },
+  ageSex: { refX: 118, refFromTop: 216, fontSize: 9 },
+  dob: { refX: 254, refFromTop: 216, fontSize: 9 },
+  dateReleased: { refX: 395, refFromTop: 216, fontSize: 9 },
+  address: { refX: 118, refFromTop: 235, fontSize: 8, maxWidth: 200, lineHeight: 8 },
+  /** Contact on address row, directly above Patient ID. */
+  contact: { refX: 376, refFromTop: 235, fontSize: 9, maxWidth: 120, lineHeight: 7 },
+  philhealth: { refX: 500, refFromTop: 235, fontSize: 8, maxWidth: 250, lineHeight: 7 },
+  /** Keep physician text left of Patient ID. */
+  physician: { refX: 172, refFromTop: 255, fontSize: 8, maxWidth: 190 },
+  patientId: { refX: 376, refFromTop: 255, fontSize: 9 },
 } as const;
 
 function scaleRefToPage(page: PDFPage): { sx: number; sy: number } {
@@ -83,7 +85,6 @@ export function drawLabResultsPatientHeader(
   const s = LAB_PATIENT_HEADER_SLOTS;
   drawAtTopRef(page, name, s.name.refX, s.name.refFromTop, s.name.fontSize, font);
   drawAtTopRef(page, dt, s.dateRequested.refX, s.dateRequested.refFromTop, s.dateRequested.fontSize, font);
-  drawAtTopRef(page, pid, s.patientId.refX, s.patientId.refFromTop, s.patientId.fontSize, font);
   drawAtTopRef(page, ageSex, s.ageSex.refX, s.ageSex.refFromTop, s.ageSex.fontSize, font);
   drawAtTopRef(page, dob, s.dob.refX, s.dob.refFromTop, s.dob.fontSize, font);
   drawAtTopRef(page, addr, s.address.refX, s.address.refFromTop, s.address.fontSize, font, {
@@ -101,5 +102,6 @@ export function drawLabResultsPatientHeader(
   drawAtTopRef(page, physician, s.physician.refX, s.physician.refFromTop, s.physician.fontSize, font, {
     maxWidth: s.physician.maxWidth,
   });
+  drawAtTopRef(page, pid, s.patientId.refX, s.patientId.refFromTop, s.patientId.fontSize, font);
   drawAtTopRef(page, released, s.dateReleased.refX, s.dateReleased.refFromTop, s.dateReleased.fontSize, font);
 }

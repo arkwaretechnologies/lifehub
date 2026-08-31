@@ -26,7 +26,7 @@ import {
 } from "@/lib/labBloodChemSiConversion";
 import type { PDFDocument, PDFFont } from "pdf-lib";
 import { rgb } from "pdf-lib";
-import { drawDohLicenseNo, type ResultDohLicensePrint } from "@/lib/resultDohLicensePrint";
+import type { ResultDohLicensePrint } from "@/lib/resultDohLicensePrint";
 
 async function embedLabResultFonts(doc: PDFDocument): Promise<PDFFont> {
   const { StandardFonts } = await import("pdf-lib");
@@ -120,6 +120,38 @@ function drawSignatureSlot(
   drawAtTopRef(page, t, pos.refX, pos.refFromTop, pos.fontSize ?? 9, font, { maxWidth: pos.maxWidth });
 }
 
+/** Cover template underline under a license-no slot (forms often print a rule beneath PRC license). */
+function coverSignatureLicenseUnderline(
+  page: import("pdf-lib").PDFPage,
+  pos: LabResultPrintPosition | null,
+  text: string | null | undefined,
+  font: import("pdf-lib").PDFFont,
+): void {
+  if (!pos) return;
+  const t = (text ?? "").trim();
+  if (!t) return;
+  const { height } = page.getSize();
+  const { sx, sy } = scaleRefToPage(page);
+  const scale = Math.min(sx, sy);
+  const fontSize = (pos.fontSize ?? 9) * scale;
+  const textWidth = font.widthOfTextAtSize(t, fontSize);
+  const padX = 6 * sx;
+  const coverW =
+    pos.maxWidth != null && pos.maxWidth > 0
+      ? Math.max(pos.maxWidth * sx, textWidth + padX)
+      : Math.max(textWidth + 24 * sx, 90 * sx);
+  const baselineY = height - pos.refFromTop * sy;
+  const coverH = Math.max(3 * sy, fontSize * 0.45);
+  page.drawRectangle({
+    x: pos.refX * sx - 2 * sx,
+    y: baselineY - coverH - 0.5 * sy,
+    width: coverW + 4 * sx,
+    height: coverH,
+    color: rgb(1, 1, 1),
+    borderWidth: 0,
+  });
+}
+
 type SignatureImageCache = {
   medtech: Uint8Array | null;
   pathologist: Uint8Array | null;
@@ -191,8 +223,10 @@ async function drawTemplateSignatures(
   }
 
   drawSignatureSlot(page, signatories.medtech.full_name, layout.medtech.name, font);
+  coverSignatureLicenseUnderline(page, layout.medtech.license, signatories.medtech.license_no, font);
   drawSignatureSlot(page, signatories.medtech.license_no, layout.medtech.license, font);
   drawSignatureSlot(page, signatories.pathologist.full_name, layout.pathologist.name, font);
+  coverSignatureLicenseUnderline(page, layout.pathologist.license, signatories.pathologist.license_no, font);
   drawSignatureSlot(page, signatories.pathologist.license_no, layout.pathologist.license, font);
 }
 
@@ -455,7 +489,6 @@ export async function openLabResultsPrintWindow(args: {
       }
       const pageCount = copied.length;
       const signatureLayout = registry.signatureByCode.get(code) ?? null;
-      const dohLicense = registry.dohLicenseByCode.get(code) ?? null;
       for (let i = 0; i < pageCount; i++) {
         const page = merged.getPage(templatePageStart + i);
         drawLabResultsPatientHeader(page, header, font);
@@ -468,7 +501,7 @@ export async function openLabResultsPrintWindow(args: {
           imageCache,
           embeddedSignatureImages,
         );
-        drawDohLicenseNo(page, dohLicense, font, drawAtTopRef, i);
+        // DOH license number is not printed on laboratory results.
       }
       drawGroupResultsForTemplate(
         merged,

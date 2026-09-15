@@ -284,29 +284,50 @@ function drawAtTopRef(
   });
 }
 
-function printPdfBlob(blob: Blob): void {
-  const url = URL.createObjectURL(blob);
-  const iframe = document.createElement("iframe");
-  iframe.setAttribute("title", "Lab results print");
-  iframe.style.position = "fixed";
-  iframe.style.right = "0";
-  iframe.style.bottom = "0";
-  iframe.style.width = "0";
-  iframe.style.height = "0";
-  iframe.style.border = "none";
-  iframe.style.visibility = "hidden";
-  iframe.src = url;
-  document.body.appendChild(iframe);
-  iframe.onload = () => {
-    const win = iframe.contentWindow;
-    if (win != null) {
-      win.focus();
-      win.print();
-    }
-    window.setTimeout(() => {
+function printPdfBlob(blob: Blob): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("title", "Lab results print");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "none";
+    iframe.style.visibility = "hidden";
+    iframe.onload = () => {
+      const win = iframe.contentWindow;
+      if (win != null) {
+        win.focus();
+        win.print();
+      }
+      window.setTimeout(() => {
+        URL.revokeObjectURL(url);
+        iframe.remove();
+      }, 120_000);
+      resolve();
+    };
+    iframe.onerror = () => {
       URL.revokeObjectURL(url);
       iframe.remove();
-    }, 120_000);
+      reject(new Error("Lab results print preview failed to load"));
+    };
+    iframe.src = url;
+    document.body.appendChild(iframe);
+  });
+}
+
+function createLabPrintProgressReporter(
+  onProgress?: (info: { percent: number; message: string }) => void,
+): (percent: number, message: string) => void {
+  let lastPercent = 0;
+  return (percent: number, message: string) => {
+    if (!onProgress) return;
+    const clamped = Math.min(100, Math.max(0, Math.round(percent)));
+    const next = Math.max(lastPercent, clamped);
+    lastPercent = next;
+    onProgress({ percent: next, message });
   };
 }
 
@@ -437,11 +458,16 @@ async function fetchLabResultTemplateBytes(code: string): Promise<Uint8Array | n
 export async function openLabResultsPrintWindow(args: {
   header: LabRequestHeaderView;
   items: LabRequestItemView[];
+  onProgress?: (info: { percent: number; message: string }) => void;
 }): Promise<boolean> {
-  const { header, items } = args;
+  const { header, items, onProgress } = args;
   if (!items.length) return false;
 
+  const reportProgress = createLabPrintProgressReporter(onProgress);
+
   try {
+    reportProgress(5, "Preparing laboratory results…");
+
     const [registry, signatories, imageCache] = await Promise.all([
       fetchTemplateRegistry(),
       fetchSignatoriesForPrint(),
@@ -449,7 +475,11 @@ export async function openLabResultsPrintWindow(args: {
     ]);
     if (!registry || !signatories) return false;
 
+    reportProgress(20, "Loading templates and signatures…");
+
     const { PDFDocument } = await import("pdf-lib");
+
+    reportProgress(30, "Loading PDF engine…");
 
     const merged = await PDFDocument.create();
     const font = await embedLabResultFonts(merged);
@@ -473,8 +503,11 @@ export async function openLabResultsPrintWindow(args: {
     }
 
     const ordered = sortLabResultTemplateCodes(byTpl.keys(), registry.sortTemplates);
+    const templateStartPercent = 35;
+    const templateEndPercent = 85;
 
-    for (const code of ordered) {
+    for (let templateIndex = 0; templateIndex < ordered.length; templateIndex++) {
+      const code = ordered[templateIndex]!;
       const groupItems = byTpl.get(code);
       if (!groupItems?.length) continue;
 
@@ -512,9 +545,18 @@ export async function openLabResultsPrintWindow(args: {
         code,
         header.patient_sex,
       );
+
+      const templateCount = ordered.length;
+      const templatePercent =
+        templateCount === 0
+          ? templateEndPercent
+          : templateStartPercent +
+            Math.round(((templateIndex + 1) / templateCount) * (templateEndPercent - templateStartPercent));
+      reportProgress(templatePercent, `Loading form ${code}…`);
     }
 
     if (noTemplate.length > 0) {
+      reportProgress(88, "Adding summary page…");
       const title = "Tests without a dedicated results form (summary)";
       const sorted = [...noTemplate].sort((a, b) =>
         compareLabTestSortOrder(
@@ -549,11 +591,15 @@ export async function openLabResultsPrintWindow(args: {
       }
     }
 
+    reportProgress(92, "Finalizing PDF…");
+
     const pdfBytes = await merged.save();
     const copy = new Uint8Array(pdfBytes.length);
     copy.set(pdfBytes);
     const blob = new Blob([copy], { type: "application/pdf" });
-    printPdfBlob(blob);
+    reportProgress(97, "Opening print preview…");
+    await printPdfBlob(blob);
+    reportProgress(100, "Ready");
     return true;
   } catch {
     return false;

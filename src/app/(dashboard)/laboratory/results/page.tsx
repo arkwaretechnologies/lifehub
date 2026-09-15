@@ -21,6 +21,7 @@ import {
   Chip,
   CircularProgress,
   Divider,
+  LinearProgress,
   Dialog,
   DialogActions,
   DialogContent,
@@ -257,6 +258,8 @@ export default function LabResultsPage() {
   const [toastSeverity, setToastSeverity] = useState<"success" | "error">("success");
   const [sendSmsBusy, setSendSmsBusy] = useState(false);
   const [resendSmsDialogOpen, setResendSmsDialogOpen] = useState(false);
+  const [labResultsPrintBusy, setLabResultsPrintBusy] = useState(false);
+  const [labResultsPrintProgress, setLabResultsPrintProgress] = useState({ percent: 0, message: "" });
 
   const queueTicketStatusChip = (t: LabQueueRow) => {
     const label = t.lab_display_status ?? t.status;
@@ -717,12 +720,25 @@ export default function LabResultsPage() {
   };
 
   const handlePrintLabResults = async () => {
-    if (!reqHeader || reqItems.length === 0) return;
-    const ok = await openLabResultsPrintWindow({ header: reqHeader, items: reqItems });
-    if (!ok) {
-      setToastSeverity("error");
-      setToastMessage("Could not generate lab result PDF. Check that template files exist and try again.");
-      setToastOpen(true);
+    if (!reqHeader || reqItems.length === 0 || labResultsPrintBusy) return;
+    setLabResultsPrintBusy(true);
+    setLabResultsPrintProgress({ percent: 0, message: "Preparing laboratory results…" });
+    try {
+      const ok = await openLabResultsPrintWindow({
+        header: reqHeader,
+        items: reqItems,
+        onProgress: ({ percent, message }) => {
+          setLabResultsPrintProgress({ percent, message });
+        },
+      });
+      if (!ok) {
+        setToastSeverity("error");
+        setToastMessage("Could not generate lab result PDF. Check that template files exist and try again.");
+        setToastOpen(true);
+      }
+    } finally {
+      setLabResultsPrintBusy(false);
+      setLabResultsPrintProgress({ percent: 0, message: "" });
     }
   };
 
@@ -842,6 +858,21 @@ export default function LabResultsPage() {
           {toastMessage}
         </Alert>
       </Snackbar>
+      <Dialog open={labResultsPrintBusy} disableEscapeKeyDown>
+        <DialogTitle>Preparing print preview</DialogTitle>
+        <DialogContent sx={{ minWidth: { xs: 280, sm: 360 }, pt: 1 }}>
+          <Stack spacing={2}>
+            <Typography variant="h6" fontWeight={800} sx={{ fontVariantNumeric: "tabular-nums" }}>
+              {labResultsPrintProgress.percent}%
+            </Typography>
+            <LinearProgress variant="determinate" value={labResultsPrintProgress.percent} />
+            <Typography variant="body2" color="text.secondary">
+              {labResultsPrintProgress.message || "Please wait…"}
+            </Typography>
+          </Stack>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={resendSmsDialogOpen} onClose={() => (sendSmsBusy ? null : setResendSmsDialogOpen(false))}>
         <DialogTitle>Resend SMS?</DialogTitle>
         <DialogContent>
@@ -1217,11 +1248,13 @@ export default function LabResultsPage() {
                 <Button
                   variant="outlined"
                   size="small"
-                  startIcon={<PrintOutlinedIcon />}
-                  disabled={!reqHeader || reqItems.length === 0}
+                  startIcon={
+                    labResultsPrintBusy ? <CircularProgress size={16} color="inherit" /> : <PrintOutlinedIcon />
+                  }
+                  disabled={!reqHeader || reqItems.length === 0 || labResultsPrintBusy}
                   onClick={() => void handlePrintLabResults()}
                 >
-                  Print Laboratory Results
+                  {labResultsPrintBusy ? "Preparing print…" : "Print Laboratory Results"}
                 </Button>
                 <Button
                   variant="outlined"

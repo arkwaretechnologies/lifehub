@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { assertCanManageUsers } from "@/lib/adminRole";
+import {
+  rxTemplateFileExists,
+  sanitizeRxTemplateBasename,
+  userRoleCanSelectRxTemplate,
+} from "@/lib/rxTemplates";
 import { hashPasswordForUsersTable } from "@/lib/userPasswordHash";
 
 function adminClient() {
@@ -46,11 +51,25 @@ export async function POST(req: Request) {
   }
 
   const passwordHash = await hashPasswordForUsersTable(password);
+  const role = String(body.role).trim();
+
+  let rxTemplateFilename: string | null = null;
+  if (userRoleCanSelectRxTemplate(role)) {
+    const safe = sanitizeRxTemplateBasename(
+      body.rx_template_filename != null ? String(body.rx_template_filename) : null,
+    );
+    if (safe) {
+      if (!(await rxTemplateFileExists(safe))) {
+        return NextResponse.json({ error: "RX template file not found." }, { status: 404 });
+      }
+      rxTemplateFilename = safe;
+    }
+  }
 
   const insertRow: Record<string, unknown> = {
     username: String(body.username).trim(),
     fullname: String(body.fullname).trim(),
-    role: String(body.role).trim(),
+    role,
     email_address: body.email_address ? String(body.email_address).trim() || null : null,
     phone_no: body.phone_no ? String(body.phone_no).trim() || null : null,
     branch_code: body.branch_code ? String(body.branch_code).trim() || null : null,
@@ -60,6 +79,7 @@ export async function POST(req: Request) {
     s2_no: body.s2_no ? String(body.s2_no).trim() || null : null,
     ptr_no: body.ptr_no ? String(body.ptr_no).trim() || null : null,
     can_read_imaging: body.can_read_imaging === true,
+    rx_template_filename: rxTemplateFilename,
     password: passwordHash,
   };
 

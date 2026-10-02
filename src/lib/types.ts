@@ -21,6 +21,8 @@ export interface UserProfile {
   s2_no: string | null;
   ptr_no: string | null;
   signature_storage_path: string | null;
+  /** Basename under templates/RX; loaded via RX templates APIs, not always on session. */
+  rx_template_filename?: string | null;
   created_at: string | null;
   updated_at: string | null;
 }

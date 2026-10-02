@@ -366,6 +366,12 @@ const menuSections: MenuSection[] = [
                 pageKey: "settings/clinical/print-layouts",
               },
               {
+                label: "RX templates",
+                icon: <AssignmentOutlinedIcon />,
+                href: "/settings/clinical/rx-templates",
+                pageKey: "settings/clinical/rx-templates",
+              },
+              {
                 label: "Follow-up SMS",
                 icon: <CalendarMonthOutlinedIcon />,
                 href: "/settings/clinical/follow-up-sms",

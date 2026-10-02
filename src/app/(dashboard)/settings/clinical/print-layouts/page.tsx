@@ -114,11 +114,11 @@ const TEMPLATE_META: Record<
     pdfFile: "templates/Consultation Template.pdf",
     refLabel: "US Letter 612×792 pt",
   },
-  prescription: {
-    title: "Prescription (RX)",
-    pdfFile: "templates/RX Template.pdf",
-    refLabel: "A5 420×595 pt",
-  },
+      prescription: {
+        title: "Prescription (RX)",
+        pdfFile: "templates/RX/ (per-user; see RX templates)",
+        refLabel: "A5 420×595 pt",
+      },
   medical_certificate: {
     title: "Medical certificate",
     pdfFile: "templates/LIFEHUB-MEDICAL-Certificate.pdf",

@@ -53,6 +53,7 @@ type AppUserRow = {
   ptr_no: string | null;
   can_read_imaging?: boolean | null;
   signature_storage_path?: string | null;
+  rx_template_filename?: string | null;
   created_at: string | null;
   updated_at: string | null;
 };
@@ -71,6 +72,7 @@ type UserForm = {
   ptr_no: string;
   password: string;
   can_read_imaging: boolean;
+  rx_template_filename: string;
 };
 
 const emptyForm: UserForm = {
@@ -87,6 +89,7 @@ const emptyForm: UserForm = {
   ptr_no: "",
   password: "",
   can_read_imaging: false,
+  rx_template_filename: "",
 };
 
 /** Add/Edit user dialogs: medium inputs with consistent min height (matches Role select). */
@@ -135,12 +138,14 @@ function rowToForm(r: AppUserRow): UserForm {
     ptr_no: r.ptr_no ?? "",
     password: "",
     can_read_imaging: r.can_read_imaging === true,
+    rx_template_filename: r.rx_template_filename ?? "",
   };
 }
 
 function formToUpdatePayload(f: UserForm) {
   const labSig = isLabSignatureRole(f.role);
   const ph = isPhysicianRole(f.role);
+  const canRx = userRoleCanHaveSignature(f.role);
   return {
     username: f.username.trim(),
     fullname: f.fullname.trim(),
@@ -154,6 +159,7 @@ function formToUpdatePayload(f: UserForm) {
     s2_no: ph ? f.s2_no.trim() || null : null,
     ptr_no: ph ? f.ptr_no.trim() || null : null,
     can_read_imaging: f.can_read_imaging === true,
+    rx_template_filename: canRx ? f.rx_template_filename.trim() || null : null,
   };
 }
 
@@ -186,6 +192,9 @@ export default function UsersPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<AppUserRow | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+
+  const [rxTemplateFiles, setRxTemplateFiles] = useState<string[]>([]);
+  const [rxTemplatesLoading, setRxTemplatesLoading] = useState(false);
 
   const loadUsers = useCallback(async () => {
     setListError("");
@@ -222,6 +231,25 @@ export default function UsersPage() {
     }
   }, []);
 
+  const loadRxTemplateFiles = useCallback(async () => {
+    setRxTemplatesLoading(true);
+    try {
+      const res = await authenticatedFetch("/api/prescription-templates");
+      const json = (await res.json().catch(() => null)) as
+        | { files?: string[]; error?: string }
+        | null;
+      if (res.ok && Array.isArray(json?.files)) {
+        setRxTemplateFiles(json.files);
+      } else {
+        setRxTemplateFiles([]);
+      }
+    } catch {
+      setRxTemplateFiles([]);
+    } finally {
+      setRxTemplatesLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadUsers();
   }, [loadUsers]);
@@ -229,6 +257,10 @@ export default function UsersPage() {
   useEffect(() => {
     void loadRolesForSelect();
   }, [loadRolesForSelect]);
+
+  useEffect(() => {
+    void loadRxTemplateFiles();
+  }, [loadRxTemplateFiles]);
 
   const roleNamesSet = new Set(rolesForSelect.map((r) => r.name));
 
@@ -559,6 +591,7 @@ export default function UsersPage() {
                         ? { specialty: "", license_no: "" }
                         : {}),
                       ...(clearsPhysicianOnlyFields(next) ? { s2_no: "", ptr_no: "" } : {}),
+                      ...(!userRoleCanHaveSignature(next) ? { rx_template_filename: "" } : {}),
                     }));
                   }}
                   required
@@ -686,6 +719,37 @@ export default function UsersPage() {
                   </Grid>
                 </Grid>
               ) : null}
+              {userRoleCanHaveSignature(addForm.role) ? (
+                <Grid size={{ xs: 12 }}>
+                  <Typography variant="caption" color="text.secondary" fontWeight={600} display="block" sx={{ mb: 0.75 }}>
+                    RX template
+                  </Typography>
+                  <TextField
+                    {...dialogFieldProps}
+                    select
+                    value={addForm.rx_template_filename}
+                    onChange={(e) => setAddForm((p) => ({ ...p, rx_template_filename: e.target.value }))}
+                    disabled={rxTemplatesLoading}
+                    SelectProps={{ displayEmpty: true }}
+                    helperText="PDF from templates/RX/. Used when this user prints RX."
+                  >
+                    <MenuItem value="">
+                      <em>Default (RX Template.pdf if present)</em>
+                    </MenuItem>
+                    {addForm.rx_template_filename &&
+                    !rxTemplateFiles.includes(addForm.rx_template_filename) ? (
+                      <MenuItem value={addForm.rx_template_filename}>
+                        {addForm.rx_template_filename} (missing file)
+                      </MenuItem>
+                    ) : null}
+                    {rxTemplateFiles.map((name) => (
+                      <MenuItem key={name} value={name}>
+                        {name}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                </Grid>
+              ) : null}
               <Grid size={{ xs: 12 }}>
                 <FormControlLabel
                   control={
@@ -761,6 +825,7 @@ export default function UsersPage() {
                         ? { specialty: "", license_no: "" }
                         : {}),
                       ...(clearsPhysicianOnlyFields(next) ? { s2_no: "", ptr_no: "" } : {}),
+                      ...(!userRoleCanHaveSignature(next) ? { rx_template_filename: "" } : {}),
                     }));
                   }}
                   SelectProps={{ displayEmpty: true }}
@@ -897,6 +962,35 @@ export default function UsersPage() {
                       onUpload={(file) => void uploadEditSignature(file)}
                       onRemove={() => void removeEditSignature()}
                     />
+                  </Box>
+                  <Box sx={{ mt: 2 }}>
+                    <Typography variant="caption" color="text.secondary" fontWeight={600} display="block" sx={{ mb: 0.75 }}>
+                      RX template
+                    </Typography>
+                    <TextField
+                      {...dialogFieldProps}
+                      select
+                      value={editForm.rx_template_filename}
+                      onChange={(e) => setEditForm((p) => ({ ...p, rx_template_filename: e.target.value }))}
+                      disabled={rxTemplatesLoading}
+                      SelectProps={{ displayEmpty: true }}
+                      helperText="PDF from templates/RX/. Used when this user prints RX."
+                    >
+                      <MenuItem value="">
+                        <em>Default (RX Template.pdf if present)</em>
+                      </MenuItem>
+                      {editForm.rx_template_filename &&
+                      !rxTemplateFiles.includes(editForm.rx_template_filename) ? (
+                        <MenuItem value={editForm.rx_template_filename}>
+                          {editForm.rx_template_filename} (missing file)
+                        </MenuItem>
+                      ) : null}
+                      {rxTemplateFiles.map((name) => (
+                        <MenuItem key={name} value={name}>
+                          {name}
+                        </MenuItem>
+                      ))}
+                    </TextField>
                   </Box>
                 </Grid>
               ) : null}

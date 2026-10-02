@@ -210,6 +210,11 @@ export const PERMISSION_MODULES: PermissionModule[] = [
             href: "/settings/clinical/print-layouts",
           },
           {
+            label: "RX templates",
+            pageKey: "settings/clinical/rx-templates",
+            href: "/settings/clinical/rx-templates",
+          },
+          {
             label: "Follow-up SMS",
             pageKey: "settings/clinical/follow-up-sms",
             href: "/settings/clinical/follow-up-sms",

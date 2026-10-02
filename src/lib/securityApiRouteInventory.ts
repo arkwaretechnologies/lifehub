@@ -46,6 +46,7 @@ export const SECURITY_API_ROUTE_GROUPS = {
     "/api/pharmacy/** (pharmacyPosDb)",
     "/api/consultation-template",
     "/api/prescription-template",
+    "/api/prescription-templates",
     "/api/laboratory/lab-result-template",
     "/api/tts/elevenlabs",
   ],

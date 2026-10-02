@@ -29,6 +29,25 @@ const USER_SELECT = [
   "s2_no",
   "ptr_no",
   "signature_storage_path",
+  "rx_template_filename",
+  "created_at",
+  "updated_at",
+].join(",");
+
+const USER_SELECT_WITHOUT_RX = [
+  "user_id",
+  "username",
+  "fullname",
+  "address",
+  "email_address",
+  "phone_no",
+  "role",
+  "branch_code",
+  "specialty",
+  "license_no",
+  "s2_no",
+  "ptr_no",
+  "signature_storage_path",
   "created_at",
   "updated_at",
 ].join(",");
@@ -37,9 +56,21 @@ export async function fetchUserProfileById(
   admin: SupabaseClient,
   userId: number,
 ): Promise<{ profile: UserProfile | null; error: string | null }> {
-  const { data, error } = await admin.from("users").select(USER_SELECT).eq("user_id", userId).maybeSingle();
-  if (error) return { profile: null, error: error.message };
-  return { profile: (data ?? null) as UserProfile | null, error: null };
+  const primary = await admin.from("users").select(USER_SELECT).eq("user_id", userId).maybeSingle();
+  if (!primary.error) {
+    return { profile: (primary.data ?? null) as UserProfile | null, error: null };
+  }
+  const msg = String(primary.error.message ?? "").toLowerCase();
+  if (msg.includes("rx_template_filename") && (msg.includes("does not exist") || msg.includes("42703"))) {
+    const fallback = await admin
+      .from("users")
+      .select(USER_SELECT_WITHOUT_RX)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (fallback.error) return { profile: null, error: fallback.error.message };
+    return { profile: (fallback.data ?? null) as UserProfile | null, error: null };
+  }
+  return { profile: null, error: primary.error.message };
 }
 
 /** Minimal `user` object compatible with {@link numericSessionUserId}. */

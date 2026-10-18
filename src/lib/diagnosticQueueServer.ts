@@ -164,42 +164,19 @@ export async function adminImagingRequestIdsWithSales(
 }
 
 /**
- * Whether a queue ticket should appear on lab/imaging screens (after payment when visit-linked).
+ * Whether a queue ticket should appear on lab/imaging screens.
+ * Linked lab/imaging tickets are visible regardless of payment (results may be entered before cashier).
  */
 export async function adminIsDiagnosticQueueTicketPaid(
-  admin: SupabaseClient,
+  _admin: SupabaseClient,
   ticket: DiagnosticQueueTicketRow,
 ): Promise<{ visible: boolean; error: string | null }> {
   const includesLab = ticket.includes_lab === true || Boolean(String(ticket.lab_request_id ?? "").trim());
   const includesImaging =
     ticket.includes_imaging === true || Boolean(String(ticket.imaging_request_id ?? "").trim());
-  const enc = String(ticket.encounter_id ?? "").trim();
-  const labReqId = String(ticket.lab_request_id ?? "").trim();
-  const imgReqId = String(ticket.imaging_request_id ?? "").trim();
 
   if (!includesLab && !includesImaging) return { visible: true, error: null };
-
-  if (includesLab && labReqId) {
-    const { ids, error } = await adminLabRequestIdsWithLabSales(admin, [labReqId]);
-    if (error) return { visible: false, error };
-    if (ids.has(labReqId)) return { visible: true, error: null };
-  }
-
-  if (includesImaging && imgReqId) {
-    const { ids, error } = await adminImagingRequestIdsWithSales(admin, [imgReqId]);
-    if (error) return { visible: false, error };
-    if (ids.has(imgReqId)) return { visible: true, error: null };
-  }
-
-  if (enc && includesLab && includesImaging) {
-    const { ids, error } = await adminEncounterIdsWithPaidSales(admin, [enc]);
-    if (error) return { visible: false, error };
-    if (ids.has(enc)) return { visible: true, error: null };
-  }
-
-  if (!labReqId && !imgReqId) return { visible: true, error: null };
-
-  return { visible: false, error: null };
+  return { visible: true, error: null };
 }
 
 export async function adminFilterDiagnosticQueueTicketsForDisplay<

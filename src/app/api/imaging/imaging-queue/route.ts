@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server";
 import { clinicAddDays, queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
 import {
-  adminImagingRequestIdsWithSales,
   adminRepairQueueTicketModalityFlags,
-  adminUnpaidImagingRequestIdsOnTickets,
   imagingQueueCode,
 } from "@/lib/diagnosticQueueServer";
 import { getImagingQueuePresentation } from "@/lib/imagingQueueUi";
@@ -170,26 +168,6 @@ async function fetchImagingRequestQueueRowsForPatientSearch(
   });
 }
 
-async function filterPaidImagingTicketRows(
-  admin: NonNullable<ReturnType<typeof queueAdminClient>>,
-  rows: ImagingQueueRow[],
-): Promise<{ rows: ImagingQueueRow[]; error: string | null }> {
-  const imgIds = rows.map((r) => String(r.imaging_request_id ?? "").trim()).filter(Boolean);
-  if (imgIds.length === 0) return { rows, error: null };
-
-  const { ids: paid, error: paidErr } = await adminImagingRequestIdsWithSales(admin, imgIds);
-  if (paidErr) return { rows: [], error: paidErr };
-
-  return {
-    rows: rows.filter((r) => {
-      const id = String(r.imaging_request_id ?? "").trim();
-      if (!id) return true;
-      return paid.has(id);
-    }),
-    error: null,
-  };
-}
-
 async function enrichImagingQueueRows(
   admin: NonNullable<ReturnType<typeof queueAdminClient>>,
   rows: ImagingQueueRow[],
@@ -268,20 +246,6 @@ export async function GET(req: Request) {
     base = base.eq("ticket_date", todayIso).in("status", ACTIVE_STATUSES);
   }
 
-  const ticketDateForPaidFilter = scope === "all" ? null : todayIso;
-  if (ticketDateForPaidFilter) {
-    const { ids: unpaidImg, error: unpaidErr } = await adminUnpaidImagingRequestIdsOnTickets(
-      admin,
-      ticketDateForPaidFilter,
-    );
-    if (unpaidErr) {
-      return NextResponse.json({ error: unpaidErr }, { status: 500 });
-    }
-    if (unpaidImg.length > 0) {
-      base = base.not("imaging_request_id", "in", `(${unpaidImg.join(",")})`);
-    }
-  }
-
   const q = qRaw.replace(/\s+/g, " ").trim();
   const qIsUuid = isUuidLike(q);
   const orParts: string[] = [];
@@ -305,12 +269,6 @@ export async function GET(req: Request) {
   }
 
   let rows = (data ?? []) as ImagingQueueRow[];
-
-  if (ticketDateForPaidFilter) {
-    const paid = await filterPaidImagingTicketRows(admin, rows);
-    if (paid.error) return NextResponse.json({ error: paid.error }, { status: 500 });
-    rows = paid.rows;
-  }
 
   const enriched = await enrichImagingQueueRows(admin, rows);
   if (enriched.error) {

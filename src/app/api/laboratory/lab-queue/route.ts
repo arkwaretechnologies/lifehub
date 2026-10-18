@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server";
 import { clinicAddDays, queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
 import {
-  adminLabRequestIdsWithLabSales,
   adminRepairQueueTicketModalityFlags,
-  adminUnpaidLabRequestIdsOnCounter,
   labQueueCode,
 } from "@/lib/diagnosticQueueServer";
 import { computeImagingRequestQueueState } from "@/lib/imagingQueueSync";
@@ -12,7 +10,7 @@ import { canLabCallPatient } from "@/lib/labQueueUi";
 import { getLabQueueDisplayStatus, labQueueDisplayChipColor } from "@/lib/labQueuePresentation";
 import { parsePartialLabReleaseFromNotes } from "@/lib/labPartialCollection";
 import { parseActiveDeptFromNotes, type QueueActiveDept } from "@/lib/queueActiveDept";
-import { adminFilterLabQueueTicketsForLabDisplay, queueAdminClient } from "@/lib/receptionQueueServer";
+import { queueAdminClient } from "@/lib/receptionQueueServer";
 import type { QueueTicketStatus } from "@/lib/queueReception";
 
 const ACTIVE_STATUSES: QueueTicketStatus[] = ["Waiting", "Called", "Collected", "Serving"];
@@ -302,37 +300,6 @@ export async function GET(req: Request) {
     base = base.eq("ticket_date", todayIso).in("status", ACTIVE_STATUSES);
   }
 
-  /** Hide LAB tickets linked to unpaid visit lab orders (reserved at reception until cashier payment). */
-  const ticketDateForPaidFilter = scope === "all" ? null : todayIso;
-  if (ticketDateForPaidFilter) {
-    const { data: pendingRows, error: pendingErr } = await admin
-      .from("queue_tickets")
-      .select("lab_request_id")
-      .eq("counter_id", counterId)
-      .eq("ticket_date", ticketDateForPaidFilter)
-      .not("lab_request_id", "is", null);
-    if (pendingErr) {
-      return NextResponse.json({ error: pendingErr.message }, { status: 500 });
-    }
-    const linkedIds = [
-      ...new Set(
-        ((pendingRows ?? []) as Array<{ lab_request_id?: string | null }>)
-          .map((r) => String(r.lab_request_id ?? "").trim())
-          .filter(Boolean),
-      ),
-    ];
-    if (linkedIds.length > 0) {
-      const { ids: paidIds, error: paidErr } = await adminLabRequestIdsWithLabSales(admin, linkedIds);
-      if (paidErr) {
-        return NextResponse.json({ error: paidErr }, { status: 500 });
-      }
-      const unpaidIds = linkedIds.filter((id) => !paidIds.has(id));
-      if (unpaidIds.length > 0) {
-        base = base.not("lab_request_id", "in", `(${unpaidIds.join(",")})`);
-      }
-    }
-  }
-
   const q = qRaw.replace(/\s+/g, " ").trim();
   const qIsUuid = isUuidLike(q);
   const orParts: string[] = [];
@@ -361,11 +328,7 @@ export async function GET(req: Request) {
   }
 
   const rawRows = (data ?? []) as LabQueueRow[];
-  const { rows: visibleRows, error: visErr } = await adminFilterLabQueueTicketsForLabDisplay(admin, rawRows);
-  if (visErr) {
-    return NextResponse.json({ error: visErr }, { status: 500 });
-  }
-  let rows = await enrichLabQueueRows(admin, visibleRows);
+  let rows = await enrichLabQueueRows(admin, rawRows);
 
   const captureByImgId = new Map<string, boolean>();
   const imgIdsForState = [

@@ -24,6 +24,7 @@ import {
 import { applyPartialLabReleaseToNotes } from "@/lib/labPartialCollection";
 import { insertLabQueueNewRequestNotifications } from "@/lib/labQueueNotificationServer";
 import { computeLabRequestQueueCollectionState } from "@/lib/labQueueTicketSync";
+import { computeImagingRequestQueueState } from "@/lib/imagingQueueSync";
 import { applyActiveDeptToNotes } from "@/lib/queueActiveDept";
 import { validateEncounterLabCreate, validateEncounterImagingCreate } from "@/lib/encounterDiagnosticOrderState";
 import { afterEncounterReportDataMutation } from "@/lib/cacheInvalidation";
@@ -45,7 +46,6 @@ import {
 import { fetchLabPackageMemberTestIdsMap } from "@/lib/labPackages";
 import { LAB_SALES_TABLE } from "@/lib/cashierPayments";
 import {
-  adminLabRequestIdsWithLabSales,
   adminLoadDiagnosticCounterIds,
   imagingQueueCode,
   labQueueCode,
@@ -465,9 +465,14 @@ export async function adminCompleteQueueTicketsForEncounter(
   const today = queueTicketTodayIsoDate();
   const now = new Date().toISOString();
 
+  const { ids: diagnosticCounterIds, error: diagCntErr } = await adminLoadDiagnosticCounterIds(admin);
+  if (diagCntErr) {
+    return { error: diagCntErr };
+  }
+
   const { data: tickets, error: tErr } = await admin
     .from("queue_tickets")
-    .select("id")
+    .select("id, counter_id")
     .eq("encounter_id", encounterId)
     .eq("ticket_date", today)
     .in("status", ["Called", "Serving"]);
@@ -476,7 +481,16 @@ export async function adminCompleteQueueTicketsForEncounter(
     return { error: tErr.message };
   }
 
-  const ids = (tickets ?? []).map((r) => String((r as { id: string | number }).id)).filter(Boolean);
+  /** Complete doctor/consultation tickets only — never LAB/IMAG diagnostic counters. */
+  const ids = ((tickets ?? []) as Array<{ id?: string | number; counter_id?: string | number | null }>)
+    .filter((r) => {
+      const n = Number(r.counter_id);
+      if (!Number.isFinite(n)) return true;
+      return !diagnosticCounterIds.has(n);
+    })
+    .map((r) => String(r.id ?? "").trim())
+    .filter(Boolean);
+
   if (ids.length === 0) {
     return { error: null, updatedCount: 0 };
   }
@@ -490,6 +504,200 @@ export async function adminCompleteQueueTicketsForEncounter(
   }
 
   return { error: null, updatedCount: ids.length };
+}
+
+const DIAGNOSTIC_QUEUE_LIVE_STATUSES: QueueTicketStatus[] = [
+  "Waiting",
+  "Called",
+  "Collected",
+  "Serving",
+];
+
+/**
+ * After consultation save: ensure a Waiting LAB/IMAG ticket when lab/imaging orders still need work
+ * (including unpaid). Revives Completed diagnostic tickets instead of leaving them stuck.
+ */
+export async function adminEnsureWaitingDiagnosticAfterConsultation(
+  encounterTransIdRaw: string,
+): Promise<{ error: string | null; ensured?: boolean; queueDisplay?: string | null }> {
+  const admin = queueAdminClient();
+  if (!admin) {
+    return { error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." };
+  }
+
+  const encounterId = encounterTransIdRaw.trim();
+  if (!encounterId) {
+    return { error: "Missing encounter id." };
+  }
+
+  const { data: enc, error: encErr } = await admin
+    .from("encounters")
+    .select("trans_id, patient_id")
+    .eq("trans_id", encounterId)
+    .maybeSingle();
+  if (encErr) return { error: encErr.message };
+  if (!enc) return { error: "Encounter not found." };
+
+  const patientId = Number((enc as { patient_id?: unknown }).patient_id);
+  if (!Number.isFinite(patientId) || patientId <= 0) {
+    return { error: "Encounter has no patient." };
+  }
+
+  const [{ data: labReqs, error: labErr }, { data: imgReqs, error: imgErr }] = await Promise.all([
+    admin.from(LAB_REQUESTS_TABLE).select("id").eq("encounter_id", encounterId),
+    admin.from("imaging_requests").select("id").eq("encounter_id", encounterId),
+  ]);
+  if (labErr) return { error: labErr.message };
+  if (imgErr) return { error: imgErr.message };
+
+  const labIds = ((labReqs ?? []) as Array<{ id?: string }>)
+    .map((r) => String(r.id ?? "").trim())
+    .filter(Boolean);
+  const imgIds = ((imgReqs ?? []) as Array<{ id?: string }>)
+    .map((r) => String(r.id ?? "").trim())
+    .filter(Boolean);
+
+  if (labIds.length === 0 && imgIds.length === 0) {
+    return { error: null, ensured: false };
+  }
+
+  let labNeedsWork = false;
+  for (const labId of labIds) {
+    const st = await computeLabRequestQueueCollectionState(admin, labId);
+    if (st.error) return { error: st.error };
+    if (!st.allHasResults) {
+      labNeedsWork = true;
+      break;
+    }
+  }
+
+  let imgNeedsWork = false;
+  for (const imgId of imgIds) {
+    const st = await computeImagingRequestQueueState(admin, imgId);
+    if (st.error) return { error: st.error };
+    if (!st.allCompleted) {
+      imgNeedsWork = true;
+      break;
+    }
+  }
+
+  if (!labNeedsWork && !imgNeedsWork) {
+    return { error: null, ensured: false };
+  }
+
+  const ticketDate = queueTicketTodayIsoDate();
+  const { ids: diagnosticCounterIds, error: cntErr } = await adminLoadDiagnosticCounterIds(admin);
+  if (cntErr) return { error: cntErr };
+  if (diagnosticCounterIds.size === 0) {
+    return { error: "Laboratory/imaging queue counters are not configured." };
+  }
+
+  const { data: diagTickets, error: tErr } = await admin
+    .from("queue_tickets")
+    .select(
+      "id, status, notes, queue_display, counter_id, lab_request_id, imaging_request_id, includes_lab, includes_imaging",
+    )
+    .eq("encounter_id", encounterId)
+    .eq("ticket_date", ticketDate)
+    .order("issued_at", { ascending: false });
+  if (tErr) return { error: tErr.message };
+
+  type DiagRow = {
+    id: string;
+    status: QueueTicketStatus;
+    notes: string | null;
+    queue_display: string;
+    counter_id?: string | number | null;
+    lab_request_id?: string | null;
+    imaging_request_id?: string | null;
+    includes_lab?: boolean | null;
+    includes_imaging?: boolean | null;
+  };
+
+  const diagnosticRows = ((diagTickets ?? []) as DiagRow[]).filter((r) => {
+    const n = Number(r.counter_id);
+    return Number.isFinite(n) && diagnosticCounterIds.has(n);
+  });
+
+  const primaryLabId = labIds[0] ?? null;
+  const primaryImgId = imgIds[0] ?? null;
+
+  const live = diagnosticRows.find((r) => DIAGNOSTIC_QUEUE_LIVE_STATUSES.includes(r.status));
+  if (live) {
+    const patchLab = primaryLabId || String(live.lab_request_id ?? "").trim() || null;
+    const patchImg = primaryImgId || String(live.imaging_request_id ?? "").trim() || null;
+    const { error: patchErr } = await adminPatchDiagnosticTicketFlags(admin, live.id, {
+      includesLab: labNeedsWork || live.includes_lab === true || Boolean(patchLab),
+      includesImaging: imgNeedsWork || live.includes_imaging === true || Boolean(patchImg),
+      labRequestId: patchLab,
+      imagingRequestId: patchImg,
+    });
+    if (patchErr) return { error: patchErr };
+    return { error: null, ensured: true, queueDisplay: live.queue_display };
+  }
+
+  const completed = diagnosticRows.find((r) => r.status === "Completed");
+  if (completed) {
+    const now = new Date().toISOString();
+    const consultationDisplay = await adminGetEncounterConsultationQueueDisplay(admin, encounterId);
+    const displayForVisit = consultationDisplay ?? completed.queue_display;
+    let notes = applyActiveDeptToNotes(clearSpecimenCollectedTagFromNotes(completed.notes), null);
+    if (labNeedsWork) notes = applyPartialLabReleaseToNotes(notes, false);
+    const patchLab = primaryLabId || String(completed.lab_request_id ?? "").trim() || null;
+    const patchImg = primaryImgId || String(completed.imaging_request_id ?? "").trim() || null;
+
+    const { error: upErr } = await admin
+      .from("queue_tickets")
+      .update({
+        status: "Waiting",
+        completed_at: null,
+        called_at: null,
+        serving_at: null,
+        queue_display: displayForVisit,
+        notes,
+        includes_lab: labNeedsWork || completed.includes_lab === true || Boolean(patchLab),
+        includes_imaging: imgNeedsWork || completed.includes_imaging === true || Boolean(patchImg),
+        ...(patchLab ? { lab_request_id: patchLab } : {}),
+        ...(patchImg ? { imaging_request_id: patchImg } : {}),
+        updated_at: now,
+      })
+      .eq("id", completed.id);
+    if (upErr) return { error: upErr.message };
+    if (consultationDisplay) {
+      const qnErr = await adminPatchEncounterQueueNoIfEmpty(admin, encounterId, consultationDisplay);
+      if (qnErr.error) return { error: qnErr.error };
+    }
+    return { error: null, ensured: true, queueDisplay: displayForVisit };
+  }
+
+  const { data: patient, error: pErr } = await admin
+    .from("patients")
+    .select("id, name, contact_no")
+    .eq("id", patientId)
+    .maybeSingle();
+  if (pErr) return { error: pErr.message };
+  if (!patient) return { error: "Patient not found." };
+
+  const patientName = String((patient as { name?: string | null }).name ?? "").trim() || "Patient";
+  const contactNo =
+    (patient as { contact_no?: string | null }).contact_no != null
+      ? String((patient as { contact_no?: string | null }).contact_no)
+      : null;
+
+  const issued = await adminIssueCashierLaboratoryQueueTicket({
+    encounterTransId: encounterId,
+    patient: { id: patientId, name: patientName, contact_no: contactNo },
+    labRequestIds: labNeedsWork ? labIds : [],
+    imagingRequestIds: imgNeedsWork ? imgIds : [],
+    cashierPriorityId: null,
+  });
+  if (issued.error) return { error: issued.error };
+
+  return {
+    error: null,
+    ensured: true,
+    queueDisplay: issued.result?.queueDisplay ?? null,
+  };
 }
 
 export type ReceptionTriageRoute = "consultation" | "laboratory";
@@ -1901,7 +2109,7 @@ export type ReceptionCompleteLabIntakeResult = {
 export { adminLabRequestIdsWithLabSales } from "@/lib/diagnosticQueueServer";
 
 /**
- * Laboratory queue UI: hide LAB tickets for visit-linked lab orders until `lab_sales` exists.
+ * Laboratory queue UI: keep all lab-linked tickets (paid or unpaid — results may be entered before payment).
  */
 export async function adminFilterLabQueueTicketsForLabDisplay<
   T extends {
@@ -1909,19 +2117,12 @@ export async function adminFilterLabQueueTicketsForLabDisplay<
     includes_lab?: boolean | null;
     encounter_id?: string | null;
   },
->(admin: SupabaseClient, rows: T[]): Promise<{ rows: T[]; error: string | null }> {
+>(_admin: SupabaseClient, rows: T[]): Promise<{ rows: T[]; error: string | null }> {
   const out: T[] = [];
   for (const row of rows) {
     const includesLab = row.includes_lab === true || Boolean(String(row.lab_request_id ?? "").trim());
     if (!includesLab) continue;
-    const labReqId = String(row.lab_request_id ?? "").trim();
-    if (!labReqId) {
-      out.push(row);
-      continue;
-    }
-    const { ids: paidIds, error } = await adminLabRequestIdsWithLabSales(admin, [labReqId]);
-    if (error) return { rows: [], error };
-    if (paidIds.has(labReqId)) out.push(row);
+    out.push(row);
   }
   return { rows: out, error: null };
 }

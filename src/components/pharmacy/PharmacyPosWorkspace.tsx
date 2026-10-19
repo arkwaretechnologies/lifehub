@@ -32,6 +32,7 @@ import {
   ListItemText,
   FormControlLabel,
   Switch,
+  Checkbox,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import RemoveIcon from "@mui/icons-material/Remove";
@@ -64,10 +65,14 @@ import { fetchActiveDiscountTypes, type DiscountTypeRow } from "@/lib/discountTy
 import {
   POS_BUILTIN_DISCOUNT_PRESETS,
   POS_DISCOUNT_NONE,
+  computeLineDiscountAmountForCart,
   computePosCartTotals,
   discountSelectionsEqual,
+  effectiveLineDiscount,
   formatPosDiscountButtonLabel,
   isStatutoryScPwdCode,
+  resolveSaleHeaderDiscountLabel,
+  resolveSaleHeaderDiscountType,
   selectionFromDbType,
   type PosDiscountSelection,
 } from "@/lib/pharmacyPosDiscount";
@@ -122,7 +127,12 @@ type CartLine = {
   product: ProductPosRow;
   qty: number;
   prescriptionItemId?: string | null;
+  /** Per-line override; `null` / omitted inherits cart-wide `posDiscount`. */
+  lineDiscount?: PosDiscountSelection | null;
 };
+
+type DiscountWizardStep = "scope" | "pickItems" | "pickType";
+type DiscountScope = "cart" | "items";
 
 /** Payment options shown in the pay modal (cash drawer vs e-wallet). */
 const PAY_MODAL_METHODS = ["Cash", "GCash"] as const;
@@ -321,7 +331,10 @@ export default function PharmacyPosWorkspace() {
   const [paymentMethod, setPaymentMethod] = useState<string>("Cash");
   const [amountTendered, setAmountTendered] = useState("");
   const [posDiscount, setPosDiscount] = useState<PosDiscountSelection>(POS_DISCOUNT_NONE);
-  const [discountDialogOpen, setDiscountDialogOpen] = useState(false);
+  const [discountWizardOpen, setDiscountWizardOpen] = useState(false);
+  const [discountWizardStep, setDiscountWizardStep] = useState<DiscountWizardStep>("scope");
+  const [discountScope, setDiscountScope] = useState<DiscountScope | null>(null);
+  const [discountSelectedLineKeys, setDiscountSelectedLineKeys] = useState<string[]>([]);
   const [discountDraft, setDiscountDraft] = useState<PosDiscountSelection>(POS_DISCOUNT_NONE);
   const [discountCustomPercent, setDiscountCustomPercent] = useState("10");
   const [discountCustomFixed, setDiscountCustomFixed] = useState("0");
@@ -537,7 +550,7 @@ export default function PharmacyPosWorkspace() {
   }, []);
 
   useEffect(() => {
-    if (!discountDialogOpen) return;
+    if (!discountWizardOpen || discountWizardStep !== "pickType") return;
     let cancelled = false;
     setDbDiscountsLoading(true);
     void fetchActiveDiscountTypes().then((r) => {
@@ -548,23 +561,79 @@ export default function PharmacyPosWorkspace() {
     return () => {
       cancelled = true;
     };
-  }, [discountDialogOpen]);
+  }, [discountWizardOpen, discountWizardStep]);
 
-  const openDiscountModal = useCallback(() => {
-    setDiscountDraft(posDiscount);
-    if (posDiscount.kind === "fixed") {
-      setDiscountCustomFixed(String(posDiscount.fixedAmount ?? 0));
-    } else if (posDiscount.kind === "percent") {
-      setDiscountCustomPercent(String(posDiscount.percent ?? 10));
+  const seedDiscountDraftFromSelection = useCallback((sel: PosDiscountSelection) => {
+    setDiscountDraft(sel);
+    if (sel.kind === "fixed") {
+      setDiscountCustomFixed(String(sel.fixedAmount ?? 0));
+    } else if (sel.kind === "percent") {
+      setDiscountCustomPercent(String(sel.percent ?? 10));
+    } else {
+      setDiscountCustomPercent("10");
+      setDiscountCustomFixed("0");
     }
-    setDiscountDialogOpen(true);
-  }, [posDiscount]);
+  }, []);
 
-  const applyDiscountDraft = useCallback(() => {
-    let next = discountDraft;
+  const closeDiscountWizard = useCallback(() => {
+    setDiscountWizardOpen(false);
+    setDiscountWizardStep("scope");
+    setDiscountScope(null);
+    setDiscountSelectedLineKeys([]);
+  }, []);
+
+  const startDiscountWizard = useCallback(() => {
+    if (cart.length === 0) return;
+    setDiscountWizardStep("scope");
+    setDiscountScope(null);
+    setDiscountSelectedLineKeys([]);
+    setDiscountWizardOpen(true);
+  }, [cart.length]);
+
+  const chooseDiscountScopeCart = useCallback(() => {
+    setDiscountScope("cart");
+    setDiscountWizardStep("pickType");
+    seedDiscountDraftFromSelection(posDiscount);
+  }, [posDiscount, seedDiscountDraftFromSelection]);
+
+  const chooseDiscountScopeItems = useCallback(() => {
+    setDiscountScope("items");
+    setDiscountWizardStep("pickItems");
+    setDiscountSelectedLineKeys([]);
+  }, []);
+
+  const advanceDiscountItemPick = useCallback(() => {
+    if (discountSelectedLineKeys.length === 0) return;
+    const firstKey = discountSelectedLineKeys[0]!;
+    const firstLine = cart.find((l) => l.key === firstKey);
+    const current = firstLine
+      ? firstLine.lineDiscount ?? effectiveLineDiscount(firstLine, posDiscount)
+      : POS_DISCOUNT_NONE;
+    seedDiscountDraftFromSelection(current);
+    setDiscountWizardStep("pickType");
+  }, [cart, discountSelectedLineKeys, posDiscount, seedDiscountDraftFromSelection]);
+
+  const discountWizardBack = useCallback(() => {
+    if (discountWizardStep === "pickType") {
+      if (discountScope === "items") {
+        setDiscountWizardStep("pickItems");
+      } else {
+        setDiscountWizardStep("scope");
+        setDiscountScope(null);
+      }
+      return;
+    }
+    if (discountWizardStep === "pickItems") {
+      setDiscountWizardStep("scope");
+      setDiscountScope(null);
+      setDiscountSelectedLineKeys([]);
+    }
+  }, [discountWizardStep, discountScope]);
+
+  const resolveDiscountDraft = useCallback((): PosDiscountSelection => {
     if (discountDraft.kind === "percent") {
       const pct = Math.max(0, Math.min(100, Number(discountCustomPercent) || 0));
-      next = {
+      return {
         ...discountDraft,
         percent: pct,
         label:
@@ -572,18 +641,47 @@ export default function PharmacyPosWorkspace() {
             ? `Custom (${pct}%)`
             : discountDraft.label,
       };
-    } else if (discountDraft.kind === "fixed") {
+    }
+    if (discountDraft.kind === "fixed") {
       const amt = Math.max(0, Number(discountCustomFixed) || 0);
-      next = {
+      return {
         kind: "fixed",
         label: `Fixed · ₱${amt.toFixed(2)}`,
         typeCode: "FIXED",
         fixedAmount: amt,
       };
     }
-    setPosDiscount(next);
-    setDiscountDialogOpen(false);
+    return discountDraft;
   }, [discountDraft, discountCustomPercent, discountCustomFixed]);
+
+  const applyDiscountDraft = useCallback(() => {
+    const next = resolveDiscountDraft();
+    if (discountScope === "cart") {
+      setPosDiscount(next);
+      setCart((prev) => prev.map((l) => ({ ...l, lineDiscount: null })));
+    } else if (discountScope === "items") {
+      const keySet = new Set(discountSelectedLineKeys);
+      setCart((prev) =>
+        prev.map((l) => (keySet.has(l.key) ? { ...l, lineDiscount: next } : l)),
+      );
+    }
+    closeDiscountWizard();
+  }, [discountScope, discountSelectedLineKeys, resolveDiscountDraft, closeDiscountWizard]);
+
+  const clearDiscountFromModal = useCallback(() => {
+    if (discountScope === "cart") {
+      setPosDiscount(POS_DISCOUNT_NONE);
+      setCart((prev) => prev.map((l) => ({ ...l, lineDiscount: null })));
+    } else if (discountScope === "items") {
+      const keySet = new Set(discountSelectedLineKeys);
+      setCart((prev) =>
+        prev.map((l) => (keySet.has(l.key) ? { ...l, lineDiscount: POS_DISCOUNT_NONE } : l)),
+      );
+    }
+    setDiscountCustomPercent("10");
+    setDiscountCustomFixed("0");
+    closeDiscountWizard();
+  }, [discountScope, discountSelectedLineKeys, closeDiscountWizard]);
 
   const catalogDbDiscounts = useMemo(() => {
     const builtinCodes = new Set(POS_BUILTIN_DISCOUNT_PRESETS.map((p) => (p.typeCode ?? "").toUpperCase()));
@@ -909,8 +1007,35 @@ export default function PharmacyPosWorkspace() {
               label: `Fixed · ₱${Math.max(0, Number(discountCustomFixed) || 0).toFixed(2)}`,
             }
           : discountDraft;
-    return computePosCartTotals(cart, draft);
-  }, [cart, discountDraft, discountCustomPercent, discountCustomFixed]);
+    if (discountScope === "cart") {
+      const cleared = cart.map((l) => ({ ...l, lineDiscount: null as PosDiscountSelection | null }));
+      return computePosCartTotals(cleared, draft);
+    }
+    if (discountScope === "items" && discountSelectedLineKeys.length > 0) {
+      const keySet = new Set(discountSelectedLineKeys);
+      const preview = cart.map((l) => (keySet.has(l.key) ? { ...l, lineDiscount: draft } : l));
+      return computePosCartTotals(preview, posDiscount);
+    }
+    return computePosCartTotals(cart, posDiscount);
+  }, [
+    cart,
+    discountDraft,
+    discountCustomPercent,
+    discountCustomFixed,
+    discountScope,
+    discountSelectedLineKeys,
+    posDiscount,
+  ]);
+
+  const cartDiscountSummaryLabel = useMemo(
+    () => resolveSaleHeaderDiscountLabel(cart, posDiscount, totals.discountApplied),
+    [cart, posDiscount, totals.discountApplied],
+  );
+
+  const discountSelectedKeySet = useMemo(
+    () => new Set(discountSelectedLineKeys),
+    [discountSelectedLineKeys],
+  );
 
   const addProductToCart = useCallback((p: ProductPosRow, qty = 1, prescId?: string | null) => {
     setCart((prev) => {
@@ -1360,10 +1485,14 @@ export default function PharmacyPosWorkspace() {
       productId: l.product.id,
       quantity: l.qty,
       unitPrice: l.product.unit_price,
-      discount: 0,
+      discount: computeLineDiscountAmountForCart(l, posDiscount, cart),
       pharmacyPrescriptionItemId: l.prescriptionItemId ?? null,
     }));
-    const receiptLines = cart.map((l) => pharmacyReceiptLineFromCart(l.product, l.qty));
+    const receiptLines = cart.map((l) => {
+      const disc = computeLineDiscountAmountForCart(l, posDiscount, cart);
+      return pharmacyReceiptLineFromCart(l.product, l.qty, disc);
+    });
+    const saleDiscountLabel = resolveSaleHeaderDiscountLabel(cart, posDiscount, totals.discountApplied);
     const receiptPayloadBase = {
       branchCode: profile?.branch_code ?? null,
       cashierName: profile?.fullname?.trim() || profile?.username?.trim() || null,
@@ -1371,7 +1500,7 @@ export default function PharmacyPosWorkspace() {
       paymentMethod,
       lines: receiptLines,
       itemsGross: totals.gross,
-      discountLabel: totals.discountApplied > 0 ? posDiscount.label : null,
+      discountLabel: saleDiscountLabel,
       discountAmount: totals.discountApplied,
       vatAmount: totals.vat,
       totalAmount: totals.total,
@@ -1391,7 +1520,7 @@ export default function PharmacyPosWorkspace() {
         amountTendered: paymentMethod.toLowerCase() === "cash" ? tendered : null,
         changeAmount: change,
         discountAmount: totals.discountApplied,
-        discountType: totals.discountApplied > 0 ? posDiscount.typeCode : null,
+        discountType: resolveSaleHeaderDiscountType(cart, posDiscount),
         subtotal: totals.subtotal,
         vatAmount: totals.vat,
         totalAmount: totals.total,
@@ -1911,7 +2040,7 @@ export default function PharmacyPosWorkspace() {
         payOpen ||
         voidSaleOpen ||
         returnSaleOpen ||
-        discountDialogOpen ||
+        discountWizardOpen ||
         catalogOpen ||
         priceCheckOpen ||
         shiftOpenModal ||
@@ -1960,7 +2089,7 @@ export default function PharmacyPosWorkspace() {
     payOpen,
     voidSaleOpen,
     returnSaleOpen,
-    discountDialogOpen,
+    discountWizardOpen,
     catalogOpen,
     priceCheckOpen,
     shiftOpenModal,
@@ -2201,6 +2330,9 @@ export default function PharmacyPosWorkspace() {
           <Stack spacing={1} sx={{ flex: 1, overflow: "auto" }}>
             {cart.map((line) => {
               const isPending = Boolean(pendingByLineKey[line.key]);
+              const lineDiscAmt = computeLineDiscountAmountForCart(line, posDiscount, cart);
+              const lineDiscLabel =
+                lineDiscAmt > 0 ? effectiveLineDiscount(line, posDiscount).label : null;
               return (
               <Paper key={line.key} variant="outlined" sx={{ p: 1, opacity: isPending ? 0.85 : 1 }}>
                 <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
@@ -2210,6 +2342,12 @@ export default function PharmacyPosWorkspace() {
                     </Typography>
                     <Typography variant="caption" color="text.secondary" display="block" noWrap>
                       ₱{line.product.unit_price.toFixed(2)} × {line.qty}
+                      {lineDiscAmt > 0 ? (
+                        <Typography component="span" variant="caption" color="success.main">
+                          {" "}
+                          · {lineDiscLabel} −₱{lineDiscAmt.toFixed(2)}
+                        </Typography>
+                      ) : null}
                     </Typography>
                     {isPending && (
                       <Chip label="Pending approval" size="small" color="warning" sx={{ mt: 0.5, height: 20, fontSize: 10 }} />
@@ -2300,7 +2438,7 @@ export default function PharmacyPosWorkspace() {
             {totals.discountApplied > 0 && (
               <Stack direction="row" justifyContent="space-between">
                 <Typography variant="body2" color="success.main">
-                  {posDiscount.label}
+                  {cartDiscountSummaryLabel ?? "Discount"}
                 </Typography>
                 <Typography variant="body2" sx={{ fontVariantNumeric: "tabular-nums" }} color="success.main">
                   −₱{totals.discountApplied.toFixed(2)}
@@ -2330,9 +2468,11 @@ export default function PharmacyPosWorkspace() {
             fullWidth
             startIcon={<LocalOfferIcon />}
             disabled={cart.length === 0}
-            onClick={openDiscountModal}
+            onClick={startDiscountWizard}
           >
-            {formatPosDiscountButtonLabel(posDiscount, totals.discountApplied)}
+            {totals.discountApplied > 0
+              ? `${cartDiscountSummaryLabel ?? "Discount"} · −₱${totals.discountApplied.toFixed(2)}`
+              : formatPosDiscountButtonLabel(posDiscount, totals.discountApplied)}
           </Button>
           <Button
             variant="contained"
@@ -2638,10 +2778,102 @@ export default function PharmacyPosWorkspace() {
         </DialogActions>
       </Dialog>
 
-      <Dialog container={posDialogContainer} open={discountDialogOpen} onClose={() => setDiscountDialogOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Discount</DialogTitle>
+      <Dialog container={posDialogContainer} open={discountWizardOpen} onClose={closeDiscountWizard} maxWidth="sm" fullWidth>
+        <DialogTitle>
+          {discountWizardStep === "scope"
+            ? "Apply discount"
+            : discountWizardStep === "pickItems"
+              ? "Select items to discount"
+              : discountScope === "cart"
+                ? "Discount — whole cart"
+                : `Discount — ${discountSelectedLineKeys.length} item${discountSelectedLineKeys.length === 1 ? "" : "s"}`}
+        </DialogTitle>
         <DialogContent>
+          {discountWizardStep === "scope" ? (
+            <Stack spacing={1.5} sx={{ mt: 0.5 }}>
+              <Typography variant="body2" color="text.secondary">
+                Choose whether the discount applies to the entire cart or specific items.
+              </Typography>
+              <List disablePadding>
+                <ListItemButton
+                  onClick={chooseDiscountScopeCart}
+                  sx={{ borderRadius: 2, mb: 1, border: "1px solid", borderColor: "divider" }}
+                >
+                  <ListItemText
+                    primary="Whole cart"
+                    secondary="Same discount on every line; clears per-item overrides"
+                    primaryTypographyProps={{ fontWeight: 700 }}
+                  />
+                </ListItemButton>
+                <ListItemButton
+                  onClick={chooseDiscountScopeItems}
+                  sx={{ borderRadius: 2, border: "1px solid", borderColor: "divider" }}
+                >
+                  <ListItemText
+                    primary="Selected items"
+                    secondary="Pick one or more lines, then choose the discount type"
+                    primaryTypographyProps={{ fontWeight: 700 }}
+                  />
+                </ListItemButton>
+              </List>
+            </Stack>
+          ) : null}
+
+          {discountWizardStep === "pickItems" ? (
+            <Stack spacing={1.5} sx={{ mt: 0.5 }}>
+              <Stack direction="row" spacing={1}>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() => setDiscountSelectedLineKeys(cart.map((l) => l.key))}
+                >
+                  Select all
+                </Button>
+                <Button size="small" variant="text" onClick={() => setDiscountSelectedLineKeys([])}>
+                  Clear
+                </Button>
+              </Stack>
+              <List dense disablePadding sx={{ maxHeight: 320, overflow: "auto" }}>
+                {cart.map((line) => {
+                  const checked = discountSelectedKeySet.has(line.key);
+                  const disabled = Boolean(pendingByLineKey[line.key]);
+                  return (
+                    <ListItemButton
+                      key={line.key}
+                      dense
+                      disabled={disabled}
+                      onClick={() => {
+                        setDiscountSelectedLineKeys((prev) =>
+                          prev.includes(line.key) ? prev.filter((k) => k !== line.key) : [...prev, line.key],
+                        );
+                      }}
+                      sx={{ borderRadius: 1, mb: 0.5, border: "1px solid", borderColor: "divider" }}
+                    >
+                      <Checkbox edge="start" checked={checked} tabIndex={-1} disableRipple sx={{ mr: 1 }} />
+                      <ListItemText
+                        primary={cartLineLabel(line)}
+                        secondary={`₱${line.product.unit_price.toFixed(2)} × ${line.qty}`}
+                        primaryTypographyProps={{ fontWeight: 600, noWrap: true }}
+                      />
+                    </ListItemButton>
+                  );
+                })}
+              </List>
+            </Stack>
+          ) : null}
+
+          {discountWizardStep === "pickType" ? (
           <Stack spacing={2.5} sx={{ mt: 0.5 }}>
+            {discountScope === "cart" ? (
+              <Typography variant="caption" color="text.secondary" display="block">
+                Applies to every line and clears per-item overrides. Fixed-amount discounts apply only to lines without an item override.
+              </Typography>
+            ) : (
+              <Typography variant="caption" color="text.secondary" display="block">
+                Applies to {discountSelectedLineKeys.length} selected item
+                {discountSelectedLineKeys.length === 1 ? "" : "s"}. Other lines are unchanged.
+              </Typography>
+            )}
             <Typography variant="body2" color="text.secondary">
               Cart subtotal (VAT-inclusive): <strong>₱{totals.gross.toFixed(2)}</strong>
               {discountDraftTotals.discountApplied > 0 ? (
@@ -2736,6 +2968,13 @@ export default function PharmacyPosWorkspace() {
             <Typography variant="subtitle2" fontWeight={700}>
               Other
             </Typography>
+            <ListItemButton
+              selected={discountSelectionsEqual(discountDraft, POS_DISCOUNT_NONE)}
+              onClick={() => setDiscountDraft(POS_DISCOUNT_NONE)}
+              sx={{ borderRadius: 2, mb: 1, border: "1px solid", borderColor: "divider" }}
+            >
+              <ListItemText primary="No discount" secondary="Full price for this selection" />
+            </ListItemButton>
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
               <TextField
                 fullWidth
@@ -2787,24 +3026,31 @@ export default function PharmacyPosWorkspace() {
               />
             </Stack>
           </Stack>
+          ) : null}
         </DialogContent>
         <DialogActions sx={{ flexWrap: "wrap", gap: 1, px: 3, pb: 2 }}>
-          <Button
-            onClick={() => {
-              setDiscountDraft(POS_DISCOUNT_NONE);
-              setPosDiscount(POS_DISCOUNT_NONE);
-              setDiscountCustomPercent("10");
-              setDiscountCustomFixed("0");
-              setDiscountDialogOpen(false);
-            }}
-          >
-            Clear discount
-          </Button>
+          {discountWizardStep === "pickType" ? (
+            <Button onClick={clearDiscountFromModal}>Clear discount</Button>
+          ) : null}
           <Box sx={{ flex: 1 }} />
-          <Button onClick={() => setDiscountDialogOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={applyDiscountDraft}>
-            Apply
-          </Button>
+          {discountWizardStep !== "scope" ? (
+            <Button onClick={discountWizardBack}>Back</Button>
+          ) : null}
+          <Button onClick={closeDiscountWizard}>Cancel</Button>
+          {discountWizardStep === "pickItems" ? (
+            <Button
+              variant="contained"
+              disabled={discountSelectedLineKeys.length === 0}
+              onClick={advanceDiscountItemPick}
+            >
+              Next
+            </Button>
+          ) : null}
+          {discountWizardStep === "pickType" ? (
+            <Button variant="contained" onClick={applyDiscountDraft}>
+              Apply
+            </Button>
+          ) : null}
         </DialogActions>
       </Dialog>
 

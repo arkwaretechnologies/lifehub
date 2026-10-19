@@ -59,16 +59,22 @@ function formatProductLineLabel(generic: string, brand: string | null): string {
 }
 
 /** Build display name for a POS cart line (exported for checkout snapshot). */
-export function pharmacyReceiptLineFromCart(product: {
-  generic_name: string;
-  brand_name: string | null;
-  unit_price: number;
-}, qty: number): PharmacySaleReceiptLine {
+export function pharmacyReceiptLineFromCart(
+  product: {
+    generic_name: string;
+    brand_name: string | null;
+    unit_price: number;
+  },
+  qty: number,
+  lineDiscountAmount = 0,
+): PharmacySaleReceiptLine {
+  const gross = Math.round(qty * product.unit_price * 100) / 100;
+  const disc = Number.isFinite(lineDiscountAmount) ? Math.max(0, lineDiscountAmount) : 0;
   return {
     name: formatProductLineLabel(product.generic_name, product.brand_name),
     qty,
     unitPrice: product.unit_price,
-    lineTotal: Math.round(qty * product.unit_price * 100) / 100,
+    lineTotal: Math.round(Math.max(0, gross - disc) * 100) / 100,
   };
 }
 

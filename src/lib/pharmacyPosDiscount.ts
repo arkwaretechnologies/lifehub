@@ -28,6 +28,13 @@ export type PosCartLineForDiscount = {
   };
 };
 
+/** `null` / `undefined` = inherit cart-wide default; explicit `POS_DISCOUNT_NONE` opts out. */
+export type PosCartLineForDiscountWithOverride = PosCartLineForDiscount & {
+  lineDiscount?: PosDiscountSelection | null;
+};
+
+export const POS_SALE_DISCOUNT_TYPE_MIXED = "MIXED";
+
 export const POS_DISCOUNT_NONE: PosDiscountSelection = {
   kind: "none",
   label: "None",
@@ -152,6 +159,81 @@ export function discountSelectionsEqual(a: PosDiscountSelection, b: PosDiscountS
   );
 }
 
+function lineGross(line: PosCartLineForDiscount): number {
+  return round2(line.qty * line.product.unit_price);
+}
+
+export function effectiveLineDiscount(
+  line: PosCartLineForDiscountWithOverride,
+  cartDefault: PosDiscountSelection,
+): PosDiscountSelection {
+  return line.lineDiscount ?? cartDefault;
+}
+
+/** Discount peso amount for one cart line (respects per-line override vs cart default). */
+export function computeLineDiscountAmountForCart(
+  line: PosCartLineForDiscountWithOverride,
+  cartDefault: PosDiscountSelection,
+  cart: PosCartLineForDiscountWithOverride[],
+): number {
+  const g = lineGross(line);
+  if (g <= 0) return 0;
+
+  if (line.lineDiscount != null) {
+    if (line.lineDiscount.kind === "fixed") {
+      return round2(Math.min(Math.max(0, line.lineDiscount.fixedAmount ?? 0), g));
+    }
+    return round2(Math.min(computeDiscountAmount([line], g, line.lineDiscount), g));
+  }
+
+  if (cartDefault.kind === "none") return 0;
+
+  if (cartDefault.kind === "fixed") {
+    const inheriting = cart.filter((l) => l.lineDiscount == null);
+    const inheritingGross = round2(inheriting.reduce((sum, l) => sum + lineGross(l), 0));
+    if (inheritingGross <= 0) return 0;
+    const totalFixed = round2(Math.min(Math.max(0, cartDefault.fixedAmount ?? 0), inheritingGross));
+    return round2(totalFixed * (g / inheritingGross));
+  }
+
+  return round2(Math.min(computeDiscountAmount([line], g, cartDefault), g));
+}
+
+export function resolveSaleHeaderDiscountType(
+  cart: PosCartLineForDiscountWithOverride[],
+  cartDefault: PosDiscountSelection,
+): string | null {
+  const codes = new Set<string>();
+  for (const line of cart) {
+    const amt = computeLineDiscountAmountForCart(line, cartDefault, cart);
+    if (amt <= 0) continue;
+    const eff = effectiveLineDiscount(line, cartDefault);
+    const code = (eff.typeCode ?? eff.kind).trim();
+    if (code) codes.add(code.toUpperCase());
+  }
+  if (codes.size === 0) return null;
+  if (codes.size === 1) return [...codes][0]!;
+  return POS_SALE_DISCOUNT_TYPE_MIXED;
+}
+
+export function resolveSaleHeaderDiscountLabel(
+  cart: PosCartLineForDiscountWithOverride[],
+  cartDefault: PosDiscountSelection,
+  discountApplied: number,
+): string | null {
+  if (discountApplied <= 0) return null;
+  const type = resolveSaleHeaderDiscountType(cart, cartDefault);
+  if (type === POS_SALE_DISCOUNT_TYPE_MIXED) return "Mixed discounts";
+  if (!type) return null;
+  for (const line of cart) {
+    const eff = effectiveLineDiscount(line, cartDefault);
+    if ((eff.typeCode ?? "").toUpperCase() === type || eff.kind.toUpperCase() === type) {
+      return eff.label;
+    }
+  }
+  return type;
+}
+
 export function computeDiscountAmount(
   cart: PosCartLineForDiscount[],
   gross: number,
@@ -183,8 +265,8 @@ export function computeDiscountAmount(
 }
 
 export function computePosCartTotals(
-  cart: PosCartLineForDiscount[],
-  discount: PosDiscountSelection,
+  cart: PosCartLineForDiscountWithOverride[],
+  cartDefault: PosDiscountSelection,
 ): {
   gross: number;
   discountApplied: number;
@@ -194,15 +276,17 @@ export function computePosCartTotals(
 } {
   let gross = 0;
   let vat = 0;
+  let discountApplied = 0;
   for (const line of cart) {
-    const lineGross = line.qty * line.product.unit_price;
-    gross += lineGross;
-    vat += vatPortionFromInclusive(lineGross, defaultVatPctForProduct(line.product));
+    const g = lineGross(line);
+    gross += g;
+    vat += vatPortionFromInclusive(g, defaultVatPctForProduct(line.product));
+    discountApplied += computeLineDiscountAmountForCart(line, cartDefault, cart);
   }
   gross = round2(gross);
   vat = round2(vat);
+  discountApplied = round2(Math.min(discountApplied, gross));
 
-  const discountApplied = round2(Math.min(computeDiscountAmount(cart, gross, discount), gross));
   const subtotal = round2(Math.max(0, gross - discountApplied));
   const vatAdjusted = gross > 0 ? round2((subtotal / gross) * vat) : 0;
 

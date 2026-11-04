@@ -310,76 +310,6 @@ export async function countUnreadInConversation(
   return count ?? 0;
 }
 
-async function fetchUserDisplayName(db: SupabaseClient, userId: number): Promise<string> {
-  const { data } = await db
-    .from("users")
-    .select("fullname, username")
-    .eq("user_id", userId)
-    .maybeSingle();
-  const row = data as { fullname?: string | null; username?: string | null } | null;
-  const name = String(row?.fullname ?? row?.username ?? "").trim();
-  return name || `User ${userId}`;
-}
-
-async function summarizeConversation(
-  db: SupabaseClient,
-  conv: ChatConversationRow,
-  session: ChatSessionUser,
-): Promise<ChatConversationSummary> {
-  let displayName = "Team";
-  let otherUserId: number | null = null;
-
-  if (conv.type === CHAT_CONVERSATION_TYPE_DIRECT) {
-    otherUserId =
-      conv.user_id_low === session.userId ? conv.user_id_high : conv.user_id_low;
-    if (otherUserId != null) {
-      displayName = await fetchUserDisplayName(db, otherUserId);
-    } else {
-      displayName = "Direct message";
-    }
-  } else if (conv.branch_code) {
-    displayName = formatTeamChannelDisplayName(conv.branch_code);
-  }
-
-  const { data: lastMsg } = await db
-    .from("chat_messages")
-    .select("id, body, attachment_file_name, sender_user_id, created_at")
-    .eq("conversation_id", conv.id)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  const unreadCount = await countUnreadInConversation(db, conv.id, session.userId);
-
-  const msg = lastMsg as
-    | {
-        id: string;
-        body: string | null;
-        attachment_file_name: string | null;
-        sender_user_id: number;
-        created_at: string;
-      }
-    | null;
-
-  return {
-    id: conv.id,
-    type: conv.type,
-    displayName,
-    branchCode: conv.branch_code,
-    otherUserId,
-    unreadCount,
-    lastMessage: msg
-      ? {
-          id: msg.id,
-          body: msg.body,
-          attachmentFileName: msg.attachment_file_name,
-          senderUserId: msg.sender_user_id,
-          createdAt: msg.created_at,
-        }
-      : null,
-  };
-}
-
 export async function listConversationsForUser(
   db: SupabaseClient,
   session: ChatSessionUser,
@@ -401,7 +331,136 @@ export async function listConversationsForUser(
   }
 
   const all = [branchConv, ...((directRows ?? []) as ChatConversationRow[])];
-  const summaries = await Promise.all(all.map((c) => summarizeConversation(db, c, session)));
+  if (all.length === 0) {
+    return { conversations: [], totalUnread: 0, error: null };
+  }
+
+  const convIds = all.map((c) => c.id);
+  const otherUserIds = [
+    ...new Set(
+      all
+        .filter((c) => c.type === CHAT_CONVERSATION_TYPE_DIRECT)
+        .map((c) => (c.user_id_low === session.userId ? c.user_id_high : c.user_id_low))
+        .filter((id): id is number => typeof id === "number" && Number.isFinite(id)),
+    ),
+  ];
+
+  const [readsRes, usersRes, lastMsgsRes, unreadMsgsRes] = await Promise.all([
+    db
+      .from("chat_conversation_reads")
+      .select("conversation_id, last_read_at")
+      .eq("user_id", session.userId)
+      .in("conversation_id", convIds),
+    otherUserIds.length > 0
+      ? db.from("users").select("user_id, fullname, username").in("user_id", otherUserIds)
+      : Promise.resolve({ data: [], error: null }),
+    db
+      .from("chat_messages")
+      .select("id, conversation_id, body, attachment_file_name, sender_user_id, created_at")
+      .in("conversation_id", convIds)
+      .order("created_at", { ascending: false })
+      .limit(Math.min(500, Math.max(50, convIds.length * 3))),
+    db
+      .from("chat_messages")
+      .select("conversation_id, created_at")
+      .in("conversation_id", convIds)
+      .neq("sender_user_id", session.userId)
+      .order("created_at", { ascending: false })
+      .limit(2000),
+  ]);
+
+  if (readsRes.error) {
+    return { conversations: [], totalUnread: 0, error: readsRes.error.message };
+  }
+  if (usersRes.error) {
+    return { conversations: [], totalUnread: 0, error: usersRes.error.message };
+  }
+  if (lastMsgsRes.error) {
+    return { conversations: [], totalUnread: 0, error: lastMsgsRes.error.message };
+  }
+  if (unreadMsgsRes.error) {
+    return { conversations: [], totalUnread: 0, error: unreadMsgsRes.error.message };
+  }
+
+  const lastReadByConv = new Map<string, string>();
+  for (const row of (readsRes.data ?? []) as Array<{ conversation_id?: string; last_read_at?: string }>) {
+    const cid = String(row.conversation_id ?? "").trim();
+    const at = String(row.last_read_at ?? "").trim();
+    if (cid && at) lastReadByConv.set(cid, at);
+  }
+
+  const nameByUserId = new Map<number, string>();
+  for (const row of (usersRes.data ?? []) as Array<{
+    user_id?: number;
+    fullname?: string | null;
+    username?: string | null;
+  }>) {
+    const uid = Number(row.user_id);
+    if (!Number.isFinite(uid)) continue;
+    const name = String(row.fullname ?? row.username ?? "").trim();
+    nameByUserId.set(uid, name || `User ${uid}`);
+  }
+
+  type MsgRow = {
+    id: string;
+    conversation_id: string;
+    body: string | null;
+    attachment_file_name: string | null;
+    sender_user_id: number;
+    created_at: string;
+  };
+  const lastMsgByConv = new Map<string, MsgRow>();
+  for (const row of (lastMsgsRes.data ?? []) as MsgRow[]) {
+    const cid = String(row.conversation_id ?? "").trim();
+    if (!cid || lastMsgByConv.has(cid)) continue;
+    lastMsgByConv.set(cid, row);
+  }
+
+  const unreadByConv = new Map<string, number>();
+  for (const row of (unreadMsgsRes.data ?? []) as Array<{ conversation_id?: string; created_at?: string }>) {
+    const cid = String(row.conversation_id ?? "").trim();
+    if (!cid) continue;
+    const createdAt = String(row.created_at ?? "").trim();
+    const lastRead = lastReadByConv.get(cid);
+    if (lastRead && createdAt && createdAt <= lastRead) continue;
+    unreadByConv.set(cid, (unreadByConv.get(cid) ?? 0) + 1);
+  }
+
+  const summaries: ChatConversationSummary[] = all.map((conv) => {
+    let displayName = "Team";
+    let otherUserId: number | null = null;
+
+    if (conv.type === CHAT_CONVERSATION_TYPE_DIRECT) {
+      otherUserId =
+        conv.user_id_low === session.userId ? conv.user_id_high : conv.user_id_low;
+      if (otherUserId != null) {
+        displayName = nameByUserId.get(otherUserId) ?? `User ${otherUserId}`;
+      } else {
+        displayName = "Direct message";
+      }
+    } else if (conv.branch_code) {
+      displayName = formatTeamChannelDisplayName(conv.branch_code);
+    }
+
+    const msg = lastMsgByConv.get(conv.id) ?? null;
+    return {
+      id: conv.id,
+      type: conv.type,
+      displayName,
+      branchCode: conv.branch_code,
+      otherUserId,
+      unreadCount: unreadByConv.get(conv.id) ?? 0,
+      lastMessage: msg
+        ? {
+            id: msg.id,
+            body: msg.body,
+            attachmentFileName: msg.attachment_file_name,
+            senderUserId: msg.sender_user_id,
+            createdAt: msg.created_at,
+          }
+        : null,
+    };
+  });
 
   summaries.sort((a, b) => {
     if (a.type === CHAT_CONVERSATION_TYPE_BRANCH) return -1;

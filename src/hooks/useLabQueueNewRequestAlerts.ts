@@ -70,6 +70,7 @@ export function useLabQueueNewRequestAlerts(args: {
     let cancelled = false;
     let unsub: (() => void) | undefined;
     let poll: ReturnType<typeof setInterval> | undefined;
+    let onVisibility: (() => void) | undefined;
 
     void (async () => {
       const data = await fetchReceptionQueueStateFromApi();
@@ -86,13 +87,33 @@ export function useLabQueueNewRequestAlerts(args: {
         void refresh();
       });
 
-      poll = setInterval(() => {
-        void refresh();
-      }, POLL_MS);
+      const start = () => {
+        if (poll != null) clearInterval(poll);
+        poll = setInterval(() => {
+          if (document.visibilityState !== "visible") return;
+          void refresh();
+        }, POLL_MS);
+      };
+      onVisibility = () => {
+        if (document.visibilityState === "visible") {
+          void refresh();
+          start();
+        } else if (poll != null) {
+          clearInterval(poll);
+          poll = undefined;
+        }
+      };
+      if (cancelled) {
+        unsub?.();
+        return;
+      }
+      start();
+      document.addEventListener("visibilitychange", onVisibility);
     })();
 
     return () => {
       cancelled = true;
+      if (onVisibility) document.removeEventListener("visibilitychange", onVisibility);
       unsub?.();
       if (poll != null) clearInterval(poll);
     };

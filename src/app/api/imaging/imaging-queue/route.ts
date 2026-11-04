@@ -1,12 +1,9 @@
 import { NextResponse } from "next/server";
 import { clinicAddDays, queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
-import {
-  adminRepairQueueTicketModalityFlags,
-  imagingQueueCode,
-} from "@/lib/diagnosticQueueServer";
+import { imagingQueueCode } from "@/lib/diagnosticQueueServer";
 import { getImagingQueuePresentation } from "@/lib/imagingQueueUi";
 import {
-  computeImagingRequestQueueState,
+  computeImagingRequestQueueStateBatch,
   labCollectionGateForRow,
   loadLabCollectionGateForTickets,
 } from "@/lib/imagingQueueSync";
@@ -177,17 +174,18 @@ async function enrichImagingQueueRows(
   const { byLabRequestId, error: gateErr } = await loadLabCollectionGateForTickets(admin, dated);
   if (gateErr) return { rows: [], error: gateErr };
 
-  const captureByImgId = new Map<string, boolean>();
-  const imgIdsForState = dated.map((r) => String(r.imaging_request_id ?? "").trim()).filter(Boolean);
-  for (const imgId of imgIdsForState) {
-    const st = await computeImagingRequestQueueState(admin, imgId);
-    if (!st.error) captureByImgId.set(imgId, st.allCaptured);
-  }
+  const imgIdsForState = [
+    ...new Set(dated.map((r) => String(r.imaging_request_id ?? "").trim()).filter(Boolean)),
+  ];
+  const imgStateById = await computeImagingRequestQueueStateBatch(admin, imgIdsForState);
 
   dated = dated.map((r) => {
     const gate = labCollectionGateForRow(r, byLabRequestId);
     const imgId = String(r.imaging_request_id ?? "").trim();
-    const progress = { allCaptured: imgId ? (captureByImgId.get(imgId) ?? false) : false };
+    const imgSt = imgId ? imgStateById.get(imgId) : undefined;
+    const progress = {
+      allCaptured: imgId ? Boolean(imgSt && !imgSt.error && imgSt.allCaptured) : false,
+    };
     const activeDept = parseActiveDeptFromNotes(r.notes);
     const pres = getImagingQueuePresentation(r.status, r.imaging_request_id, gate, progress, activeDept);
     return {
@@ -221,13 +219,6 @@ export async function GET(req: Request) {
   const days = Math.min(Math.max(parsePositiveInt(url.searchParams.get("days"), 30) || 30, 1), 365);
 
   const todayIso = queueTicketTodayIsoDate();
-
-  if (scope === "active_today" || scope === "today_all") {
-    const repair = await adminRepairQueueTicketModalityFlags(admin, todayIso);
-    if (repair.error) {
-      return NextResponse.json({ error: repair.error }, { status: 500 });
-    }
-  }
 
   let base = admin
     .from("queue_tickets")

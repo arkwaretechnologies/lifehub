@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { buildAuthSessionPayload } from "@/lib/authSessionPayload";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { MenuAccessState } from "@/lib/menuAccess";
 import { userCanReceiveLabQueueNotifications } from "@/lib/labQueueNotificationServer";
 import {
   NOTIFICATION_TYPE_PHARMACY_CART_LINE,
@@ -12,8 +13,42 @@ import {
   userCanApproveImagingEditRequests,
   type ImagingEditRequestStatus,
 } from "@/lib/imagingEditRequestServer";
+import { getMenuAccessForRoleName } from "@/lib/roleMenuAccessServer";
 import { getBearerSessionUserId } from "@/lib/requireSession";
 import { supabaseAdminClient } from "@/lib/supabaseAdminClient";
+
+type NotifCaps = {
+  role: string;
+  menuAccess: MenuAccessState;
+  expiresAt: number;
+};
+
+const CAPS_TTL_MS = 60_000;
+const capsCache = new Map<number, NotifCaps>();
+
+async function loadNotificationCapabilities(
+  db: SupabaseClient,
+  userId: number,
+): Promise<{ caps: NotifCaps | null; error: string | null }> {
+  const cached = capsCache.get(userId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return { caps: cached, error: null };
+  }
+
+  const { data, error } = await db.from("users").select("role").eq("user_id", userId).maybeSingle();
+  if (error) return { caps: null, error: error.message };
+  if (!data) return { caps: null, error: "User not found." };
+
+  const role = String((data as { role?: string }).role ?? "").trim();
+  const menuAccess = await getMenuAccessForRoleName(db, role);
+  const caps: NotifCaps = {
+    role,
+    menuAccess,
+    expiresAt: Date.now() + CAPS_TTL_MS,
+  };
+  capsCache.set(userId, caps);
+  return { caps, error: null };
+}
 
 export async function GET(req: Request) {
   const db = supabaseAdminClient();
@@ -26,14 +61,14 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
 
-  const session = await buildAuthSessionPayload(db, sessionUserId);
-  if (!session.ok) {
-    return NextResponse.json({ error: "User not found." }, { status: 404 });
+  const { caps, error: capsErr } = await loadNotificationCapabilities(db, sessionUserId);
+  if (capsErr || !caps) {
+    return NextResponse.json({ error: capsErr ?? "User not found." }, { status: 404 });
   }
 
-  const canPharmacy = userCanApprovePharmacyLineRequests(session.menuAccess);
-  const canImaging = userCanApproveImagingEditRequests(session.menuAccess);
-  const canLab = userCanReceiveLabQueueNotifications(session.profile.role);
+  const canPharmacy = userCanApprovePharmacyLineRequests(caps.menuAccess);
+  const canImaging = userCanApproveImagingEditRequests(caps.menuAccess);
+  const canLab = userCanReceiveLabQueueNotifications(caps.role);
   if (!canPharmacy && !canImaging && !canLab) {
     return NextResponse.json({ notifications: [], unreadCount: 0 });
   }

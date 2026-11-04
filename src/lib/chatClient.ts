@@ -12,7 +12,7 @@ export type { ChatConversationSummary, ChatMessageWithSender, ChatUserRow };
 
 export type ChatUserOption = ChatUserRow & { displayName: string };
 
-const POLL_MS = 5000;
+const POLL_MS = 30_000;
 
 export { POLL_MS as CHAT_POLL_MS };
 

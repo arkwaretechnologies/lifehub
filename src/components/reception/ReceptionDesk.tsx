@@ -1283,11 +1283,30 @@ export default function ReceptionDesk() {
   }, [counters, entranceCounter, departmentCounters, refreshTicketsOnly]);
 
   useEffect(() => {
-    const pollMs = rtConnected ? 60_000 : 8_000;
-    const poll = window.setInterval(() => {
-      void refreshTicketsOnly();
-    }, pollMs);
-    return () => window.clearInterval(poll);
+    const pollMs = rtConnected ? 60_000 : 20_000;
+    let poll: number | undefined;
+    const start = () => {
+      if (poll != null) window.clearInterval(poll);
+      poll = window.setInterval(() => {
+        if (document.visibilityState !== "visible") return;
+        void refreshTicketsOnly();
+      }, pollMs);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void refreshTicketsOnly();
+        start();
+      } else if (poll != null) {
+        window.clearInterval(poll);
+        poll = undefined;
+      }
+    };
+    start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      if (poll != null) window.clearInterval(poll);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [rtConnected, refreshTicketsOnly]);
 
   const ticketsByCounter = useMemo(() => {

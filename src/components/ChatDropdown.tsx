@@ -422,6 +422,7 @@ export default function ChatDropdown() {
     if (!chatEnabled || userId == null) return;
 
     const tick = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
       void loadConversations({ silent: true });
       const id = selectedIdRef.current;
       if (id) void refreshMessages(id);
@@ -429,11 +430,34 @@ export default function ChatDropdown() {
 
     void loadConversations({ silent: true });
 
-    const poll = setInterval(tick, CHAT_POLL_MS);
+    let poll: ReturnType<typeof setInterval> | undefined;
+    const startPoll = () => {
+      if (poll) return;
+      poll = setInterval(tick, CHAT_POLL_MS);
+    };
+    const stopPoll = () => {
+      if (!poll) return;
+      clearInterval(poll);
+      poll = undefined;
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        tick();
+        startPoll();
+      } else {
+        stopPoll();
+      }
+    };
+
+    if (typeof document === "undefined" || document.visibilityState === "visible") {
+      startPoll();
+    }
+    document.addEventListener("visibilitychange", onVisibility);
     const unsub = subscribeChatMessages(tick);
 
     return () => {
-      clearInterval(poll);
+      stopPoll();
+      document.removeEventListener("visibilitychange", onVisibility);
       unsub();
     };
   }, [chatEnabled, userId, loadConversations, refreshMessages]);

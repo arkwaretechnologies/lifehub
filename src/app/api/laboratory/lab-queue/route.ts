@@ -1,11 +1,8 @@
 import { NextResponse } from "next/server";
 import { clinicAddDays, queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
-import {
-  adminRepairQueueTicketModalityFlags,
-  labQueueCode,
-} from "@/lib/diagnosticQueueServer";
-import { computeImagingRequestQueueState } from "@/lib/imagingQueueSync";
-import { computeLabRequestQueueCollectionState } from "@/lib/labQueueTicketSync";
+import { labQueueCode } from "@/lib/diagnosticQueueServer";
+import { computeImagingRequestQueueStateBatch } from "@/lib/imagingQueueSync";
+import { computeLabRequestQueueCollectionStateBatch } from "@/lib/labQueueTicketSync";
 import { canLabCallPatient } from "@/lib/labQueueUi";
 import { getLabQueueDisplayStatus, labQueueDisplayChipColor } from "@/lib/labQueuePresentation";
 import { parsePartialLabReleaseFromNotes } from "@/lib/labPartialCollection";
@@ -273,13 +270,6 @@ export async function GET(req: Request) {
 
   const todayIso = queueTicketTodayIsoDate();
 
-  if (scope === "active_today" || scope === "today_all") {
-    const repair = await adminRepairQueueTicketModalityFlags(admin, todayIso);
-    if (repair.error) {
-      return NextResponse.json({ error: repair.error }, { status: 500 });
-    }
-  }
-
   let base = admin
     .from("queue_tickets")
     .select(
@@ -330,64 +320,60 @@ export async function GET(req: Request) {
   const rawRows = (data ?? []) as LabQueueRow[];
   let rows = await enrichLabQueueRows(admin, rawRows);
 
-  const captureByImgId = new Map<string, boolean>();
+  const labIdsForState = [
+    ...new Set(rows.map((r) => String(r.lab_request_id ?? "").trim()).filter(Boolean)),
+  ];
   const imgIdsForState = [
     ...new Set(rows.map((r) => String(r.imaging_request_id ?? "").trim()).filter(Boolean)),
   ];
-  for (const imgId of imgIdsForState) {
-    const st = await computeImagingRequestQueueState(admin, imgId);
-    if (!st.error) captureByImgId.set(imgId, st.allCaptured);
-  }
+  const [labStateById, imgStateById] = await Promise.all([
+    computeLabRequestQueueCollectionStateBatch(admin, labIdsForState),
+    computeImagingRequestQueueStateBatch(admin, imgIdsForState),
+  ]);
 
-  rows = await Promise.all(
-    rows.map(async (r) => {
-      const labId = String(r.lab_request_id ?? "").trim();
-      let labAnyCollected = false;
-      let labAllCollected = false;
-      if (labId) {
-        const st = await computeLabRequestQueueCollectionState(admin, labId);
-        if (!st.error) {
-          labAnyCollected = st.anyCollected;
-          labAllCollected = st.allCollected;
-        }
-      }
-      const specimenCollected = /^\[Specimen\]\s+collected_at=.+/m.test(r.notes ?? "");
-      const labPartialReleased = parsePartialLabReleaseFromNotes(r.notes);
-      const imgId = String(r.imaging_request_id ?? "").trim();
-      const includesImaging = r.includes_imaging === true || Boolean(imgId);
-      const imagingAllCaptured = !includesImaging || !imgId ? true : (captureByImgId.get(imgId) ?? false);
-      const activeDept = parseActiveDeptFromNotes(r.notes);
-      const lab_display_status = getLabQueueDisplayStatus({
-        status: r.status,
-        includes_lab: r.includes_lab,
-        includes_imaging: r.includes_imaging,
-        lab_any_collected: labAnyCollected,
-        lab_all_collected: labAllCollected,
-        lab_partial_released: labPartialReleased,
-        specimen_collected: specimenCollected,
-        imaging_all_captured: imagingAllCaptured,
-        active_dept: activeDept,
-      });
-      const can_lab_call = canLabCallPatient(r.status, {
-        includesImaging,
-        specimenCollected,
-        labAnyCollected,
-        labAllCollected,
-        imagingAllCaptured,
-        activeDept,
-      });
-      return {
-        ...r,
-        lab_any_collected: labAnyCollected,
-        lab_all_collected: labAllCollected,
-        lab_partial_released: labPartialReleased,
-        imaging_all_captured: imagingAllCaptured,
-        active_dept: activeDept,
-        can_lab_call,
-        lab_display_status,
-      };
-    }),
-  );
+  rows = rows.map((r) => {
+    const labId = String(r.lab_request_id ?? "").trim();
+    const labSt = labId ? labStateById.get(labId) : undefined;
+    const labAnyCollected = labSt && !labSt.error ? labSt.anyCollected : false;
+    const labAllCollected = labSt && !labSt.error ? labSt.allCollected : false;
+    const specimenCollected = /^\[Specimen\]\s+collected_at=.+/m.test(r.notes ?? "");
+    const labPartialReleased = parsePartialLabReleaseFromNotes(r.notes);
+    const imgId = String(r.imaging_request_id ?? "").trim();
+    const includesImaging = r.includes_imaging === true || Boolean(imgId);
+    const imgSt = imgId ? imgStateById.get(imgId) : undefined;
+    const imagingAllCaptured =
+      !includesImaging || !imgId ? true : Boolean(imgSt && !imgSt.error && imgSt.allCaptured);
+    const activeDept = parseActiveDeptFromNotes(r.notes);
+    const lab_display_status = getLabQueueDisplayStatus({
+      status: r.status,
+      includes_lab: r.includes_lab,
+      includes_imaging: r.includes_imaging,
+      lab_any_collected: labAnyCollected,
+      lab_all_collected: labAllCollected,
+      lab_partial_released: labPartialReleased,
+      specimen_collected: specimenCollected,
+      imaging_all_captured: imagingAllCaptured,
+      active_dept: activeDept,
+    });
+    const can_lab_call = canLabCallPatient(r.status, {
+      includesImaging,
+      specimenCollected,
+      labAnyCollected,
+      labAllCollected,
+      imagingAllCaptured,
+      activeDept,
+    });
+    return {
+      ...r,
+      lab_any_collected: labAnyCollected,
+      lab_all_collected: labAllCollected,
+      lab_partial_released: labPartialReleased,
+      imaging_all_captured: imagingAllCaptured,
+      active_dept: activeDept,
+      can_lab_call,
+      lab_display_status,
+    };
+  });
 
   let totalCount = count ?? rows.length;
   if (scope === "all" && q.length >= 2 && page === 0) {

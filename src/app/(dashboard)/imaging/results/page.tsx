@@ -510,9 +510,29 @@ export default function ImagingResultsPage() {
   useEffect(() => {
     if (!selectedRequestId || currentUserId == null || !hasPendingEditState) return;
     const unsub = subscribeImagingEditRequestsForUser(currentUserId, () => void reloadEditStates());
-    const poll = setInterval(() => void reloadEditStates(), 5000);
+    let poll: ReturnType<typeof setInterval> | undefined;
+    const tick = () => {
+      if (document.visibilityState !== "visible") return;
+      void reloadEditStates();
+    };
+    const start = () => {
+      if (poll != null) clearInterval(poll);
+      poll = setInterval(tick, 15_000);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void reloadEditStates();
+        start();
+      } else if (poll != null) {
+        clearInterval(poll);
+        poll = undefined;
+      }
+    };
+    start();
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
-      clearInterval(poll);
+      if (poll != null) clearInterval(poll);
+      document.removeEventListener("visibilitychange", onVisibility);
       unsub();
     };
   }, [selectedRequestId, currentUserId, hasPendingEditState, reloadEditStates]);

@@ -43,7 +43,7 @@ import {
 import { NOTIFICATION_TYPE_IMAGING_EDIT } from "@/lib/imagingEditRequestServer";
 import { NOTIFICATION_TYPE_PHARMACY_CART_LINE, type NotificationRow } from "@/lib/pharmacyLineRequestServer";
 
-const POLL_MS = 5000;
+const POLL_MS = 30_000;
 
 export default function NotificationBell() {
   const router = useRouter();
@@ -71,9 +71,9 @@ export default function NotificationBell() {
     await authenticatedFetch("/api/notifications/read-all", { method: "PATCH" });
   }, [canView, userId]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { showSpinner?: boolean }) => {
     if (!canView || userId == null) return;
-    setLoading(true);
+    if (opts?.showSpinner) setLoading(true);
     try {
       const res = await authenticatedFetch("/api/notifications?limit=30", { cache: "no-store" });
       const json = (await res.json().catch(() => null)) as
@@ -103,7 +103,7 @@ export default function NotificationBell() {
       setNotifications(list);
       setUnreadCount(unread);
     } finally {
-      setLoading(false);
+      if (opts?.showSpinner) setLoading(false);
     }
   }, [canView, userId]);
 
@@ -115,11 +115,38 @@ export default function NotificationBell() {
   useEffect(() => {
     if (!canView || userId == null) return;
     seenUnreadIdsRef.current = null;
-    void load();
-    const poll = setInterval(() => void load(), POLL_MS);
+    void load({ showSpinner: true });
+
+    let poll: ReturnType<typeof setInterval> | undefined;
+    const startPoll = () => {
+      if (poll) return;
+      poll = setInterval(() => {
+        if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+        void load();
+      }, POLL_MS);
+    };
+    const stopPoll = () => {
+      if (!poll) return;
+      clearInterval(poll);
+      poll = undefined;
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void load();
+        startPoll();
+      } else {
+        stopPoll();
+      }
+    };
+
+    if (typeof document === "undefined" || document.visibilityState === "visible") {
+      startPoll();
+    }
+    document.addEventListener("visibilitychange", onVisibility);
     const unsub = subscribeNotificationsForUser(userId, () => void load());
     return () => {
-      clearInterval(poll);
+      stopPoll();
+      document.removeEventListener("visibilitychange", onVisibility);
       unsub();
     };
   }, [canView, userId, load]);

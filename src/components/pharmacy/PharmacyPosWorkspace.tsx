@@ -968,7 +968,9 @@ export default function PharmacyPosWorkspace() {
     if (!requestId) return;
 
     let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | undefined;
     const poll = async () => {
+      if (document.visibilityState !== "visible") return;
       const { request, error } = await fetchCartLineRequestApi(requestId);
       if (cancelled || error || !request) return;
       if (request.status !== "pending") {
@@ -976,11 +978,27 @@ export default function PharmacyPosWorkspace() {
       }
     };
 
+    const start = () => {
+      if (timer != null) clearInterval(timer);
+      timer = setInterval(() => void poll(), 5000);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void poll();
+        start();
+      } else if (timer != null) {
+        clearInterval(timer);
+        timer = undefined;
+      }
+    };
+
     void poll();
-    const timer = setInterval(() => void poll(), 2000);
+    start();
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      if (timer != null) clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [waitRequest?.id, handleResolvedRequest]);
 

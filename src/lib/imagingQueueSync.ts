@@ -1,7 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { parsePartialLabReleaseFromNotes } from "@/lib/labPartialCollection";
 import type { QueueTicketStatus } from "@/lib/queueReception";
-import { computeLabRequestQueueCollectionState } from "@/lib/labQueueTicketSync";
+import {
+  computeLabRequestQueueCollectionState,
+  computeLabRequestQueueCollectionStateBatch,
+} from "@/lib/labQueueTicketSync";
 import {
   applyActiveDeptToNotes,
   nextSharedQueueState,
@@ -76,6 +79,64 @@ export async function computeImagingRequestQueueState(
   const allResultReceived = rows.every((r) => isImagingItemResultReceived(r.status));
   const allCompleted = rows.every((r) => isImagingItemCompleted(r.status, r.findings));
   return { error: null, allCaptured, allResultReceived, allCompleted };
+}
+
+export type ImagingQueueState = {
+  error: string | null;
+  allCaptured: boolean;
+  allResultReceived: boolean;
+  allCompleted: boolean;
+};
+
+const EMPTY_IMAGING_STATE: ImagingQueueState = {
+  error: null,
+  allCaptured: false,
+  allResultReceived: false,
+  allCompleted: false,
+};
+
+/** Batch imaging queue state for many requests (one items query). */
+export async function computeImagingRequestQueueStateBatch(
+  admin: SupabaseClient,
+  imagingRequestIds: string[],
+): Promise<Map<string, ImagingQueueState>> {
+  const unique = [...new Set(imagingRequestIds.map((x) => x.trim()).filter(Boolean))];
+  const out = new Map<string, ImagingQueueState>();
+  if (unique.length === 0) return out;
+
+  const { data: items, error: itemsErr } = await admin
+    .from("imaging_request_items")
+    .select("id, imaging_request_id, status, findings")
+    .in("imaging_request_id", unique);
+  if (itemsErr) {
+    for (const id of unique) {
+      out.set(id, { ...EMPTY_IMAGING_STATE, error: itemsErr.message });
+    }
+    return out;
+  }
+
+  type Row = ImagingRequestItemStatusRow & { imaging_request_id?: string };
+  const byReq = new Map<string, Row[]>();
+  for (const id of unique) byReq.set(id, []);
+  for (const row of (items ?? []) as Row[]) {
+    const rid = String(row.imaging_request_id ?? "").trim();
+    if (!rid || !byReq.has(rid)) continue;
+    byReq.get(rid)!.push(row);
+  }
+
+  for (const [reqId, rows] of byReq) {
+    if (rows.length === 0) {
+      out.set(reqId, { ...EMPTY_IMAGING_STATE });
+      continue;
+    }
+    out.set(reqId, {
+      error: null,
+      allCaptured: rows.every((r) => isImagingItemCaptured(r.status)),
+      allResultReceived: rows.every((r) => isImagingItemResultReceived(r.status)),
+      allCompleted: rows.every((r) => isImagingItemCompleted(r.status, r.findings)),
+    });
+  }
+  return out;
 }
 
 export function nextImagingQueueTicketStatus(
@@ -209,10 +270,11 @@ export async function loadLabCollectionGateForTickets<
     ),
   ];
 
+  const states = await computeLabRequestQueueCollectionStateBatch(admin, labIds);
   for (const labId of labIds) {
-    const state = await computeLabRequestQueueCollectionState(admin, labId);
-    if (state.error) return { error: state.error, byLabRequestId };
-    byLabRequestId.set(labId, state.allCollected);
+    const state = states.get(labId);
+    if (state?.error) return { error: state.error, byLabRequestId };
+    byLabRequestId.set(labId, state?.allCollected ?? false);
   }
 
   return { error: null, byLabRequestId };

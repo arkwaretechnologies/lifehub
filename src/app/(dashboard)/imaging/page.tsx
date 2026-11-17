@@ -21,9 +21,12 @@ import {
 } from "@mui/material";
 import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
 import CameraAltOutlinedIcon from "@mui/icons-material/CameraAltOutlined";
+import ReplayIcon from "@mui/icons-material/Replay";
 import type { ImagingQueueRow } from "@/app/api/imaging/imaging-queue/route";
 import { authenticatedFetch } from "@/lib/authenticatedFetch";
 import { imagingDisplayStatusChipColor } from "@/lib/imagingQueueUi";
+import { recallQueueTicketAnnounce } from "@/lib/queueReception";
+import { canRecallQueueTicket, recallQueueButtonTooltip } from "@/lib/queueRecall";
 
 export default function ImagingAppointmentsPage() {
   const router = useRouter();
@@ -87,6 +90,27 @@ export default function ImagingAppointmentsPage() {
       await load();
     } catch {
       setError("Failed to call patient.");
+    } finally {
+      setActionBusyId(null);
+    }
+  };
+
+  const recallPatient = async (ticketId: string) => {
+    const id = ticketId.trim();
+    if (!id) return;
+    setError("");
+    setSuccessMessage("");
+    setActionBusyId(id);
+    try {
+      const res = await recallQueueTicketAnnounce(id);
+      if (res.error) {
+        setError(res.error);
+        return;
+      }
+      setSuccessMessage("Patient re-announced on queue displays.");
+      await load();
+    } catch {
+      setError("Failed to recall patient.");
     } finally {
       setActionBusyId(null);
     }
@@ -210,6 +234,27 @@ export default function ImagingAppointmentsPage() {
                               sx={{ minWidth: 108, borderRadius: 999, textTransform: "none", fontWeight: 700 }}
                             >
                               Call
+                            </Button>
+                          </Box>
+                        </Tooltip>
+                        <Tooltip title={recallQueueButtonTooltip(t.status)}>
+                          <Box component="span" sx={{ display: "inline-flex", ml: 1 }}>
+                            <Button
+                              variant="outlined"
+                              color="secondary"
+                              size="small"
+                              startIcon={
+                                actionBusyId === t.id ? (
+                                  <CircularProgress size={16} color="inherit" />
+                                ) : (
+                                  <ReplayIcon fontSize="small" />
+                                )
+                              }
+                              onClick={() => void recallPatient(t.id)}
+                              disabled={!canRecallQueueTicket(t.status) || actionBusyId === t.id}
+                              sx={{ minWidth: 96, borderRadius: 999, textTransform: "none", fontWeight: 700 }}
+                            >
+                              Recall
                             </Button>
                           </Box>
                         </Tooltip>

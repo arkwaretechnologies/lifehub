@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "vitest run",
     "backfill:encounter-dates": "node scripts/backfill-encounter-dates.mjs",
     "backfill:encounter-dates:dry": "node scripts/backfill-encounter-dates.mjs --dry-run"
   },
@@ -41,6 +42,7 @@
     "eslint-config-next": "16.2.2",
     "pdf-parse": "^1.1.1",
     "supabase": "^2.98.2",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.4"
   }
 }

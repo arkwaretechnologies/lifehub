@@ -14,6 +14,7 @@ import {
   queueAdminClient,
   type ReceptionTriageRoute,
 } from "@/lib/receptionQueueServer";
+import { labQueueCode } from "@/lib/diagnosticQueueServer";
 import { normalizeLabRequestPackageIdList } from "@/lib/labRequests";
 import { canRecallQueueTicket } from "@/lib/queueRecall";
 import type { QueueTicketStatus } from "@/lib/queueReception";
@@ -191,6 +192,7 @@ export async function PATCH(req: Request) {
   const now = new Date().toISOString();
   let status: QueueTicketStatus;
   let timestamps: { called_at?: string | null; serving_at?: string | null };
+  let callNotes: string | undefined;
 
   switch (action) {
     case "call": {
@@ -198,7 +200,7 @@ export async function PATCH(req: Request) {
       if (admin) {
         const { data: row, error: selErr } = await admin
           .from("queue_tickets")
-          .select("status, includes_imaging, imaging_request_id, lab_request_id, notes")
+          .select("status, counter_id, includes_imaging, imaging_request_id, lab_request_id, notes")
           .eq("id", ticketId)
           .maybeSingle();
         if (selErr) {
@@ -207,13 +209,25 @@ export async function PATCH(req: Request) {
         const current = row as
           | {
               status?: QueueTicketStatus;
+              counter_id?: string | number | null;
               includes_imaging?: boolean | null;
               imaging_request_id?: string | null;
               lab_request_id?: string | null;
               notes?: string | null;
             }
           | null;
-        if (current?.status) {
+        let isLabCounter = false;
+        const counterId = current?.counter_id;
+        if (admin && counterId != null && counterId !== "") {
+          const { data: ctr } = await admin
+            .from("queue_counters")
+            .select("code")
+            .eq("id", counterId)
+            .maybeSingle();
+          const code = (ctr as { code?: string | null } | null)?.code;
+          isLabCounter = (code ?? "").trim().toUpperCase() === labQueueCode();
+        }
+        if (isLabCounter && current?.status) {
           const specimenCollected = isSpecimenCollectedOnTicket(current.notes);
           const labId = String(current.lab_request_id ?? "").trim();
           let labAnyCollected = specimenCollected;
@@ -267,14 +281,7 @@ export async function PATCH(req: Request) {
               { status: 409 },
             );
           }
-          const nextNotes = applyActiveDeptToNotes(current.notes ?? "", "LAB");
-          const { error: notesErr } = await admin
-            .from("queue_tickets")
-            .update({ notes: nextNotes })
-            .eq("id", ticketId);
-          if (notesErr) {
-            return NextResponse.json({ error: notesErr.message }, { status: 500 });
-          }
+          callNotes = applyActiveDeptToNotes(current.notes ?? "", "LAB");
         }
       }
       status = "Called";
@@ -296,7 +303,12 @@ export async function PATCH(req: Request) {
       );
   }
 
-  const { error } = await adminUpdateTicketStatus(ticketId, status, timestamps);
+  const { error } = await adminUpdateTicketStatus(
+    ticketId,
+    status,
+    timestamps,
+    callNotes !== undefined ? { notes: callNotes } : undefined,
+  );
   if (error) {
     return NextResponse.json({ error }, { status: 500 });
   }

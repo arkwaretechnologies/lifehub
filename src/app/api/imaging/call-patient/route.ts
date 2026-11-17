@@ -6,7 +6,7 @@ import {
   applyActiveDeptToNotes,
   parseActiveDeptFromNotes,
 } from "@/lib/queueActiveDept";
-import { queueAdminClient } from "@/lib/receptionQueueServer";
+import { adminUpdateTicketStatus, queueAdminClient } from "@/lib/receptionQueueServer";
 import type { QueueTicketStatus } from "@/lib/queueReception";
 
 type Body = {
@@ -120,17 +120,14 @@ export async function POST(req: Request) {
   const now = new Date().toISOString();
   const nextNotes = applyActiveDeptToNotes(ticket.notes ?? "", "IMAG");
 
-  const { error: updErr } = await admin
-    .from("queue_tickets")
-    .update({
-      status: "Called",
-      called_at: now,
-      notes: nextNotes,
-      updated_at: now,
-    })
-    .eq("id", ticketId);
+  const { error: updErr } = await adminUpdateTicketStatus(
+    ticketId,
+    "Called",
+    { called_at: now, serving_at: null },
+    { notes: nextNotes },
+  );
 
-  if (updErr) return NextResponse.json({ error: updErr.message }, { status: 500 });
+  if (updErr) return NextResponse.json({ error: updErr }, { status: 500 });
 
   return NextResponse.json({ ok: true, status: "Called" });
 }

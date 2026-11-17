@@ -12,9 +12,12 @@ import {
 } from "@/lib/cashierLabQueue";
 import { buildPatientSearchOrFilter, PATIENT_DIRECTORY_SELECT, sanitizePatientSearchQuery } from "@/lib/patientsCatalog";
 import { supabase } from "@/lib/supabaseClient";
+import { imagingQueueCode, labQueueCode } from "@/lib/diagnosticQueueServer";
+import { pickPhysicianWaitingTicket } from "@/lib/physicianQueuePick";
 import { clinicEncounterDateTimeFields } from "@/lib/queueTicketDate";
 import { invalidateCachesClient } from "@/lib/cacheInvalidateClient";
 import { queueTicketTodayIsoDate } from "@/lib/queueTicketDate";
+import { numericIdFromUnknown } from "@/lib/sessionUserId";
 
 const ENCOUNTERS_TABLE = "encounters";
 const PATIENTS_TABLE = "patients";
@@ -463,14 +466,54 @@ async function resolveCounterNamesForTickets(
   return counterNameById;
 }
 
-/** One Waiting ticket per encounter (earliest `issued_at`) for today, with fields used by reception call + announce. */
+async function loadPhysicianAndDiagnosticCounterIdSets(physicianUserId: number): Promise<{
+  physicianCounterIds: Set<string>;
+  diagnosticCounterIds: Set<string>;
+  error: string | null;
+}> {
+  const physicianCounterIds = new Set<string>();
+  const diagnosticCounterIds = new Set<string>();
+  const labCode = labQueueCode();
+  const imagCode = imagingQueueCode();
+
+  const { data, error } = await supabase
+    .from("queue_counters")
+    .select("id, code, user_id")
+    .eq("is_active", true);
+  if (error) {
+    return { physicianCounterIds, diagnosticCounterIds, error: error.message };
+  }
+
+  for (const row of (data ?? []) as Array<{ id: string | number; code?: string | null; user_id?: unknown }>) {
+    const id = String(row.id);
+    const code = (row.code ?? "").trim().toUpperCase();
+    if (code === labCode || code === imagCode) {
+      diagnosticCounterIds.add(id);
+    }
+    if (numericIdFromUnknown(row.user_id) === physicianUserId) {
+      physicianCounterIds.add(id);
+    }
+  }
+
+  return { physicianCounterIds, diagnosticCounterIds, error: null };
+}
+
+/** One Waiting ticket per encounter for today (physician clinic counter preferred; not LAB/IMAG). */
 async function fetchWaitingQueueTicketsTodayByEncounterIds(
   encounterTransIds: string[],
+  physicianUserId: number,
 ): Promise<{ map: Map<string, WaitingQueueTicketPick>; error: string | null }> {
   const originalsOrdered = encounterOriginalIdsOrdered(encounterTransIds);
   if (originalsOrdered.length === 0) {
     return { map: new Map(), error: null };
   }
+
+  const { physicianCounterIds, diagnosticCounterIds, error: cntErr } =
+    await loadPhysicianAndDiagnosticCounterIdSets(physicianUserId);
+  if (cntErr) {
+    return { map: new Map(), error: cntErr };
+  }
+
   const ticketDate = queueTicketTodayIsoDate();
   const CHUNK = 100;
   type Raw = {
@@ -481,7 +524,7 @@ async function fetchWaitingQueueTicketsTodayByEncounterIds(
     counter_id?: string | number | null;
     issued_at?: string | null;
   };
-  const bestByEncounter = new Map<string, Raw>();
+  const candidatesByEncounter = new Map<string, Raw[]>();
   for (let i = 0; i < originalsOrdered.length; i += CHUNK) {
     const chunk = originalsOrdered.slice(i, i + CHUNK);
     const { data, error } = await supabase
@@ -496,12 +539,17 @@ async function fetchWaitingQueueTicketsTodayByEncounterIds(
     for (const row of (data ?? []) as Raw[]) {
       const eid = row.encounter_id?.trim().toLowerCase();
       if (!eid) continue;
-      const prev = bestByEncounter.get(eid);
-      const issued = (row.issued_at ?? "").trim();
-      const prevIssued = (prev?.issued_at ?? "").trim();
-      if (!prev || issued.localeCompare(prevIssued) < 0) {
-        bestByEncounter.set(eid, row);
-      }
+      const list = candidatesByEncounter.get(eid) ?? [];
+      list.push(row);
+      candidatesByEncounter.set(eid, list);
+    }
+  }
+
+  const bestByEncounter = new Map<string, Raw>();
+  for (const [eid, candidates] of candidatesByEncounter) {
+    const picked = pickPhysicianWaitingTicket(candidates, physicianCounterIds, diagnosticCounterIds);
+    if (picked) {
+      bestByEncounter.set(eid, picked as Raw);
     }
   }
 
@@ -612,7 +660,10 @@ export async function fetchEncountersForPhysician(
   if (error) return { rows: [], error };
 
   const transIds = rows.map((r) => encounterToSummary(r as EncounterRow).id);
-  const { map: waitingByEncounter, error: wErr } = await fetchWaitingQueueTicketsTodayByEncounterIds(transIds);
+  const { map: waitingByEncounter, error: wErr } = await fetchWaitingQueueTicketsTodayByEncounterIds(
+    transIds,
+    physicianUserId,
+  );
   if (wErr) {
     return { rows: [], error: wErr };
   }

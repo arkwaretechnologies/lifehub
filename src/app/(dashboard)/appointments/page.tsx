@@ -158,15 +158,17 @@ export default function AppointmentsPage() {
     setCallError("");
     setCallingTransId(row.transId);
     try {
-      if (row.waitingQueueTicketId) {
-        const { error } = await patchReceptionQueueTicket(row.waitingQueueTicketId, "call");
-        if (error) {
-          setCallError(error);
-          return;
-        }
-      } else {
-        const res = await callQueueForEncounterFromApi(row.transId, physicianUserId);
-        if (res.error) {
+      const res = await callQueueForEncounterFromApi(row.transId, physicianUserId);
+      if (res.error) {
+        const fallbackTicketId = row.waitingQueueTicketId?.trim();
+        const noWaiting = /no waiting queue ticket/i.test(res.error);
+        if (fallbackTicketId && noWaiting) {
+          const { error } = await patchReceptionQueueTicket(fallbackTicketId, "call");
+          if (error) {
+            setCallError(error);
+            return;
+          }
+        } else {
           setCallError(res.error);
           return;
         }

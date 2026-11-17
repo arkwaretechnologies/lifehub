@@ -277,6 +277,7 @@ export async function adminUpdateTicketStatus(
   ticketId: string,
   status: QueueTicketStatus,
   timestamps: { called_at?: string | null; serving_at?: string | null },
+  options?: { notes?: string | null },
 ): Promise<{ error: string | null }> {
   const admin = queueAdminClient();
   if (!admin) {
@@ -292,6 +293,9 @@ export async function adminUpdateTicketStatus(
   if ("serving_at" in timestamps) payload.serving_at = timestamps.serving_at;
   if (status === "Completed") {
     payload.completed_at = now;
+  }
+  if (options && "notes" in options) {
+    payload.notes = options.notes;
   }
 
   const { error } = await admin.from("queue_tickets").update(payload).eq("id", ticketId);

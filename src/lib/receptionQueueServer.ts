@@ -13,6 +13,7 @@ import {
   type QueueTicketStatus,
   type ReceptionDepartmentCounters,
 } from "@/lib/queueReception";
+import { nextQueueCalledAtIso, queueCallTimestamp } from "@/lib/queueCallTimestamp";
 import { numericIdFromUnknown } from "@/lib/sessionUserId";
 import { parseBp } from "@/lib/bpInput";
 import {
@@ -284,7 +285,7 @@ export async function adminUpdateTicketStatus(
     return { error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." };
   }
 
-  const now = new Date().toISOString();
+  const now = queueCallTimestamp();
   const payload: Record<string, unknown> = {
     status,
     updated_at: now,
@@ -308,13 +309,25 @@ export async function adminBumpTicketCalledAt(ticketId: string): Promise<{ error
   if (!admin) {
     return { error: "Server is missing SUPABASE_SERVICE_ROLE_KEY." };
   }
-  const now = new Date().toISOString();
+  const { data: row, error: selErr } = await admin
+    .from("queue_tickets")
+    .select("called_at")
+    .eq("id", ticketId)
+    .maybeSingle();
+  if (selErr) {
+    return { error: selErr.message };
+  }
+  const prev = (row as { called_at?: string | null } | null)?.called_at ?? null;
+  const called_at = nextQueueCalledAtIso(prev);
+  const updated_at = queueCallTimestamp();
   const { error } = await admin
     .from("queue_tickets")
-    .update({ called_at: now, updated_at: now })
+    .update({ called_at, updated_at })
     .eq("id", ticketId);
   return { error: error?.message ?? null };
 }
+
+export { queueCallTimestamp, nextQueueCalledAtIso };
 
 export type CallQueueForEncounterResult = {
   error: string | null;
@@ -431,8 +444,11 @@ export async function adminCallQueueTicketForPhysicianEncounter(
     return { error: "No waiting queue ticket for this visit today." };
   }
 
-  const now = new Date().toISOString();
-  const upd = await adminUpdateTicketStatus(String(ticket.id), "Called", { called_at: now, serving_at: null });
+  const calledAt = queueCallTimestamp();
+  const upd = await adminUpdateTicketStatus(String(ticket.id), "Called", {
+    called_at: calledAt,
+    serving_at: null,
+  });
   if (upd.error) {
     return { error: upd.error };
   }

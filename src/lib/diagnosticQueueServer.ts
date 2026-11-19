@@ -8,6 +8,7 @@ import {
   isSpecimenCollectedOnTicket,
 } from "@/lib/labQueueUi";
 import { applyActiveDeptToNotes, parseActiveDeptFromNotes } from "@/lib/queueActiveDept";
+import { queueCallTimestamp } from "@/lib/queueCallTimestamp";
 import type { QueueTicketStatus } from "@/lib/queueReception";
 
 const ACTIVE_QUEUE_STATUSES: QueueTicketStatus[] = ["Waiting", "Called", "Collected", "Serving"];
@@ -424,6 +425,7 @@ export async function adminRepairQueueTicketModalityFlags(
           !labState.allCollected
         ) {
           patch.status = "Called";
+          patch.called_at = queueCallTimestamp();
           const baseNotes = String(patch.notes ?? noteText);
           patch.notes = applyActiveDeptToNotes(baseNotes, "LAB");
           needsPatch = true;

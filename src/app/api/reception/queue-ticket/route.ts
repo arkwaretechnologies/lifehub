@@ -12,6 +12,7 @@ import {
   adminPrepareLaboratoryCheckin,
   adminUpdateTicketStatus,
   queueAdminClient,
+  queueCallTimestamp,
   type ReceptionTriageRoute,
 } from "@/lib/receptionQueueServer";
 import { labQueueCode } from "@/lib/diagnosticQueueServer";
@@ -189,7 +190,7 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ ok: true, queueDisplay, patientName, counterName });
   }
 
-  const now = new Date().toISOString();
+  const now = queueCallTimestamp();
   let status: QueueTicketStatus;
   let timestamps: { called_at?: string | null; serving_at?: string | null };
   let callNotes: string | undefined;

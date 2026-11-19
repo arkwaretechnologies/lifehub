@@ -9,6 +9,7 @@ export type QueueTicketStatus =
   | "Called"
   | "Collected"
   | "Serving"
+  | "Captured"
   | "Completed"
   | "Skipped"
   | "Cancelled"
